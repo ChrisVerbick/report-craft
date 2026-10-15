@@ -162,6 +162,7 @@ fn text_link(
         style_conflicts: conflict.name().into(),
         remove_styles: remove,
         story_hash: super::links::story_hash(story),
+        base: Some(std::sync::Arc::new(Story { frames: Vec::new(), file_link: None, ..story.clone() })),
     }
 }
 

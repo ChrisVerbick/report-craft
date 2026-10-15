@@ -889,6 +889,65 @@ mod text_link_tests {
         assert!(s.doc().unwrap().doc.story(StoryId(sid)).unwrap().file_link.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The text of what a linked story's last import brought in (its link's base), if any.
+    fn base(s: &Session, sid: StoryId) -> Option<String> {
+        Some(s.doc().unwrap().doc.story(sid)?.file_link.as_ref()?.base.as_ref()?.text.clone())
+    }
+
+    /// A linked story keeps what its last import brought in (what a merge compares against): set
+    /// by place, update and relink, saved with the document, left alone by layout edits, dropped
+    /// with the link. Only imported content: a Word file's tracked deletions and authors stay out.
+    #[test]
+    fn linked_text_keeps_what_its_last_import_brought_in() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let (a, b) = (dir.join("a.docx"), dir.join("b.docx"));
+        let tracked = r#"<w:r><w:t xml:space="preserve">First </w:t></w:r><w:del w:id="1" w:author="Reviewer A"><w:r><w:delText>secret </w:delText></w:r></w:del><w:r><w:t>draft.</w:t></w:r>"#;
+        std::fs::write(&a, docx(tracked)).unwrap();
+        std::fs::write(&b, docx("<w:r><w:t>Other.</w:t></w:r>")).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let place = |s: &mut Session, p: &std::path::Path, y: f64| {
+            s.execute("edit.deselectAll", &json!({})).unwrap();
+            let r = s.execute("file.place", &json!({"path": p.to_string_lossy(), "rect": [72, y, 300, y + 100.0], "link": true})).unwrap();
+            StoryId(r["story"].as_u64().unwrap())
+        };
+        let (sa, sb) = (place(&mut s, &a, 72.0), place(&mut s, &b, 300.0));
+        assert_eq!(base(&s, sa).as_deref(), Some("Head\nFirst draft."));
+        let kept = story(&s, sa).file_link.unwrap().base.unwrap();
+        assert!(kept.frames.is_empty() && kept.file_link.is_none(), "detached");
+        let json = serde_json::to_string(&s.doc().unwrap().doc).unwrap();
+        assert!(!json.contains("secret") && !json.contains("Reviewer A"), "nothing of the Word file beyond the import");
+        assert!(s.doc().unwrap().doc.assets.is_empty(), "the Word file itself isn't stored");
+
+        // Saved with the document; Update and Relink keep what they bring in.
+        let saved = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(saved.story(sa).unwrap().file_link, story(&s, sa).file_link);
+        std::fs::write(&a, docx("<w:r><w:t>Second, longer.</w:t></w:r>")).unwrap();
+        s.execute("links.update", &json!({"story": sa.0})).unwrap();
+        assert_eq!(base(&s, sa).as_deref(), Some("Head\nSecond, longer."));
+        assert_eq!(base(&s, sb).as_deref(), Some("Head\nOther."), "the other link keeps its own");
+        let c = dir.join("other").join("c.docx");
+        std::fs::write(&c, docx("<w:r><w:t>Third.</w:t></w:r>")).unwrap();
+        s.execute("links.relink", &json!({"story": sa.0, "path": c.to_string_lossy()})).unwrap();
+        assert_eq!(base(&s, sa).as_deref(), Some("Head\nThird."));
+
+        // A layout edit leaves it as imported; unlinking drops it.
+        s.execute("story.setText", &json!({"story": sa.0, "text": "Edited in layout"})).unwrap();
+        assert_eq!(base(&s, sa).as_deref(), Some("Head\nThird."));
+        s.execute("links.embed", &json!({"story": sa.0})).unwrap();
+        assert_eq!(base(&s, sa), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Links saved before bases existed load without one.
+    #[test]
+    fn text_links_saved_without_a_base_load_without_one() {
+        let l: designcraft_doc::TextFileLink = serde_json::from_str(r#"{"path": "a.docx", "size": 1, "hash": "00"}"#).unwrap();
+        assert_eq!(l.base, None);
+    }
 }
 
 #[cfg(unix)]
