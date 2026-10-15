@@ -53,6 +53,15 @@ fn style_specs() -> Vec<CommandSpec> {
             cell_style_edit
         ),
         cmd!(
+            "style.cell.delete",
+            "Delete Cell Style",
+            [],
+            None,
+            "{name, replaceWith?: cell style (default [None], which keeps the cells' look)} — its cells, the table styles naming it and the styles based on it take the replacement",
+            has_doc,
+            cell_style_delete
+        ),
+        cmd!(
             "style.table.create",
             "New Table Style…",
             [],
@@ -78,6 +87,15 @@ fn style_specs() -> Vec<CommandSpec> {
             "{name, …same as style.table.create} — tables using the style follow",
             has_doc,
             table_style_edit
+        ),
+        cmd!(
+            "style.table.delete",
+            "Delete Table Style",
+            [],
+            None,
+            "{name, replaceWith?: table style (default [Basic Table], which keeps the tables' look)} — its tables and the styles based on it take the replacement",
+            has_doc,
+            table_style_delete
         ),
     ]
 }
@@ -1687,6 +1705,106 @@ fn cell_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `name` and `replaceWith` (default `default`) of a style deletion, checked.
+fn delete_params(p: &Value, cmd: &str, default: &str) -> Result<(String, String)> {
+    let name = str_param(p, "name").filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "missing name"))?.to_string();
+    let repl = str_param(p, "replaceWith").unwrap_or(default).to_string();
+    if name.starts_with('[') {
+        return Err(bad(cmd, "built-in styles can't be deleted"));
+    }
+    if repl == name {
+        return Err(bad(cmd, "`replaceWith` can't be the deleted style"));
+    }
+    Ok((name, repl))
+}
+
+/// What a style that was based on a deleted style is based on afterwards: the replacement, or
+/// for the replacement itself the deleted style's parent (a style is never based on itself).
+fn rebased(style: &str, deleted_parent: Option<&str>, repl: &str) -> Option<String> {
+    if style == repl { deleted_parent.filter(|b| *b != repl).map(str::to_string) } else { Some(repl.to_string()) }
+}
+
+fn cell_style_delete(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "style.cell.delete";
+    let (name, repl) = delete_params(p, ID, designcraft_doc::NO_CELL_STYLE)?;
+    s.edit(|d, _| {
+        let parent = d.styles.cell.iter().find(|c| c.name == name).ok_or_else(|| bad(ID, format!("no cell style `{name}`")))?.based_on.clone();
+        if !d.styles.cell.iter().any(|c| c.name == repl) {
+            return Err(bad(ID, format!("no cell style `{repl}`")));
+        }
+        let based = dependent_styles(&name, d.styles.cell.iter().map(|c| (c.name.as_str(), c.based_on.as_deref())));
+        let st = d.styles_mut();
+        for c in st.cell.iter_mut().filter(|c| c.based_on.as_deref() == Some(name.as_str())) {
+            c.based_on = rebased(&c.name, parent.as_deref(), &repl);
+        }
+        for t in &mut st.table {
+            for region in [&mut t.header, &mut t.body, &mut t.footer, &mut t.left_column, &mut t.right_column] {
+                if region.as_deref() == Some(name.as_str()) {
+                    *region = Some(repl.clone());
+                }
+            }
+        }
+        st.cell.retain(|c| c.name != name);
+        // Its cells take the replacement; cells of the styles based on it follow their new parent.
+        let to = designcraft_doc::resolve_cell_style(&d.styles.cell, &repl);
+        let based: Vec<_> = based.iter().filter(|n| **n != name).map(|n| designcraft_doc::resolve_cell_style(&d.styles.cell, n)).collect();
+        let uses = |c: &designcraft_doc::Cell| c.style == name || based.iter().any(|b| b.name == c.style);
+        for sid in d.stories.keys().copied().collect::<Vec<_>>() {
+            if !d.story(sid).is_some_and(|st| st.tables.values().any(|t| t.cells.iter().any(uses))) {
+                continue;
+            }
+            let Some(st) = d.story_mut(sid) else { continue };
+            for t in st.tables.values_mut().filter(|t| t.cells.iter().any(uses)) {
+                for cell in &mut std::sync::Arc::make_mut(t).cells {
+                    if cell.style == name {
+                        to.apply_to(cell);
+                    } else if let Some(b) = based.iter().find(|b| b.name == cell.style) {
+                        b.apply_to(cell);
+                    }
+                }
+            }
+            st.rev += 1;
+        }
+        ok()
+    })
+}
+
+fn table_style_delete(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "style.table.delete";
+    let (name, repl) = delete_params(p, ID, designcraft_doc::BASIC_TABLE)?;
+    s.edit(|d, _| {
+        let parent = d.styles.table.iter().find(|t| t.name == name).ok_or_else(|| bad(ID, format!("no table style `{name}`")))?.based_on.clone();
+        if !d.styles.table.iter().any(|t| t.name == repl) {
+            return Err(bad(ID, format!("no table style `{repl}`")));
+        }
+        let based = dependent_styles(&name, d.styles.table.iter().map(|t| (t.name.as_str(), t.based_on.as_deref())));
+        let st = d.styles_mut();
+        for t in st.table.iter_mut().filter(|t| t.based_on.as_deref() == Some(name.as_str())) {
+            t.based_on = rebased(&t.name, parent.as_deref(), &repl);
+        }
+        st.table.retain(|t| t.name != name);
+        // Its tables take the replacement; tables of the styles based on it follow their new parent.
+        let to = d.styles.resolve_table_style(&repl);
+        let based: Vec<_> = based.iter().filter(|n| **n != name).map(|n| d.styles.resolve_table_style(n)).collect();
+        let cells = d.styles.cell.clone();
+        let uses = |t: &designcraft_doc::Table| t.style == name || based.iter().any(|b| b.name == t.style);
+        for sid in d.stories.keys().copied().collect::<Vec<_>>() {
+            if !d.story(sid).is_some_and(|st| st.tables.values().any(|t| uses(t))) {
+                continue;
+            }
+            let Some(st) = d.story_mut(sid) else { continue };
+            for t in st.tables.values_mut().filter(|t| uses(t)) {
+                let style = if t.style == name { Some(&to) } else { based.iter().find(|b| b.name == t.style) };
+                if let Some(style) = style {
+                    style.apply_to(std::sync::Arc::make_mut(t), &cells);
+                }
+            }
+            st.rev += 1;
+        }
+        ok()
+    })
+}
+
 fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value, border: Option<CellStroke>) {
     if let Some(v) = p.get("basedOn") {
         ts.based_on = v.as_str().map(str::to_string);
@@ -1819,6 +1937,97 @@ mod style_tests {
         s.execute("style.table.edit", &json!({"name": "Data", "border": {"weight": 4}})).unwrap();
         assert_eq!(t(&s).options.border.weight, 4.0);
         assert!(s.execute("style.cell.apply", &json!({"name": "Nope"})).is_err());
+    }
+
+    /// A document with a 2 × 2 table, the cursor in it; returns the session and the story.
+    fn with_table() -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        (s, sid)
+    }
+
+    fn table(s: &Session, sid: u64) -> designcraft_doc::Table {
+        (**s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap()).clone()
+    }
+
+    #[test]
+    fn deleting_a_cell_style_gives_its_cells_and_dependents_the_replacement() {
+        let (mut s, sid) = with_table();
+        s.execute("style.cell.create", &json!({"name": "Shaded", "fill": "[Black]", "insets": 6})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Shaded Note", "basedOn": "Shaded", "tint": 0.5})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Plain", "fill": "[Paper]", "insets": 2})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Data", "body": "Shaded"})).unwrap();
+        let apply = |s: &mut Session, (r, c): (usize, usize), name: &str| {
+            s.execute("table.select", &json!({"rows": [r, r], "cols": [c, c]})).unwrap();
+            s.execute("style.cell.apply", &json!({"name": name})).unwrap();
+        };
+        apply(&mut s, (0, 0), "Shaded");
+        apply(&mut s, (0, 1), "Shaded Note");
+        apply(&mut s, (1, 1), "Plain");
+        s.execute("table.setCell", &json!({"fill": "[Black]"})).unwrap(); // a local override on (1, 1)
+
+        s.execute("style.cell.delete", &json!({"name": "Shaded", "replaceWith": "Plain"})).unwrap();
+        let styles = s.doc().unwrap().doc.styles.clone();
+        assert!(styles.cell.iter().all(|c| c.name != "Shaded"));
+        assert_eq!(styles.cell.iter().find(|c| c.name == "Shaded Note").unwrap().based_on.as_deref(), Some("Plain"));
+        assert_eq!(styles.table.iter().find(|t| t.name == "Data").unwrap().body.as_deref(), Some("Plain"));
+        let t = table(&s, sid);
+        let cell = |r, c| t.cell(r, c).unwrap();
+        assert_eq!((cell(0, 0).style.as_str(), cell(0, 0).fill.as_str(), cell(0, 0).insets), ("Plain", "[Paper]", [2.0; 4]));
+        assert_eq!((cell(0, 1).style.as_str(), cell(0, 1).fill.as_str(), cell(0, 1).insets), ("Shaded Note", "[Paper]", [2.0; 4]));
+        assert_eq!(cell(1, 1).fill, "[Black]", "cells already using the replacement keep their overrides");
+
+        // [None] by default: the style goes, its cells keep their look.
+        s.execute("style.cell.delete", &json!({"name": "Plain"})).unwrap();
+        let t = table(&s, sid);
+        assert_eq!((t.cell(0, 0).unwrap().style.as_str(), t.cell(0, 0).unwrap().fill.as_str()), ("", "[Paper]"));
+        s.execute("edit.undo", &json!({})).unwrap();
+        let plain = s.doc().unwrap().doc.styles.cell.iter().find(|c| c.name == "Plain").cloned().expect("undo brings it back");
+        // A replacement based on the deleted style takes that style's parent, never itself.
+        s.execute("style.cell.delete", &json!({"name": "Plain", "replaceWith": "Shaded Note"})).unwrap();
+        let note = s.doc().unwrap().doc.styles.cell.iter().find(|c| c.name == "Shaded Note").cloned().unwrap();
+        assert_eq!(note.based_on, plain.based_on);
+
+        for bad in [
+            json!({"name": "[None]"}),
+            json!({"name": "Shaded Note", "replaceWith": "Shaded Note"}),
+            json!({"name": "Shaded Note", "replaceWith": "Nope"}),
+            json!({"name": "Nope"}),
+        ] {
+            assert!(s.execute("style.cell.delete", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn deleting_a_table_style_gives_its_tables_and_dependents_the_replacement() {
+        let (mut s, sid) = with_table();
+        s.execute("style.table.create", &json!({"name": "Ruled", "border": {"weight": 2, "color": "[Black]"}})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Ruled Wide", "basedOn": "Ruled", "spaceBefore": 6})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Boxed", "border": {"weight": 4, "color": "[Black]"}})).unwrap();
+        s.execute("style.table.apply", &json!({"name": "Ruled Wide"})).unwrap();
+        assert_eq!(table(&s, sid).options.border.weight, 2.0);
+
+        // The table uses a style based on the deleted one: it follows the new parent.
+        s.execute("style.table.delete", &json!({"name": "Ruled", "replaceWith": "Boxed"})).unwrap();
+        let styles = s.doc().unwrap().doc.styles.clone();
+        assert!(styles.table.iter().all(|t| t.name != "Ruled"));
+        assert_eq!(styles.table.iter().find(|t| t.name == "Ruled Wide").unwrap().based_on.as_deref(), Some("Boxed"));
+        assert_eq!((table(&s, sid).style.as_str(), table(&s, sid).options.border.weight), ("Ruled Wide", 4.0));
+
+        // [Basic Table] by default: the style goes, its tables keep their look.
+        s.execute("style.table.apply", &json!({"name": "Boxed"})).unwrap();
+        s.execute("style.table.delete", &json!({"name": "Boxed"})).unwrap();
+        assert_eq!((table(&s, sid).style.as_str(), table(&s, sid).options.border.weight), ("", 4.0));
+        let styles = s.doc().unwrap().doc.styles.clone();
+        assert_eq!(styles.table.iter().find(|t| t.name == "Ruled Wide").unwrap().based_on.as_deref(), Some("[Basic Table]"));
+
+        for bad in [json!({"name": "[Basic Table]"}), json!({"name": "Ruled Wide", "replaceWith": "Ruled Wide"}), json!({"name": "Nope"})] {
+            assert!(s.execute("style.table.delete", &bad).is_err(), "{bad}");
+        }
     }
 }
 
