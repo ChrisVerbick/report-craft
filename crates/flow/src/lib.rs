@@ -7,8 +7,11 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod merge;
+
 use std::ops::Range;
 
+pub use merge::{Conflict, MergeOut, Segment, is_anchor, merge_text};
 use similar::{Algorithm, DiffTag, TextDiff};
 
 /// One change from text `a` to text `b`: bytes `old` of `a` become bytes `new` of `b`. Both start

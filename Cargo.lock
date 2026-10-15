@@ -1030,6 +1030,7 @@ dependencies = [
 name = "designcraft-flow"
 version = "0.8.0"
 dependencies = [
+ "designcraft-doc",
  "proptest",
  "similar",
  "unicode-segmentation",

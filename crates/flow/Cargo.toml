@@ -9,6 +9,7 @@ description = "DesignCraft Flow: text diff, three-way merge and compare for link
 workspace = true
 
 [dependencies]
+designcraft-doc = { workspace = true }
 similar = { workspace = true }
 
 [dev-dependencies]
