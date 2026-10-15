@@ -104,9 +104,16 @@ pub(crate) fn fnv_hex(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-/// Fingerprint of a story's text and formatting (edits made in the layout change it).
+/// Fingerprint of a story's text, formatting and tables (edits made in the layout change it).
+/// Tables count only when the story has some, so stories without tables keep the fingerprint
+/// earlier builds recorded.
 pub(crate) fn story_hash(st: &Story) -> String {
-    fnv_hex(serde_json::to_string(&(&st.text, &st.paras, &st.chars)).unwrap_or_default().as_bytes())
+    let json = if st.tables.is_empty() {
+        serde_json::to_string(&(&st.text, &st.paras, &st.chars))
+    } else {
+        serde_json::to_string(&(&st.text, &st.paras, &st.chars, &st.tables))
+    };
+    fnv_hex(json.unwrap_or_default().as_bytes())
 }
 
 /// Frames (graphic content) showing an asset, top-level or in groups.
@@ -949,6 +956,55 @@ mod text_link_tests {
         assert!(r["warnings"][0].as_str().unwrap().contains("not linked"), "{r}");
         assert!(s.doc().unwrap().doc.story(StoryId(sid)).unwrap().file_link.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A workbook whose first sheet holds `rows` as inline strings.
+    fn xlsx(rows: &[&[&str]]) -> Vec<u8> {
+        use std::io::Write;
+        let rows: String = rows
+            .iter()
+            .map(|row| format!("<row>{}</row>", row.iter().map(|v| format!(r#"<c t="inlineStr"><is><t>{v}</t></is></c>"#)).collect::<String>()))
+            .collect();
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(format!("<worksheet><sheetData>{rows}</sheetData></worksheet>").as_bytes()).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    /// A cell edited in a linked spreadsheet is an edit made in the layout: the Links panel shows
+    /// it, and Update warns that it replaces it (it used to be replaced silently).
+    #[test]
+    fn edits_in_linked_table_cells_are_flagged_and_the_update_warns() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-xlsx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, xlsx(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let table = *story(&s, sid).tables.keys().next().expect("the sheet is placed as a table");
+        assert_eq!(text_rows(&mut s)[0]["edited"], false);
+
+        s.execute("table.select", &json!({"story": sid.0, "table": table, "rows": [1, 1], "cols": [1, 1]})).unwrap();
+        s.execute("table.setCell", &json!({"text": "3.75"})).unwrap();
+        assert_eq!(text_rows(&mut s)[0]["edited"], true, "a cell edited in the layout");
+
+        std::fs::write(&path, xlsx(&[&["Item", "Price"], &["Tea", "3.50"], &["Cake", "12.00"]])).unwrap();
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(r["updated"], 1);
+        let w = r["warnings"][0].as_str().unwrap_or_default();
+        assert!(w.contains("prices.xlsx") && w.contains("replaced"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Linked stories saved by earlier builds keep their recorded hash: a story without tables
+    /// must hash as it always did, or every one of them would show as edited.
+    #[test]
+    fn story_hash_of_a_story_without_tables_is_unchanged() {
+        let st = designcraft_doc::Story::with_text(StoryId(1), "Head\nBody", designcraft_doc::ParaFormat::default());
+        assert_eq!(super::story_hash(&st), "5ffd958c8ee493e4");
     }
 }
 
