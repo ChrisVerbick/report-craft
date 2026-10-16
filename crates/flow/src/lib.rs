@@ -8,11 +8,13 @@
 #![forbid(unsafe_code)]
 
 mod merge;
+mod story;
 
 use std::ops::Range;
 
 pub use merge::{Conflict, MergeOut, Segment, is_anchor, merge_text};
 use similar::{Algorithm, DiffTag, TextDiff};
+pub use story::{StoryMerge, merge_story};
 
 /// One change from text `a` to text `b`: bytes `old` of `a` become bytes `new` of `b`. Both start
 /// and end on grapheme cluster boundaries; one of them may be empty (an insertion or a deletion).

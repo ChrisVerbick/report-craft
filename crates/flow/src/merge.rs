@@ -1,12 +1,14 @@
 //! Three-way merge of a linked story's text. The file's new text (`theirs`) wins content and
 //! order. The layout's own edits (`mine`, both measured against the text the last import brought
-//! in, `base`) survive where the file left that stretch alone, and every one is reported. Where
-//! both changed the same stretch, the file's text wins and a conflict mark records the layout's
-//! version for a Flow note.
+//! in, `base`) survive where the file left that sentence alone, and every one is reported. Where
+//! both changed the same sentence differently, the file's text wins and a conflict mark records
+//! the layout's version for a Flow note.
 
 use std::ops::Range;
 
 use designcraft_doc::{ANCHOR_MARK, ENDNOTE_REF, FOOTNOTE_REF, INDEX_MARK, NOTE_MARK, OBJECT_MARK, TABLE_ANCHOR, XREF_MARK};
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{Hunk, diff_text};
 
@@ -17,10 +19,12 @@ pub fn is_anchor(c: char) -> bool {
 }
 
 /// Where a stretch of the merged text comes from: the layout's text (`mine`), the file's
-/// (`theirs`), both (unchanged on both sides), or neither (a conflict mark).
+/// (`theirs`), both (the same change on both sides), all three with `base` (unchanged), or none
+/// (a conflict mark).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Segment {
     pub out: Range<usize>,
+    pub base: Option<Range<usize>>,
     pub mine: Option<Range<usize>>,
     pub theirs: Option<Range<usize>>,
 }
@@ -51,13 +55,20 @@ pub struct MergeOut {
 /// disagrees, so a caller never applies a merge it can't account for.
 pub fn merge_text(base: &str, mine: &str, theirs: &str) -> Option<MergeOut> {
     let (t, m) = (diff_text(base, theirs), diff_text(base, mine));
+    // Changes on both sides within one sentence conflict, so two rewrites of a sentence are never
+    // spliced together: each hunk claims the sentences it touches. Anchors the layout only added
+    // (a note, a footnote, a frame: no wording) claim nothing.
+    let bounds: Vec<usize> = base.split_sentence_bound_indices().map(|(at, _)| at).chain([base.len()]).collect();
+    let te: Vec<Range<usize>> = t.iter().map(|h| extent(&bounds, &h.old)).collect();
+    let me: Vec<Option<Range<usize>>> = m.iter().map(|h| (!anchors_only(mine, h)).then(|| extent(&bounds, &h.old))).collect();
     let mut out = MergeOut::default();
     // The next hunk on each side; merged so far: up to `done` in base, `tp` in theirs, `mp` in mine.
     let (mut ti, mut mi) = (0, 0);
     let (mut done, mut tp, mut mp) = (0_usize, 0_usize, 0_usize);
     loop {
         // A chunk starts at the hunk that starts first (an insertion before a change at the same
-        // spot) and takes in every hunk of either side that overlaps it.
+        // spot). It takes in every hunk that overlaps it, and every hunk claiming a sentence that
+        // the other side's hunks in it claim.
         let take_t = match (t.get(ti), m.get(mi)) {
             (None, None) => break,
             (Some(_), None) => true,
@@ -66,17 +77,23 @@ pub fn merge_text(base: &str, mine: &str, theirs: &str) -> Option<MergeOut> {
         };
         let (t0, m0) = (ti, mi);
         let mut chunk = if take_t { t.get(ti)?.old.clone() } else { m.get(mi)?.old.clone() };
+        let (mut claim_t, mut claim_m) = if take_t { (te.get(ti).cloned(), None) } else { (None, me.get(mi)?.clone()) };
         if take_t {
             ti += 1;
         } else {
             mi += 1;
         }
         loop {
-            if let Some(h) = t.get(ti).filter(|h| overlaps(&chunk, &h.old)) {
+            let joins = |h: &Hunk, claim: Option<&Range<usize>>, other: Option<&Range<usize>>| {
+                overlaps(&chunk, &h.old) || claim.zip(other).is_some_and(|(c, o)| overlaps(o, c))
+            };
+            if let Some(h) = t.get(ti).filter(|h| joins(h, te.get(ti), claim_m.as_ref())) {
                 chunk.end = chunk.end.max(h.old.end);
+                claim_t = join(claim_t, te.get(ti));
                 ti += 1;
-            } else if let Some(h) = m.get(mi).filter(|h| overlaps(&chunk, &h.old)) {
+            } else if let Some(h) = m.get(mi).filter(|h| joins(h, me.get(mi).and_then(Option::as_ref), claim_t.as_ref())) {
                 chunk.end = chunk.end.max(h.old.end);
+                claim_m = join(claim_m, me.get(mi).and_then(Option::as_ref));
                 mi += 1;
             } else {
                 break;
@@ -90,7 +107,7 @@ pub fn merge_text(base: &str, mine: &str, theirs: &str) -> Option<MergeOut> {
         if mine.get(mr.clone())? != same {
             return None;
         }
-        out.push(same, Some(mr.clone()), Some(tr.clone()));
+        out.push(same, Some(done..chunk.start), Some(mr.clone()), Some(tr.clone()));
 
         // The chunk on each side runs from the side's position to past its last hunk in the chunk.
         let end = |hunks: &[Hunk], first: usize, next: usize, at: usize| match next.checked_sub(1).filter(|last| *last >= first) {
@@ -102,29 +119,35 @@ pub fn merge_text(base: &str, mine: &str, theirs: &str) -> Option<MergeOut> {
         let (ts, ms) = (theirs.get(tr.clone())?, mine.get(mr.clone())?);
         match (ti > t0, mi > m0) {
             (true, false) => {
-                out.push(ts, None, Some(tr.clone()));
+                out.push(ts, None, None, Some(tr.clone()));
             }
             (false, true) => {
-                let new = out.push(ms, Some(mr.clone()), None);
+                let new = out.push(ms, None, Some(mr.clone()), None);
                 out.deviations.push(Hunk { old: tr.clone(), new });
             }
             _ if ts == ms => {
-                out.push(ts, Some(mr.clone()), Some(tr.clone()));
+                out.push(ts, None, Some(mr.clone()), Some(tr.clone()));
             }
             _ => {
-                // Both changed it: the file's text, after a conflict mark and the anchors the
-                // layout added there (dropping those would lose a footnote, a note, a frame…).
+                // Both changed it: the file's text, after the anchors the layout added there
+                // (dropping those would lose a footnote, a note, a frame…) and, unless the layout
+                // only added anchors, a conflict mark.
+                let conflict = m.get(m0..mi)?.iter().any(|h| !anchors_only(mine, h));
                 let at = out.text.len();
-                out.push(NOTE_MARK.encode_utf8(&mut [0; 4]), None, None);
+                if conflict {
+                    out.push(NOTE_MARK.encode_utf8(&mut [0; 4]), None, None, None);
+                }
                 for h in m.get(m0..mi)? {
                     for (i, c) in mine.get(h.new.clone())?.char_indices().filter(|(_, c)| is_anchor(*c)) {
                         let r = h.new.start.checked_add(i)?..h.new.start.checked_add(i + c.len_utf8())?;
-                        out.push(mine.get(r.clone())?, Some(r), None);
+                        out.push(mine.get(r.clone())?, None, Some(r), None);
                     }
                 }
                 out.deviations.push(Hunk { old: tr.start..tr.start, new: at..out.text.len() });
-                out.conflicts.push(Conflict { at, mine: mr.clone(), theirs: tr.clone() });
-                out.push(ts, None, Some(tr.clone()));
+                if conflict {
+                    out.conflicts.push(Conflict { at, mine: mr.clone(), theirs: tr.clone() });
+                }
+                out.push(ts, None, None, Some(tr.clone()));
             }
         }
         (done, tp, mp) = (chunk.end, tr.end, mr.end);
@@ -135,8 +158,32 @@ pub fn merge_text(base: &str, mine: &str, theirs: &str) -> Option<MergeOut> {
     if same.len() != base.len().checked_sub(done)? || mine.get(mp..)? != same {
         return None;
     }
-    out.push(same, Some(mp..mine.len()), Some(tp..theirs.len()));
+    out.push(same, Some(done..base.len()), Some(mp..mine.len()), Some(tp..theirs.len()));
     Some(out)
+}
+
+/// A layout hunk that only adds anchors (a note, a footnote, a frame…): it changes no wording.
+fn anchors_only(mine: &str, h: &Hunk) -> bool {
+    h.old.is_empty() && mine.get(h.new.clone()).is_some_and(|s| !s.is_empty() && s.chars().all(is_anchor))
+}
+
+/// `a` widened to cover `b`.
+fn join(a: Option<Range<usize>>, b: Option<&Range<usize>>) -> Option<Range<usize>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.start.min(b.start)..a.end.max(b.end)),
+        (a, b) => a.or_else(|| b.cloned()),
+    }
+}
+
+/// The base stretch a hunk claims when deciding conflicts: the sentences it touches. An insertion
+/// between two sentences claims none, so it only meets an insertion at the same spot.
+fn extent(bounds: &[usize], h: &Range<usize>) -> Range<usize> {
+    if h.is_empty() && bounds.binary_search(&h.start).is_ok() {
+        return h.clone();
+    }
+    let before = bounds.get(bounds.partition_point(|b| *b <= h.start).wrapping_sub(1)).copied().unwrap_or(0);
+    let after = bounds.get(bounds.partition_point(|b| *b < h.end)).copied().unwrap_or(h.end);
+    before..after.max(h.end)
 }
 
 /// Whether hunk range `h` overlaps chunk `c` (both in base): changed stretches that share text,
@@ -148,11 +195,11 @@ fn overlaps(c: &Range<usize>, h: &Range<usize>) -> bool {
 
 impl MergeOut {
     /// Appends `s`, recording where it came from; returns where it landed.
-    fn push(&mut self, s: &str, mine: Option<Range<usize>>, theirs: Option<Range<usize>>) -> Range<usize> {
+    fn push(&mut self, s: &str, base: Option<Range<usize>>, mine: Option<Range<usize>>, theirs: Option<Range<usize>>) -> Range<usize> {
         let out = self.text.len()..self.text.len() + s.len();
         self.text.push_str(s);
         if !out.is_empty() {
-            self.segments.push(Segment { out: out.clone(), mine, theirs });
+            self.segments.push(Segment { out: out.clone(), base, mine, theirs });
         }
         out
     }
@@ -179,9 +226,8 @@ mod tests {
         let mut at = 0;
         for s in &m.segments {
             let piece = out.get(s.out.clone()).filter(|_| s.out.start == at).ok_or(format!("{s:?} doesn't follow on at {at}"))?;
-            if s.mine.as_ref().is_some_and(|r| mine.get(r.clone()) != Some(piece))
-                || s.theirs.as_ref().is_some_and(|r| theirs.get(r.clone()) != Some(piece))
-            {
+            let differs = |side: &str, r: &Option<Range<usize>>| r.as_ref().is_some_and(|r| side.get(r.clone()) != Some(piece));
+            if differs(base, &s.base) || differs(mine, &s.mine) || differs(theirs, &s.theirs) {
                 return Err(format!("{s:?} isn't the text it says it comes from"));
             }
             at = s.out.end;
@@ -218,11 +264,18 @@ mod tests {
     }
 
     #[test]
-    fn edits_that_dont_overlap_all_land_and_the_layouts_are_reported() {
-        let m = merged("one two three", "one two 3", "ONE two three");
-        assert_eq!(m.text, "ONE two 3");
+    fn edits_in_different_sentences_all_land_and_the_layouts_are_reported() {
+        let m = merged("One two. Three four.", "One two. Three 4.", "ONE two. Three four.");
+        assert_eq!(m.text, "ONE two. Three 4.");
         assert!(m.conflicts.is_empty());
         assert_eq!(m.deviations.len(), 1);
+    }
+
+    #[test]
+    fn edits_in_one_sentence_on_both_sides_conflict_and_the_file_wins() {
+        let m = merged("First part. One two three.", "First part. One two 3.", "First part. ONE two three.");
+        assert_eq!(m.text.replace(NOTE_MARK, ""), "First part. ONE two three.");
+        assert_eq!(m.conflicts.len(), 1);
     }
 
     #[test]
@@ -253,9 +306,10 @@ mod tests {
     }
 
     #[test]
-    fn a_footnote_added_inside_text_the_file_deleted_is_kept() {
+    fn a_footnote_added_inside_text_the_file_deleted_is_kept_without_a_conflict() {
         let m = merged("abcdef", &format!("abc{FOOTNOTE_REF}def"), "af");
-        assert_eq!(m.text, format!("a{}{FOOTNOTE_REF}f", note()));
+        assert_eq!(m.text, format!("a{FOOTNOTE_REF}f"));
+        assert!(m.conflicts.is_empty());
     }
 
     /// Pieces for the base and the file; the layout may also add anchors (a footnote reference,
