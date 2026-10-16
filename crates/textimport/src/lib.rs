@@ -96,12 +96,20 @@ pub struct Problem {
 pub enum ProblemKind {
     /// A spreadsheet error value (#REF!, #DIV/0!, #N/A…).
     ErrorValue,
-    /// A formula taking its value from another workbook: the value may be out of date.
+    /// A formula taking its value from another workbook: the value may be out of date. Reported,
+    /// but it doesn't stop an update (a broken link shows an error value instead).
     OtherWorkbook,
     /// A formula with no calculated value.
     NotCalculated,
     /// A Word field showing an error (a cross-reference to something gone, a missing bookmark…).
     FieldError,
+}
+
+impl ProblemKind {
+    /// Whether it stops an update until confirmed: everything but a value from another workbook.
+    pub fn blocks(self) -> bool {
+        self != ProblemKind::OtherWorkbook
+    }
 }
 
 impl Problem {

@@ -219,14 +219,15 @@ pub(crate) fn reimport(
 }
 
 /// Errors the file shows stop an update unless allowed: the app asks first, scripts pass
-/// `allowErrors`.
+/// `allowErrors`. Values from other workbooks are only reported.
 fn allowed(imp: &designcraft_textimport::Imported, path: &str, allow: bool) -> Result<()> {
-    if allow || imp.problems.is_empty() {
+    let blocking: Vec<String> = imp.problems.iter().filter(|p| p.kind.blocks()).map(designcraft_textimport::Problem::message).collect();
+    if allow || blocking.is_empty() {
         return Ok(());
     }
     let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
-    let list = imp.problems.iter().map(designcraft_textimport::Problem::message).collect::<Vec<_>>().join("; ");
-    let n = imp.problems.len();
+    let list = blocking.join("; ");
+    let n = blocking.len();
     Err(bad("links.update", format!("{name} shows {n} error{}: {list}. Fix the file, or update with allowErrors", if n == 1 { "" } else { "s" })))
 }
 

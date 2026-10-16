@@ -2212,7 +2212,9 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 pub fn update_links(app: &mut DesignApp, target: Value) {
     // A file that shows errors (#REF!, a broken cross-reference…) is applied only once confirmed.
     if target.get("allowErrors").and_then(Value::as_bool) != Some(true) {
-        let errors = app.session.execute("links.check", &target).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        let mut errors = app.session.execute("links.check", &target).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        // Values from other workbooks are reported after the update, not asked about.
+        errors.retain(|e| e["blocks"].as_bool() != Some(false));
         if !errors.is_empty() {
             let lines: Vec<String> =
                 errors.iter().map(|e| format!("{}: {}", e["name"].as_str().unwrap_or_default(), e["message"].as_str().unwrap_or_default())).collect();
@@ -2255,10 +2257,15 @@ pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Val
             some(count("conflicts"), "conflict (see Notes)", "conflicts (see Notes)"),
         ));
     }
-    let errors = r["errors"].as_array().map_or(0, Vec::len);
-    if errors > 0 {
-        let n = |one: &str, many: &str| format!("{errors} {}", crate::i18n::tr(&lang, if errors == 1 { one } else { many }));
-        status.push(n("error in the linked files", "errors in the linked files"));
+    let found = r["errors"].as_array().cloned().unwrap_or_default();
+    let other_books = found.iter().filter(|e| e["blocks"].as_bool() == Some(false)).count();
+    for (n, one, many) in [
+        (found.len() - other_books, "error in the linked files", "errors in the linked files"),
+        (other_books, "value from another workbook (may be out of date)", "values from other workbooks (may be out of date)"),
+    ] {
+        if n > 0 {
+            status.push(format!("{n} {}", crate::i18n::tr(&lang, if n == 1 { one } else { many })));
+        }
     }
     status.extend(warning.map(str::to_string));
     if !status.is_empty() {

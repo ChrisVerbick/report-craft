@@ -23,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Check Links",
             [],
             None,
-            "{asset? | story?} — the errors the files of modified linked text stories show, as Update would bring them in: Excel error values, formulas taking values from another workbook or never calculated, Word field errors → [{story, name, at, cell?: {row, col}, shows, formula?, kind: errorValue|otherWorkbook|notCalculated|fieldError, message}]",
+            "{asset? | story?} — the errors the files of modified linked text stories show, as Update would bring them in: Excel error values, formulas taking values from another workbook or never calculated, Word field errors → [{story, name, at, cell?: {row, col}, shows, formula?, kind: errorValue|otherWorkbook|notCalculated|fieldError, blocks: whether Update stops for it (all but otherWorkbook), message}]",
             has_doc,
             check
         ),
@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?, mode?: merge|replace, allowErrors?: bool} — reload modified links from their files (all when neither); a file that shows errors (see links.check) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, cell?}], deviations: [{file, layout, cell?}], conflicts: [{file, layout, cell?}], warnings}], errors: [as links.check]}",
+            "{asset? | story?, mode?: merge|replace, allowErrors?: bool} — reload modified links from their files (all when neither); a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, cell?}], deviations: [{file, layout, cell?}], conflicts: [{file, layout, cell?}], warnings}], errors: [as links.check]}",
             has_doc,
             update
         ),
@@ -325,7 +325,7 @@ fn problem_json(sid: StoryId, path: &str, p: &designcraft_textimport::Problem) -
         ProblemKind::FieldError => "fieldError",
     };
     let cell = p.cell.map(|(row, col)| json!({"row": row, "col": col}));
-    json!({"story": sid.0, "name": file_name(path), "at": p.at, "cell": cell, "shows": p.shows, "formula": p.formula, "kind": kind, "message": p.message()})
+    json!({"story": sid.0, "name": file_name(path), "at": p.at, "cell": cell, "shows": p.shows, "formula": p.formula, "kind": kind, "blocks": p.kind.blocks(), "message": p.message()})
 }
 
 /// The errors the files of modified linked text stories show, as an update would bring them in.
@@ -1230,6 +1230,7 @@ mod text_link_tests {
         assert_eq!((e["story"].as_u64(), e["name"].as_str(), e["at"].as_str()), (Some(sid.0), Some("prices.xlsx"), Some("B2")));
         assert_eq!((e["shows"].as_str(), e["formula"].as_str(), e["kind"].as_str()), (Some("#DIV/0!"), Some("A9/0"), Some("errorValue")));
         assert_eq!(e["cell"], json!({"row": 1, "col": 1}));
+        assert_eq!(e["blocks"], true);
 
         let refused = s.execute("links.update", &json!({"story": sid.0})).unwrap_err().to_string();
         assert!(refused.contains("#DIV/0!") && refused.contains("allowErrors"), "{refused}");
@@ -1238,6 +1239,36 @@ mod text_link_tests {
         assert_eq!(price(&s), "#DIV/0!");
         assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
         assert_eq!(r["errors"][0]["message"], "B2: #DIV/0! (formula =A9/0)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A value taken from another workbook may be out of date but is not an error: it is reported,
+    /// and the update goes ahead without `allowErrors`.
+    #[test]
+    fn values_from_other_workbooks_are_reported_without_stopping_the_update() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-other-book-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+
+        std::fs::write(
+            &path,
+            workbook_xml(
+                r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Price</t></is></c></row>
+                <row r="2"><c r="A2" t="inlineStr"><is><t>Tea</t></is></c><c r="B2"><f>[1]Prices!B4</f><v>3.75</v></c></row>"#,
+            ),
+        )
+        .unwrap();
+        let found = s.execute("links.check", &json!({"story": sid.0})).unwrap();
+        assert_eq!((found[0]["kind"].as_str(), found[0]["blocks"].as_bool()), (Some("otherWorkbook"), Some(false)), "{found}");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(story(&s, sid).tables.values().next().unwrap().cell(1, 1).unwrap().text.text, "3.75");
+        assert_eq!((r["errors"][0]["at"].as_str(), r["errors"][0]["blocks"].as_bool()), (Some("B2"), Some(false)), "{r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

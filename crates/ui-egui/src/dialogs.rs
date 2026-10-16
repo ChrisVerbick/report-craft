@@ -6604,6 +6604,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A value from another workbook is reported after the update, without asking first.
+    #[test]
+    fn update_link_reports_values_from_other_workbooks_without_asking() {
+        let dir = std::env::temp_dir().join(format!("dc-update-link-other-book-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        let book = |cell: &str| {
+            use std::io::Write;
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(
+                format!(r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Tea</t></is></c>{cell}</row></sheetData></worksheet>"#)
+                    .as_bytes(),
+            )
+            .unwrap();
+            w.finish().unwrap().into_inner()
+        };
+        std::fs::write(&path, book(r#"<c r="B1"><v>3.50</v></c>"#)).unwrap();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let r = app.session.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+
+        std::fs::write(&path, book(r#"<c r="B1"><f>[1]Prices!B4</f><v>3.75</v></c>"#)).unwrap();
+        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
+        assert!(app.ui.dialog.is_none(), "no question for a value from another workbook");
+        let doc = &app.session.doc().unwrap().doc;
+        let t = doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap();
+        assert_eq!(t.cell(0, 1).unwrap().text.text, "3.75");
+        assert!(app.ui.status.contains("1 value from another workbook"), "{}", app.ui.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn confirm_pdf_export_cancelled_save_writes_nothing() {
         use std::sync::{Arc, Mutex};
