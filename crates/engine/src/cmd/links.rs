@@ -1306,7 +1306,7 @@ mod text_link_tests {
         let sid = StoryId(r["story"].as_u64().unwrap());
         let table = *story(&s, sid).tables.keys().next().unwrap();
         s.execute("table.select", &json!({"story": sid.0, "table": table, "rows": [0, 0], "cols": [0, 0]})).unwrap();
-        s.execute("table.setCell", &json!({"fill": "Black"})).unwrap();
+        s.execute("table.setCell", &json!({"fill": "[Black]"})).unwrap();
         s.execute("table.select", &json!({"story": sid.0, "table": table, "rows": [1, 1], "cols": [0, 0]})).unwrap();
         s.execute("table.setCell", &json!({"text": "Green tea"})).unwrap();
 
@@ -1316,7 +1316,7 @@ mod text_link_tests {
         let t = st.tables.values().next().unwrap();
         let text = |r: usize, c: usize| t.cell(r, c).unwrap().text.text.clone();
         assert_eq!((text(1, 0), text(1, 1)), ("Green tea".to_string(), "3.75".to_string()));
-        assert_eq!(t.cell(0, 0).unwrap().fill, "Black");
+        assert_eq!(t.cell(0, 0).unwrap().fill, "[Black]");
         let report = &r["reports"][0];
         assert_eq!(
             only(&report["deviations"], &["file", "layout", "cell"]),
