@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             check
         ),
-        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), uses: [{id, page}]}]", has_doc, |s, _| {
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, uses: [{id, page}]}]", has_doc, |s, _| {
             let d = s.doc()?.doc.clone();
             Ok(Value::Array(list(&d, &mut s.text_link_checks)))
         }),
@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?, mode?: merge|replace, allowErrors?: bool} — reload modified links from their files (all when neither); a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, cell?}], deviations: [{file, layout, cell?}], conflicts: [{file, layout, cell?}], warnings}], errors: [as links.check]}",
+            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool} — reload modified links from their files (all when neither); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, cell?}], deviations: [{file, layout, cell?}], conflicts: [{file, layout, cell?}], warnings}], errors: [as links.check]}",
             has_doc,
             update
         ),
@@ -236,7 +236,7 @@ fn list(d: &Document, checks: &mut TextChecks) -> Vec<Value> {
     let texts = d.stories.values().filter_map(|st| {
         let l = st.file_link.as_ref()?;
         let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "uses": uses}))
+        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "lastUpdate": l.last_update, "uses": uses}))
     });
     let used = d.used_assets();
     d.assets
@@ -431,6 +431,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         Some(m) => return Err(bad("links.update", format!("unknown mode `{m}` (merge, replace)"))),
     };
     let allow_errors = p.get("allowErrors").and_then(Value::as_bool).unwrap_or(false);
+    let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
     let d = s.doc()?.doc.clone();
     let checks = &mut s.text_link_checks;
     let (only_asset, only_story) = (p.get("asset").and_then(Value::as_u64), story_param(p));
@@ -461,7 +462,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     if n == 0 {
         return Ok(json!({"updated": 0, "warnings": [], "reports": [], "errors": []}));
     }
-    s.edit(|d, _| {
+    let run = |d: &mut Document| -> Result<Value> {
         for (aid, (bytes, px)) in &fresh {
             if let Some(a) = d.assets.get_mut(aid) {
                 let a = Arc::make_mut(a);
@@ -471,20 +472,41 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let (mut warnings, mut reports, mut errors) = (Vec::new(), Vec::new(), Vec::new());
         for (sid, path, bytes, before) in &fresh_texts {
-            let problems = if merge && d.story(*sid).and_then(|st| st.file_link.as_ref()).is_some_and(|l| l.base.is_some()) {
+            let (report, problems) = if merge && d.story(*sid).and_then(|st| st.file_link.as_ref()).is_some_and(|l| l.base.is_some()) {
                 let (w, r, problems) = super::place_text::remerge(d, *sid, path, bytes, Some(*before), allow_errors)?;
                 warnings.extend(w);
-                reports.push(r);
-                problems
+                reports.push(r.clone());
+                (r, problems)
             } else {
                 let (w, problems) = reimport(d, *sid, path, bytes, *before, allow_errors)?;
                 warnings.extend(w);
-                problems
+                (json!({"story": sid.0, "replaced": true}), problems)
             };
-            errors.extend(problems.iter().map(|p| problem_json(*sid, path, p)));
+            let found: Vec<Value> = problems.iter().map(|p| problem_json(*sid, path, p)).collect();
+            if let Some(l) = d.story_mut(*sid).and_then(|st| st.file_link.as_mut()) {
+                l.last_update = Some(designcraft_doc::UpdateRecord { at: now_secs(), report, errors: found.clone() });
+            }
+            errors.extend(found);
         }
         Ok(json!({"updated": n, "warnings": warnings, "reports": reports, "errors": errors}))
-    })
+    };
+    if dry {
+        // The whole update on a copy: the document, its undo history and the links stay as they were.
+        return run(&mut (*d).clone());
+    }
+    s.edit(|d, _| run(d))
+}
+
+/// Seconds since 1970 (0 on the web, which has no clock to ask here).
+fn now_secs() -> i64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -1280,6 +1302,47 @@ mod text_link_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("file.place", &json!({"base64": b64, "name": "prices.xlsx", "rect": [72, 72, 300, 200]})).unwrap();
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w == "B2: #DIV/0! (formula =A9/0)"), "{r}");
+    }
+
+    /// A dry run returns what the update would do, with nothing changed: the story, its link, the
+    /// undo history and the file's status stay as they were.
+    #[test]
+    fn a_dry_run_reports_the_update_and_changes_nothing() {
+        let (dir, path, mut s, sid) = placed("dry-run", "Revenue grew. Costs were flat.");
+        layout_edit(&mut s, sid, "flat", "steady");
+        revise(&path, "Revenue grew in every region. Costs were flat.");
+        let doc = s.doc().unwrap().doc.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        let dry = s.execute("links.update", &json!({"story": sid.0, "dryRun": true})).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&doc, &s.doc().unwrap().doc), "the document is untouched");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo, "nothing to undo");
+        assert_eq!(text_rows(&mut s)[0]["status"], "modified");
+        assert_eq!(dry["reports"][0]["changes"][0]["after"], "Revenue grew in every region.", "{dry}");
+        let real = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(dry, real, "the dry run shows exactly what the update does");
+        assert_eq!(story(&s, sid).text, "Head\nRevenue grew in every region. Costs were steady.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each update is recorded on its link (when, its report, the errors the file showed) and the
+    /// record is saved with the document; a dry run records nothing.
+    #[test]
+    fn an_update_is_recorded_on_its_link_and_saved() {
+        let (dir, path, mut s, sid) = placed("record", "Revenue grew. Costs were flat.");
+        revise(&path, "Revenue grew in every region. Costs were flat.");
+        s.execute("links.update", &json!({"story": sid.0, "dryRun": true})).unwrap();
+        assert_eq!(text_rows(&mut s)[0]["lastUpdate"], Value::Null);
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let rec = text_rows(&mut s)[0]["lastUpdate"].clone();
+        assert!(rec["at"].as_i64().unwrap() > 0, "{rec}");
+        assert_eq!(rec["report"], r["reports"][0]);
+        assert_eq!(rec["errors"], json!([]));
+        let saved = dir.join("doc.designcraft");
+        s.execute("file.save", &json!({"path": saved.to_string_lossy()})).unwrap();
+        let mut t = Session::new();
+        t.execute("file.open", &json!({"path": saved.to_string_lossy()})).unwrap();
+        assert_eq!(text_rows(&mut t)[0]["lastUpdate"], rec);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The 0% gate: a merged story whose text differs from the file's by anything unreported is

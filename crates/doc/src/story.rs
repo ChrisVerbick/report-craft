@@ -190,6 +190,23 @@ pub struct TextFileLink {
     /// never the file itself, so a file's comments, tracked deletions and properties stay out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<Arc<Story>>,
+    /// What the last update did (the Flow panel shows it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update: Option<UpdateRecord>,
+}
+
+/// One update of a linked text file: when, and its report and errors as `links.update` returned
+/// them for the story.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRecord {
+    /// Seconds since 1970 (0: unknown, as on the web).
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub report: serde_json::Value,
+    #[serde(default)]
+    pub errors: Vec<serde_json::Value>,
 }
 
 fn is_zero_i64(v: &i64) -> bool {
