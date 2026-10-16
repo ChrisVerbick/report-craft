@@ -15,6 +15,7 @@ use std::ops::Range;
 pub use merge::{Conflict, MergeOut, Segment, is_anchor, merge_text};
 use similar::{Algorithm, DiffTag, TextDiff};
 pub use story::{StoryMerge, merge_story};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// One change from text `a` to text `b`: bytes `old` of `a` become bytes `new` of `b`. Both start
 /// and end on grapheme cluster boundaries; one of them may be empty (an insertion or a deletion).
@@ -64,6 +65,67 @@ fn offsets<'s>(tokens: impl Iterator<Item = &'s str>) -> Vec<usize> {
 /// The bytes that tokens `r` cover.
 fn span(offsets: &[usize], r: Range<usize>) -> Option<Range<usize>> {
     Some(*offsets.get(r.start)?..*offsets.get(r.end)?)
+}
+
+/// `hunks` (from `a` to `b`) widened to whole sentences of `a` and joined where they overlap: what a
+/// person reads in a report. Still exact: should the groups ever fail to rebuild `b`, the hunks
+/// come back as they were.
+pub fn sentences(a: &str, b: &str, hunks: &[Hunk]) -> Vec<Hunk> {
+    match by_sentence(a, hunks) {
+        Some(groups) if apply(a, b, &groups).as_deref() == Some(b) => groups,
+        _ => hunks.to_vec(),
+    }
+}
+
+fn by_sentence(a: &str, hunks: &[Hunk]) -> Option<Vec<Hunk>> {
+    let bounds: Vec<usize> = a.split_sentence_bound_indices().map(|(at, _)| at).chain([a.len()]).collect();
+    let mut out: Vec<Hunk> = Vec::new();
+    for h in hunks {
+        // An insertion between sentences stays where it is; anything else takes in its sentences,
+        // and the text it takes in is unchanged, the same in `b`.
+        let (start, end) = if h.old.is_empty() && bounds.binary_search(&h.old.start).is_ok() {
+            (h.old.start, h.old.end)
+        } else {
+            let start = bounds.get(bounds.partition_point(|x| *x <= h.old.start).wrapping_sub(1)).copied().unwrap_or(0);
+            (start, bounds.get(bounds.partition_point(|x| *x < h.old.end)).copied().unwrap_or(h.old.end).max(h.old.end))
+        };
+        let new_end = h.new.end.checked_add(end.checked_sub(h.old.end)?)?;
+        match out.last_mut() {
+            // Joined: the group ends where the last hunk's sentence ends, as that hunk maps it.
+            Some(last) if start < last.old.end => {
+                if end >= last.old.end {
+                    (last.old.end, last.new.end) = (end, new_end);
+                }
+            }
+            _ => out.push(Hunk { old: start..end, new: h.new.start.checked_sub(h.old.start.checked_sub(start)?)?..new_end }),
+        }
+    }
+    Some(out)
+}
+
+/// `s` with its marker characters shown as labels (`[note]`, `[footnote]`…), for a report.
+pub fn shown(s: &str) -> String {
+    use designcraft_doc::{ANCHOR_MARK, ENDNOTE_REF, FOOTNOTE_REF, INDEX_MARK, NOTE_MARK, OBJECT_MARK, TABLE_ANCHOR, XREF_MARK};
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let label = match c {
+            NOTE_MARK => "[note]",
+            FOOTNOTE_REF => "[footnote]",
+            ENDNOTE_REF => "[endnote]",
+            OBJECT_MARK => "[object]",
+            TABLE_ANCHOR => "[table]",
+            ANCHOR_MARK => "[anchor]",
+            XREF_MARK => "[cross-reference]",
+            INDEX_MARK => "[index entry]",
+            '\u{E000}'..='\u{E012}' => "[special character]",
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        out.push_str(label);
+    }
+    out
 }
 
 /// `a` rebuilt with `b`'s text in each hunk: equal to `b` exactly when the hunks cover every
@@ -118,6 +180,8 @@ mod tests {
     fn check(a: &str, b: &str) -> Result<(), TestCaseError> {
         let hunks = diff_text(a, b);
         prop_assert_eq!(apply(a, b, &hunks), Some(b.to_string()));
+        // The grouping itself, not its fallback: it must rebuild `b` exactly.
+        prop_assert_eq!(by_sentence(a, &hunks).and_then(|g| apply(a, b, &g)), Some(b.to_string()), "sentence groups stay exact");
         let (ga, gb) = (boundaries(a), boundaries(b));
         for h in &hunks {
             prop_assert!(!h.old.is_empty() || !h.new.is_empty(), "empty hunk {:?}", h);
@@ -161,6 +225,25 @@ mod tests {
         let hunks = diff_text(a, b);
         assert_eq!(hunks.len(), 1, "{hunks:?}");
         assert_eq!((hunks[0].old.len(), hunks[0].new.len()), (0, 6), "{hunks:?}");
+    }
+
+    #[test]
+    fn report_hunks_read_as_whole_sentences_and_stay_exact() {
+        let (a, b) = ("One two. Three four. Five.", "One 2. Three four. Five six.");
+        let s = sentences(a, b, &diff_text(a, b));
+        let pairs: Vec<(&str, &str)> = s.iter().map(|h| (&a[h.old.clone()], &b[h.new.clone()])).collect();
+        assert_eq!(pairs, [("One two. ", "One 2. "), ("Five.", "Five six.")]);
+        assert_eq!(apply(a, b, &s).as_deref(), Some(b));
+        // Several hunks in one sentence, the last a deletion: one group, the whole sentence.
+        let (a, b) = ("The board approved the new plan. Rest.", "The board backed the plan. Rest.");
+        let s = by_sentence(a, &diff_text(a, b)).unwrap();
+        let pairs: Vec<(&str, &str)> = s.iter().map(|h| (&a[h.old.clone()], &b[h.new.clone()])).collect();
+        assert_eq!(pairs, [("The board approved the new plan. ", "The board backed the plan. ")]);
+    }
+
+    #[test]
+    fn markers_show_as_labels() {
+        assert_eq!(shown("a\u{E010}b\u{E00A}c\u{E00E}"), "a[note]b[footnote]c[object]");
     }
 
     #[test]

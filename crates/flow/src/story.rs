@@ -67,7 +67,7 @@ pub fn merge_story(base: &Story, mine: &Story, theirs: &Story) -> Option<StoryMe
                 let layout: String = mine.text.get(c.mine.clone())?.chars().filter(|ch| !('\u{E000}'..='\u{E012}').contains(ch)).collect();
                 let id = next_note;
                 next_note = next_note.saturating_add(1);
-                Some(Arc::new(EditorialNote { id, author: "Flow".into(), text: format!("Layout had: {layout}") }))
+                Some(Arc::new(EditorialNote { id, author: "Flow".into(), text: format!("Layout had: {}", layout.trim()) }))
             }
         })
         .collect::<Option<Vec<_>>>()?;

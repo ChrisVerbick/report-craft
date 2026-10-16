@@ -6523,6 +6523,7 @@ mod tests {
         crate::panels::properties::update_links(&mut app, json!({"story": sid}));
         assert!(app.ui.dialog.is_none());
         assert_eq!(text(&app).replace(designcraft_doc::NOTE_MARK, ""), "Three");
+        assert!(app.ui.status.contains("1 conflict"), "the status bar sums the update up: {}", app.ui.status);
         let story = app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
         assert_eq!(story.editorial.iter().map(|n| n.author.as_str()).collect::<Vec<_>>(), ["Flow"]);
 

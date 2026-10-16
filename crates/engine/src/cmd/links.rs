@@ -1008,7 +1008,7 @@ mod text_link_tests {
             "Head\nFirst sentence, revised. Second sentence.",
             "the base is the file as applied"
         );
-        assert_eq!(text_rows(&mut s)[0]["edited"], false);
+        assert_eq!(text_rows(&mut s)[0]["edited"], true, "the kept layout sentence still differs from the file");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(story(&s, sid).text, "Head\nFirst sentence. Layout sentence.");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1067,6 +1067,31 @@ mod text_link_tests {
         let e = s.execute("links.update", &json!({"story": sid.0})).unwrap_err().to_string();
         assert!(e.contains("tracked changes"), "{e}");
         assert_eq!(story(&s, sid).text, "Head\nOne. Two.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The demo of 2026-10-16 as a test: the report reads in whole sentences, the conflict mark sits
+    /// at the start of its sentence with the layout's sentence in the Flow note, and the story still
+    /// counts as edited while it differs from the file.
+    #[test]
+    fn update_reports_whole_sentences_and_notes_the_layouts_sentence() {
+        let (dir, path, mut s, sid) = placed("report", "Revenue grew in every region. The board approved the new plan. Costs were flat.");
+        layout_edit(&mut s, sid, "The board approved the new plan.", "The board backed the plan.");
+        layout_edit(&mut s, sid, "Costs were flat.", "Costs were held steady.");
+        revise(&path, "Revenue grew in every region except the north. The board approved the new plan. Costs fell by two percent.");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let report = &r["reports"][0];
+        assert_eq!(report["deviations"], json!([{"file": "The board approved the new plan.", "layout": "The board backed the plan."}]));
+        assert_eq!(report["conflicts"], json!([{"file": "Costs fell by two percent.", "layout": "Costs were held steady."}]));
+        let changes = report["changes"].as_array().unwrap();
+        assert!(
+            changes.iter().any(|c| c["before"] == "Revenue grew in every region." && c["after"] == "Revenue grew in every region except the north."),
+            "{report}"
+        );
+        let st = story(&s, sid);
+        assert!(st.text.ends_with(&format!("{}Costs fell by two percent.", designcraft_doc::NOTE_MARK)), "{:?}", st.text);
+        assert_eq!(st.editorial[0].text, "Layout had: Costs were held steady.");
+        assert_eq!(text_rows(&mut s)[0]["edited"], true, "the story still differs from the file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

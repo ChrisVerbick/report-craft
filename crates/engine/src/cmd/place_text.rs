@@ -245,8 +245,10 @@ pub(crate) fn remerge(
     warnings.extend(m.warnings.iter().cloned());
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     *story = m.story;
+    // The story counts as edited while it differs from the file as applied.
     let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
-    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), ..applied });
+    let story_hash = super::links::story_hash(&theirs);
+    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, ..applied });
     Ok((warnings, report))
 }
 
@@ -258,15 +260,24 @@ pub(crate) fn verified(theirs: &Story, mine: &Story, m: &designcraft_flow::Story
         && designcraft_flow::apply(&mine.text, out, &designcraft_flow::diff_text(&mine.text, out)).as_deref() == Some(out)
 }
 
-/// What a merge did to a story: the changes to its text, the layout's edits that differ from the
-/// file, the conflicts (the file's text kept, the layout's in a Flow note) and its warnings.
+/// What a merge did to a story, in whole sentences: the changes to its text, the layout's edits
+/// that differ from the file, the conflicts (the file's text kept, the layout's in a Flow note) and
+/// its warnings. Markers show as labels; a difference that is only conflict marks is in conflicts.
 fn report(sid: StoryId, theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> Value {
     let out = &m.story.text;
-    let text = |s: &str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
+    let raw = |s: &'_ str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
+    let text = |s: &str, r: &std::ops::Range<usize>| designcraft_flow::shown(&raw(s, r)).trim().to_string();
+    let notes_only = |a: String, b: String| a.replace(designcraft_doc::NOTE_MARK, "") == b.replace(designcraft_doc::NOTE_MARK, "");
+    let changes = designcraft_flow::sentences(&mine.text, out, &designcraft_flow::diff_text(&mine.text, out));
+    let deviations = designcraft_flow::sentences(&theirs.text, out, &m.text.deviations);
     json!({
         "story": sid.0,
-        "changes": designcraft_flow::diff_text(&mine.text, out).iter().map(|h| json!({"before": text(&mine.text, &h.old), "after": text(out, &h.new)})).collect::<Vec<_>>(),
-        "deviations": m.text.deviations.iter().map(|h| json!({"file": text(&theirs.text, &h.old), "layout": text(out, &h.new)})).collect::<Vec<_>>(),
+        "changes": changes.iter().map(|h| json!({"before": text(&mine.text, &h.old), "after": text(out, &h.new)})).collect::<Vec<_>>(),
+        "deviations": deviations
+            .iter()
+            .filter(|h| !notes_only(raw(&theirs.text, &h.old), raw(out, &h.new)))
+            .map(|h| json!({"file": text(&theirs.text, &h.old), "layout": text(out, &h.new)}))
+            .collect::<Vec<_>>(),
         "conflicts": m.text.conflicts.iter().map(|c| json!({"file": text(&theirs.text, &c.theirs), "layout": text(&mine.text, &c.mine)})).collect::<Vec<_>>(),
         "warnings": m.warnings,
     })

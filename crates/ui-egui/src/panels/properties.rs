@@ -2226,11 +2226,28 @@ pub fn update_links(app: &mut DesignApp, target: Value) {
     }
 }
 
-/// Run `links.update`; its first warning goes to the status bar.
+/// Run `links.update`. The status bar sums up what merged (sentences changed, layout edits kept,
+/// conflicts) and shows the first warning.
 pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Value, String> {
     let r = app.run("links.update", target)?;
-    if let Some(w) = r["warnings"].as_array().and_then(|w| w.first()).and_then(Value::as_str) {
-        app.status(w.to_string());
+    let warning = r["warnings"].as_array().and_then(|w| w.first()).and_then(Value::as_str);
+    let reports = r["reports"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let lang = app.ui.language.clone();
+    let mut status: Vec<String> = Vec::new();
+    if !reports.is_empty() {
+        let count = |key: &str| reports.iter().map(|x| x[key].as_array().map_or(0, Vec::len)).sum::<usize>();
+        let some = |n: usize, one: &str, many: &str| format!("{n} {}", crate::i18n::tr(&lang, if n == 1 { one } else { many }));
+        status.push(format!(
+            "{}: {}, {}, {}",
+            crate::i18n::tr(&lang, "Updated"),
+            some(count("changes"), "change", "changes"),
+            some(count("deviations"), "layout edit kept", "layout edits kept"),
+            some(count("conflicts"), "conflict (see Notes)", "conflicts (see Notes)"),
+        ));
+    }
+    status.extend(warning.map(str::to_string));
+    if !status.is_empty() {
+        app.status(status.join(" · "));
     }
     Ok(r)
 }

@@ -100,22 +100,46 @@ pub fn merge_text(base: &str, mine: &str, theirs: &str) -> Option<MergeOut> {
             }
         }
 
+        // The chunk on each side, from the side's position at its start to past its last hunk in it.
+        let sides = |chunk: &Range<usize>, ti: usize, mi: usize| -> Option<(Range<usize>, Range<usize>)> {
+            let n = chunk.start.checked_sub(done)?;
+            let (ts, ms) = (tp.checked_add(n)?, mp.checked_add(n)?);
+            let end = |hunks: &[Hunk], first: usize, next: usize, at: usize| match next.checked_sub(1).filter(|last| *last >= first) {
+                Some(last) => hunks.get(last).and_then(|h| h.new.end.checked_add(chunk.end.checked_sub(h.old.end)?)),
+                None => at.checked_add(chunk.len()),
+            };
+            Some((ts..end(&t, t0, ti, ts)?, ms..end(&m, m0, mi, ms)?))
+        };
+        // Both sides changed the same sentences differently: the conflict takes in those sentences
+        // whole, so its mark goes at their start and the Flow note holds the layout's sentences.
+        if ti > t0 && mi > m0 && m.get(m0..mi)?.iter().any(|h| !anchors_only(mine, h)) {
+            let (tr, mr) = sides(&chunk, ti, mi)?;
+            if let Some(claim) = join(claim_t.clone(), claim_m.as_ref()).filter(|_| theirs.get(tr) != mine.get(mr)) {
+                chunk = chunk.start.min(claim.start).max(done)..chunk.end.max(claim.end);
+                // Take in what the wider chunk now covers (an anchor the layout added there).
+                loop {
+                    if let Some(h) = t.get(ti).filter(|h| overlaps(&chunk, &h.old)) {
+                        chunk.end = chunk.end.max(h.old.end);
+                        ti += 1;
+                    } else if let Some(h) = m.get(mi).filter(|h| overlaps(&chunk, &h.old)) {
+                        chunk.end = chunk.end.max(h.old.end);
+                        mi += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        let (tr, mr) = sides(&chunk, ti, mi)?;
+
         // The stretch before the chunk is unchanged on both sides.
         let n = chunk.start.checked_sub(done)?;
-        let (tr, mr) = (tp..tp.checked_add(n)?, mp..mp.checked_add(n)?);
-        let same = theirs.get(tr.clone())?;
-        if mine.get(mr.clone())? != same {
+        let (bt, bm) = (tr.start.checked_sub(n)?..tr.start, mr.start.checked_sub(n)?..mr.start);
+        let same = theirs.get(bt.clone())?;
+        if mine.get(bm.clone())? != same {
             return None;
         }
-        out.push(same, Some(done..chunk.start), Some(mr.clone()), Some(tr.clone()));
-
-        // The chunk on each side runs from the side's position to past its last hunk in the chunk.
-        let end = |hunks: &[Hunk], first: usize, next: usize, at: usize| match next.checked_sub(1).filter(|last| *last >= first) {
-            Some(last) => hunks.get(last).and_then(|h| h.new.end.checked_add(chunk.end.checked_sub(h.old.end)?)),
-            None => at.checked_add(chunk.len()),
-        };
-        let tr = tr.end..end(&t, t0, ti, tr.end)?;
-        let mr = mr.end..end(&m, m0, mi, mr.end)?;
+        out.push(same, Some(done..chunk.start), Some(bm), Some(bt));
         let (ts, ms) = (theirs.get(tr.clone())?, mine.get(mr.clone())?);
         match (ti > t0, mi > m0) {
             (true, false) => {
@@ -278,6 +302,16 @@ mod tests {
         assert_eq!(m.conflicts.len(), 1);
     }
 
+    /// A conflict covers its sentences whole: the mark goes at their start, and the layout's
+    /// version for the Flow note is the whole sentence.
+    #[test]
+    fn a_conflict_covers_whole_sentences() {
+        let mine = "First part. Costs were held steady. Rest.";
+        let m = merged("First part. Costs were flat. Rest.", mine, "First part. Costs fell by two percent. Rest.");
+        assert_eq!(m.text, format!("First part. {}Costs fell by two percent. Rest.", note()));
+        assert_eq!(&mine[m.conflicts[0].mine.clone()], "Costs were held steady. ");
+    }
+
     #[test]
     fn the_same_change_on_both_sides_is_no_conflict() {
         let m = merged("teh cat", "the cat", "the cat");
@@ -287,21 +321,21 @@ mod tests {
     #[test]
     fn inserts_at_the_same_spot_conflict_and_the_file_wins() {
         let m = merged("ab", "aXb", "aYb");
-        assert_eq!(m.text, format!("a{}Yb", note()));
-        assert_eq!(m.conflicts, vec![Conflict { at: 1, mine: 1..2, theirs: 1..2 }]);
+        assert_eq!(m.text, format!("{}aYb", note()));
+        assert_eq!(m.conflicts, vec![Conflict { at: 0, mine: 0..3, theirs: 0..3 }]);
     }
 
     #[test]
     fn an_edit_inside_text_the_file_deleted_conflicts() {
         let m = merged("abcdef", "abcXdef", "af");
-        assert_eq!(m.text, format!("a{}f", note()));
+        assert_eq!(m.text, format!("{}af", note()));
         assert_eq!(m.conflicts.len(), 1);
     }
 
     #[test]
     fn both_replacing_one_span_conflicts() {
         let m = merged("the cat sat", "the cow sat", "the dog sat");
-        assert_eq!(m.text, format!("the {}dog sat", note()));
+        assert_eq!(m.text, format!("{}the dog sat", note()));
         assert_eq!(m.conflicts.len(), 1);
     }
 
