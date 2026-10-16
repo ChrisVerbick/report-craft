@@ -1,4 +1,4 @@
-//! Flow (Window › Panels › Flow; plan architecture §2b): the linked Word, Excel and text files, a
+//! Flow (Window › Editorial › Flow): the linked Word, Excel and text files, a
 //! review of what updating one would change (a dry run of `links.update`), and what its last
 //! update did.
 

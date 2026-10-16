@@ -83,7 +83,7 @@ pub struct Tokens {
     /// Measurement labels on the canvas (smart dimensions, gaps).
     pub measure_bg: Color32,
     pub measure_text: Color32,
-    /// Flow (plan architecture §2b): who changed what. The file's changes, the layout's edits it
+    /// Flow: who changed what. The file's changes, the layout's edits it
     /// keeps (the note-anchor amber: a conflict's losing layout text goes into a note), errors the
     /// file shows (`flow_error_fill` behind a white "!"), and the 0% check's tick.
     pub flow_file: Color32,
