@@ -166,17 +166,19 @@ fn text_link(
     }
 }
 
-/// Update Link of a linked text file: `bytes` (read from `path`) imported again into the story
-/// with the import options it was placed with, keeping its frames. Returns the import's warnings.
-pub(crate) fn reimport(
+/// The story's link, or why there is none.
+fn linked(d: &Document, sid: StoryId) -> Result<TextFileLink> {
+    d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))
+}
+
+/// The linked file imported again with the import options it was placed with, and its styles
+/// added to the document as on placing: the import, and the style map and policy to record.
+fn import_again(
     d: &mut Document,
-    sid: StoryId,
+    link: &TextFileLink,
     path: &str,
     bytes: &[u8],
-    before: Option<designcraft_doc::Fingerprint>,
-) -> Result<Vec<String>> {
-    let link =
-        d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))?;
+) -> Result<(designcraft_textimport::Imported, std::collections::HashMap<String, String>, Conflict)> {
     let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
     let mut imp = designcraft_textimport::import(&name, bytes).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
     if link.remove_styles {
@@ -186,14 +188,88 @@ pub(crate) fn reimport(
     }
     let conflict = Conflict::parse(&link.style_conflicts)?;
     // A mapping to a style the document no longer has is dropped: that style is imported again.
-    let map: std::collections::HashMap<String, String> =
-        link.style_map.into_iter().filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some()).collect();
+    let map: std::collections::HashMap<String, String> = link
+        .style_map
+        .iter()
+        .filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some())
+        .map(|(from, to)| (from.clone(), to.clone()))
+        .collect();
     let map = map_styles(d, &mut imp, &map, conflict);
     add_styles(d, &imp, conflict);
+    Ok((imp, map, conflict))
+}
+
+/// Update Link of a linked text file: `bytes` (read from `path`) imported again into the story
+/// with the import options it was placed with, keeping its frames. Returns the import's warnings.
+pub(crate) fn reimport(
+    d: &mut Document,
+    sid: StoryId,
+    path: &str,
+    bytes: &[u8],
+    before: Option<designcraft_doc::Fingerprint>,
+) -> Result<Vec<String>> {
+    let link = linked(d, sid)?;
+    let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &imp.story);
     story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
     Ok(imp.warnings)
+}
+
+/// Update Link by merging (see [`designcraft_flow::merge_story`]): the file's changes come into the
+/// story, the layout's own edits survive and are reported, and where both changed a sentence the
+/// file's text wins and a Flow note keeps the layout's. Refused, with nothing changed, for text with
+/// tracked changes or a merge the 0% check can't verify. Returns the warnings and the report.
+pub(crate) fn remerge(
+    d: &mut Document,
+    sid: StoryId,
+    path: &str,
+    bytes: &[u8],
+    before: Option<designcraft_doc::Fingerprint>,
+) -> Result<(Vec<String>, Value)> {
+    let link = linked(d, sid)?;
+    let base = link.base.clone().ok_or_else(|| bad("links.update", format!("story {} has nothing to merge with", sid.0)))?;
+    let mine = d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.clone();
+    if mine.runs().any(|(_, f)| matches!(f.over.change, Some(designcraft_doc::ChangeMark::Inserted | designcraft_doc::ChangeMark::Deleted))) {
+        return Err(bad("links.update", format!("story {}: accept or reject its tracked changes before updating it", sid.0)));
+    }
+    let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    // The file as a plain update would leave the story: what this merge and the next compare with.
+    let mut theirs = Story::new(sid);
+    fill(&mut theirs, &imp.story);
+    let m = designcraft_flow::merge_story(&base, &mine, &theirs)
+        .filter(|m| verified(&theirs, &mine, m))
+        .ok_or_else(|| bad("links.update", format!("story {}: the merge couldn't be verified, so nothing was changed", sid.0)))?;
+    let report = report(sid, &theirs, &mine, &m);
+    let mut warnings = imp.warnings;
+    warnings.extend(m.warnings.iter().cloned());
+    let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    *story = m.story;
+    let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
+    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), ..applied });
+    Ok((warnings, report))
+}
+
+/// The 0% check run before a merge changes the document: the merged text differs from the file's
+/// only by the reported deviations, and the reported changes turn the layout's text into it.
+pub(crate) fn verified(theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> bool {
+    let out = m.story.text.as_str();
+    designcraft_flow::apply(&theirs.text, out, &m.text.deviations).as_deref() == Some(out)
+        && designcraft_flow::apply(&mine.text, out, &designcraft_flow::diff_text(&mine.text, out)).as_deref() == Some(out)
+}
+
+/// What a merge did to a story: the changes to its text, the layout's edits that differ from the
+/// file, the conflicts (the file's text kept, the layout's in a Flow note) and its warnings.
+fn report(sid: StoryId, theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> Value {
+    let out = &m.story.text;
+    let text = |s: &str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
+    json!({
+        "story": sid.0,
+        "changes": designcraft_flow::diff_text(&mine.text, out).iter().map(|h| json!({"before": text(&mine.text, &h.old), "after": text(out, &h.new)})).collect::<Vec<_>>(),
+        "deviations": m.text.deviations.iter().map(|h| json!({"file": text(&theirs.text, &h.old), "layout": text(out, &h.new)})).collect::<Vec<_>>(),
+        "conflicts": m.text.conflicts.iter().map(|c| json!({"file": text(&theirs.text, &c.theirs), "layout": text(&mine.text, &c.mine)})).collect::<Vec<_>>(),
+        "warnings": m.warnings,
+    })
 }
 
 /// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?

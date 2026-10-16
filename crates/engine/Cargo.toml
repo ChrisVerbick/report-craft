@@ -21,6 +21,7 @@ designcraft-format = { workspace = true }
 designcraft-epub = { workspace = true }
 designcraft-pptx = { workspace = true }
 designcraft-textimport = { workspace = true }
+designcraft-flow = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }

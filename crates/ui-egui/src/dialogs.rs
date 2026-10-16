@@ -6516,21 +6516,40 @@ mod tests {
         assert!(app.ui.dialog.is_none());
         assert_eq!(text(&app), "Two");
 
-        // Edited in the layout: asks first; Cancel changes nothing.
+        // Edited in the layout, but the link merges: nothing to ask. Both changed the sentence,
+        // so the file's text wins and a Flow note keeps the layout's.
         app.session.execute("story.setText", &json!({"story": sid, "text": "Mine"})).unwrap();
         std::fs::write(&path, "Three").unwrap();
+        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(text(&app).replace(designcraft_doc::NOTE_MARK, ""), "Three");
+        let story = app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+        assert_eq!(story.editorial.iter().map(|n| n.author.as_str()).collect::<Vec<_>>(), ["Flow"]);
+
+        // A link that replaces (placed before merging existed), edited in the layout: asks first;
+        // Cancel changes nothing.
+        app.session
+            .edit(|d, _| {
+                if let Some(l) = d.story_mut(designcraft_doc::StoryId(sid)).and_then(|st| st.file_link.as_mut()) {
+                    l.base = None;
+                }
+                Ok(())
+            })
+            .unwrap();
+        app.session.execute("story.setText", &json!({"story": sid, "text": "Mine"})).unwrap();
+        std::fs::write(&path, "Four").unwrap();
         crate::panels::properties::update_links(&mut app, json!({"story": sid}));
         let d = app.ui.dialog.as_ref().unwrap();
         assert_eq!((d.id.as_str(), d.s("files").as_str()), ("updateLink", "note.txt"));
         app.ui.dialog = None;
         assert_eq!(text(&app), "Mine");
 
-        // Window › Links › Update Link (all links) asks too; confirming updates.
+        // Window › Links › Update Link (all links) asks too; confirming replaces the edits.
         crate::menus::activate(&mut app, "links.update", &Value::Null);
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("updateLink"));
         confirm(&mut app).unwrap();
         assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app), "Three");
+        assert_eq!(text(&app), "Four");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

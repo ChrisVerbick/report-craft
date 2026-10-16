@@ -2167,7 +2167,8 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", target.clone());
         }
-        let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
+        // A story that merges keeps its layout edits: no warning then.
+        let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true) && r["merges"] != true);
         let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
         let update = if edited {
             update.on_hover_ui(|ui| {
@@ -2207,14 +2208,14 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
 /// first when a linked text story edited in the layout would lose those edits, as InDesign's
-/// Links panel does. The `links.update` command itself doesn't ask (as in InDesign scripting).
+/// Links panel does (a story that merges keeps them). The `links.update` command itself doesn't ask (as in InDesign scripting).
 pub fn update_links(app: &mut DesignApp, target: Value) {
     let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let one = target.get("story").and_then(Value::as_u64);
     let all = one.is_none() && target.get("asset").is_none();
     let edited: Vec<&str> = rows
         .iter()
-        .filter(|r| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true && r["status"] == "modified")
+        .filter(|r| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true && r["merges"] != true && r["status"] == "modified")
         .filter_map(|r| r["name"].as_str())
         .collect();
     if edited.is_empty() {

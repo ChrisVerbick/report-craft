@@ -991,6 +991,7 @@ dependencies = [
  "designcraft-compose",
  "designcraft-doc",
  "designcraft-epub",
+ "designcraft-flow",
  "designcraft-fonts",
  "designcraft-format",
  "designcraft-geom",

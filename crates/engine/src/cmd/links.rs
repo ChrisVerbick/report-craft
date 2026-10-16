@@ -18,7 +18,7 @@ use crate::{EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), uses: [{id, page}]}]", has_doc, |s, _| {
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), uses: [{id, page}]}]", has_doc, |s, _| {
             let d = s.doc()?.doc.clone();
             Ok(Value::Array(list(&d, &mut s.text_link_checks)))
         }),
@@ -45,7 +45,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?} — reload modified links from their files (all when neither); a linked text file is imported again into its story with the import options it was placed with, replacing edits made in the layout → {updated, warnings}",
+            "{asset? | story?, mode?: merge|replace} — reload modified links from their files (all when neither). A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after}], deviations: [{file, layout}], conflicts: [{file, layout}], warnings}]}",
             has_doc,
             update
         ),
@@ -227,7 +227,7 @@ fn list(d: &Document, checks: &mut TextChecks) -> Vec<Value> {
     let texts = d.stories.values().filter_map(|st| {
         let l = st.file_link.as_ref()?;
         let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "uses": uses}))
+        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "uses": uses}))
     });
     let used = d.used_assets();
     d.assets
@@ -376,6 +376,11 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn update(s: &mut Session, p: &Value) -> Result<Value> {
+    let merge = match p.get("mode").and_then(Value::as_str) {
+        None | Some("merge") => true,
+        Some("replace") => false,
+        Some(m) => return Err(bad("links.update", format!("unknown mode `{m}` (merge, replace)"))),
+    };
     let d = s.doc()?.doc.clone();
     let checks = &mut s.text_link_checks;
     let (only_asset, only_story) = (p.get("asset").and_then(Value::as_u64), story_param(p));
@@ -404,7 +409,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let n = fresh.len() + fresh_texts.len();
     if n == 0 {
-        return Ok(json!({"updated": 0}));
+        return Ok(json!({"updated": 0, "warnings": [], "reports": []}));
     }
     s.edit(|d, _| {
         for (aid, (bytes, px)) in &fresh {
@@ -414,11 +419,17 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
                 a.pixels = Some(*px);
             }
         }
-        let mut warnings = Vec::new();
+        let (mut warnings, mut reports) = (Vec::new(), Vec::new());
         for (sid, path, bytes, before) in &fresh_texts {
-            warnings.extend(reimport(d, *sid, path, bytes, *before)?);
+            if merge && d.story(*sid).and_then(|st| st.file_link.as_ref()).is_some_and(|l| l.base.is_some()) {
+                let (w, r) = super::place_text::remerge(d, *sid, path, bytes, Some(*before))?;
+                warnings.extend(w);
+                reports.push(r);
+            } else {
+                warnings.extend(reimport(d, *sid, path, bytes, *before)?);
+            }
         }
-        Ok(json!({"updated": n, "warnings": warnings}))
+        Ok(json!({"updated": n, "warnings": warnings, "reports": reports}))
     })
 }
 
@@ -755,11 +766,12 @@ mod text_link_tests {
         assert!(s.doc().unwrap().doc.styles.para("Title").is_none(), "mapped styles aren't imported");
         assert_eq!(text_rows(&mut s)[0]["status"], "ok");
 
-        // An edit in the layout, then the file changes again: Update replaces the edit and warns.
+        // An edit in the layout, then the file changes again: Update in replace mode replaces the
+        // edit and warns (merging, the default, keeps it: see the merge tests below).
         s.execute("story.setText", &json!({"story": sid.0, "text": "Fixed in layout"})).unwrap();
         assert_eq!(text_rows(&mut s)[0]["edited"], true);
         std::fs::write(&path, docx("<w:r><w:t>Third draft.</w:t></w:r>")).unwrap();
-        let r = s.execute("links.update", &json!({})).unwrap();
+        let r = s.execute("links.update", &json!({"mode": "replace"})).unwrap();
         assert_eq!(r["updated"], 1);
         let w = r["warnings"][0].as_str().unwrap();
         assert!(w.contains("chapter.docx") && w.contains("replaced"), "{w}");
@@ -947,6 +959,127 @@ mod text_link_tests {
     fn text_links_saved_without_a_base_load_without_one() {
         let l: designcraft_doc::TextFileLink = serde_json::from_str(r#"{"path": "a.docx", "size": 1, "hash": "00"}"#).unwrap();
         assert_eq!(l.base, None);
+    }
+
+    /// A temporary folder with a linked Word file of `body`, placed into a new document.
+    fn placed(name: &str, body: &str) -> (std::path::PathBuf, std::path::PathBuf, Session, StoryId) {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.docx");
+        std::fs::write(&path, docx(&format!("<w:r><w:t>{body}</w:t></w:r>"))).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 400, 300], "link": true})).unwrap();
+        (dir, path, s, StoryId(r["story"].as_u64().unwrap()))
+    }
+
+    /// An edit made in the layout: `from` replaced by `to` in the story.
+    fn layout_edit(s: &mut Session, sid: StoryId, from: &str, to: &str) {
+        s.edit(|d, _| {
+            let st = d.story_mut(sid).unwrap();
+            let at = st.text.find(from).unwrap();
+            st.replace(at..at + from.len(), to);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn revise(path: &std::path::Path, body: &str) {
+        std::fs::write(path, docx(&format!("<w:r><w:t>{body}</w:t></w:r>"))).unwrap();
+    }
+
+    /// With a base, Update merges: the file's changes come in, the layout's own edits survive and
+    /// are reported, and undo brings back the story as it was.
+    #[test]
+    fn update_merges_the_files_changes_with_the_layouts_edits() {
+        let (dir, path, mut s, sid) = placed("merge", "First sentence. Second sentence.");
+        assert_eq!(text_rows(&mut s)[0]["merges"], true);
+        layout_edit(&mut s, sid, "Second sentence.", "Layout sentence.");
+        revise(&path, "First sentence, revised. Second sentence.");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(story(&s, sid).text, "Head\nFirst sentence, revised. Layout sentence.");
+        assert!(r["warnings"].as_array().unwrap().iter().all(|w| !w.as_str().unwrap().contains("replaced")), "{r}");
+        let report = &r["reports"][0];
+        assert_eq!(report["story"], sid.0);
+        assert!(!report["deviations"].as_array().unwrap().is_empty() && report["conflicts"] == json!([]), "{report}");
+        assert_eq!(
+            story(&s, sid).file_link.unwrap().base.unwrap().text,
+            "Head\nFirst sentence, revised. Second sentence.",
+            "the base is the file as applied"
+        );
+        assert_eq!(text_rows(&mut s)[0]["edited"], false);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(story(&s, sid).text, "Head\nFirst sentence. Layout sentence.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where both rewrote a sentence, the file's text wins and the layout's goes in a Flow note.
+    #[test]
+    fn update_notes_the_layouts_version_where_both_changed_a_sentence() {
+        let (dir, path, mut s, sid) = placed("conflict", "First sentence. Second sentence.");
+        layout_edit(&mut s, sid, "Second sentence.", "Layout version.");
+        revise(&path, "First sentence. File version.");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let st = story(&s, sid);
+        assert_eq!(st.text.replace(designcraft_doc::NOTE_MARK, ""), "Head\nFirst sentence. File version.");
+        assert_eq!(st.editorial.len(), 1);
+        assert_eq!(st.editorial[0].author, "Flow");
+        assert!(st.editorial[0].text.starts_with("Layout had: "), "{:?}", st.editorial[0]);
+        assert_eq!(r["reports"][0]["conflicts"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `mode: "replace"` imports the file again, as do links placed before merging existed.
+    #[test]
+    fn replace_mode_and_links_without_a_base_replace_the_layouts_edits() {
+        let (dir, path, mut s, sid) = placed("replace", "One. Two.");
+        layout_edit(&mut s, sid, "Two.", "Layout.");
+        revise(&path, "One, revised. Two.");
+        let r = s.execute("links.update", &json!({"story": sid.0, "mode": "replace"})).unwrap();
+        assert_eq!(story(&s, sid).text, "Head\nOne, revised. Two.");
+        assert!(r["warnings"][0].as_str().unwrap().contains("replaced"), "{r}");
+        layout_edit(&mut s, sid, "Two.", "Layout again.");
+        s.edit(|d, _| {
+            d.story_mut(sid).unwrap().file_link.as_mut().unwrap().base = None;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(text_rows(&mut s)[0]["merges"], false);
+        revise(&path, "One, revised twice. Two.");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(story(&s, sid).text, "Head\nOne, revised twice. Two.");
+        assert!(r["warnings"][0].as_str().unwrap().contains("replaced"), "{r}");
+        assert!(s.execute("links.update", &json!({"mode": "guess"})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Text with tracked changes isn't one text yet: the update is refused and nothing changes.
+    #[test]
+    fn a_story_with_tracked_changes_is_not_merged() {
+        let (dir, path, mut s, sid) = placed("tracked", "One. Two.");
+        s.edit(|d, _| {
+            d.story_mut(sid).unwrap().format_chars(5..8, |f| f.over.change = Some(designcraft_doc::ChangeMark::Inserted));
+            Ok(())
+        })
+        .unwrap();
+        revise(&path, "One, revised. Two.");
+        let e = s.execute("links.update", &json!({"story": sid.0})).unwrap_err().to_string();
+        assert!(e.contains("tracked changes"), "{e}");
+        assert_eq!(story(&s, sid).text, "Head\nOne. Two.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The 0% gate: a merged story whose text differs from the file's by anything unreported is
+    /// refused.
+    #[test]
+    fn the_exactness_gate_refuses_an_unreported_difference() {
+        let story = |t: &str| designcraft_doc::Story::with_text(StoryId(1), t, designcraft_doc::ParaFormat::default());
+        let (base, mine, theirs) = (story("One. Two."), story("One. Layout."), story("One, revised. Two."));
+        let mut m = designcraft_flow::merge_story(&base, &mine, &theirs).unwrap();
+        assert!(super::super::place_text::verified(&theirs, &mine, &m));
+        m.story.text.push('!');
+        assert!(!super::super::place_text::verified(&theirs, &mine, &m));
     }
 }
 
