@@ -304,6 +304,9 @@ pub struct UiState {
     /// panel or a menu).
     #[serde(skip)]
     pub flow_request: Option<u64>,
+    /// Flow: the line hovered in the panel, outlined on the page this frame.
+    #[serde(skip)]
+    pub flow_hover: Option<panels::flow::Hover>,
     #[serde(skip)]
     pub palette: Option<String>,
     #[serde(skip)]
@@ -394,6 +397,7 @@ impl Default for UiState {
             status: String::new(),
             dialog: None,
             flow_request: None,
+            flow_hover: None,
             palette: None,
             flyout: None,
             last_color: None,

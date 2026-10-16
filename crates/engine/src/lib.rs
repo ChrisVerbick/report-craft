@@ -216,6 +216,8 @@ pub struct Prefs {
     /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
     /// linked (Links panel) unless `file.place` says otherwise.
     pub link_text_files: bool,
+    /// Flow: highlight on screen what the last update of a linked text file brought in.
+    pub flow_highlights: bool,
 }
 
 /// A starter autocorrect list (common English typing slips).
@@ -265,6 +267,7 @@ impl Default for Prefs {
             show_note_anchors: true,
             recovery_minutes: 0.5,
             link_text_files: false,
+            flow_highlights: true,
         }
     }
 }

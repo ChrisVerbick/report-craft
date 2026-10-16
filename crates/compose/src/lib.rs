@@ -67,6 +67,8 @@ pub struct RunStyle {
     pub condition: Option<String>,
     /// Added while tracking changes (marked on screen).
     pub inserted: bool,
+    /// Flow's highlight of what an update brought in (screen only).
+    pub flow: designcraft_doc::FlowMark,
     /// XML element the text is tagged with (tag markers on screen).
     pub xml_tag: Option<String>,
     /// Ruby over the run, and kenten (emphasis dots).

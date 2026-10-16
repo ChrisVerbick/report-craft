@@ -312,11 +312,13 @@ impl Story {
         self.insert_with_raw(pos, text, fmt);
     }
 
-    /// [`Story::insert_with`] without the table fix-up.
-    pub(crate) fn insert_with_raw(&mut self, pos: usize, text: &str, fmt: CharFormat) {
+    /// [`Story::insert_with`] without the table fix-up. New text never carries Flow's highlight
+    /// mark: it isn't what the linked file brought in.
+    pub(crate) fn insert_with_raw(&mut self, pos: usize, text: &str, mut fmt: CharFormat) {
         if text.is_empty() {
             return;
         }
+        fmt.over.flow = None;
         let pos = floor_char_boundary(&self.text, pos);
         let refs = text.matches(crate::notes::FOOTNOTE_REF).count();
         if refs > 0 {

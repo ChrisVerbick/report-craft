@@ -216,6 +216,7 @@ pub(crate) fn reimport(
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &imp.story);
     story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
+    mark(story, &Value::Null, &imp.problems);
     Ok((imp.warnings, imp.problems))
 }
 
@@ -246,7 +247,10 @@ pub(crate) fn remerge(
 ) -> Result<(Vec<String>, Value, Vec<designcraft_textimport::Problem>)> {
     let link = linked(d, sid)?;
     let base = link.base.clone().ok_or_else(|| bad("links.update", format!("story {} has nothing to merge with", sid.0)))?;
-    let mine = d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.clone();
+    // The last update's highlights are the panel's, not the layout's formatting: off for the merge,
+    // and this update's marks go on afterwards.
+    let mut mine = d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.clone();
+    unmark(&mut mine, false);
     if mine.runs().any(|(_, f)| matches!(f.over.change, Some(designcraft_doc::ChangeMark::Inserted | designcraft_doc::ChangeMark::Deleted))) {
         return Err(bad("links.update", format!("story {}: accept or reject its tracked changes before updating it", sid.0)));
     }
@@ -267,8 +271,79 @@ pub(crate) fn remerge(
     let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
     let story_hash = super::links::story_hash(&theirs);
     story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, ..applied });
+    mark(story, &report, &imp.problems);
     place_report(d, sid, &mut report);
     Ok((warnings, report, imp.problems))
+}
+
+/// Take Flow's highlight marks off a story and its table cells; errors keep theirs with
+/// `keep_errors` (Clear Highlights: they stay until fixed).
+pub(crate) fn unmark(st: &mut Story, keep_errors: bool) {
+    let clear = |f: &mut designcraft_doc::CharFormat| {
+        if !(keep_errors && f.over.flow == Some(designcraft_doc::FlowMark::Error)) {
+            f.over.flow = None;
+        }
+    };
+    if st.runs().any(|(_, f)| f.over.flow.is_some()) {
+        let n = st.len();
+        st.format_chars(0..n, clear);
+    }
+    for t in st.tables.values_mut().filter(|t| t.cells.iter().any(|c| c.text.runs().any(|(_, f)| f.over.flow.is_some()))) {
+        for c in std::sync::Arc::make_mut(t).cells.iter_mut() {
+            let n = c.text.len();
+            c.text.format_chars(0..n, clear);
+        }
+    }
+}
+
+/// Mark what an update brought in, for the page's highlights: each reported change, kept edit and
+/// conflict (the file's text) on its stretch of the story or cell, and what shows an error — a
+/// cell, or a Word field error's text.
+fn mark(st: &mut Story, report: &Value, problems: &[designcraft_textimport::Problem]) {
+    use designcraft_doc::FlowMark;
+    let range = |e: &Value| -> Option<std::ops::Range<usize>> {
+        let a = usize::try_from(e["at"]["start"].as_u64()?).ok()?;
+        let b = usize::try_from(e["at"]["end"].as_u64()?).ok()?;
+        Some(a..b)
+    };
+    for (key, flow) in [("changes", FlowMark::File), ("deviations", FlowMark::Kept), ("conflicts", FlowMark::Conflict)] {
+        for e in report[key].as_array().into_iter().flatten() {
+            let Some(r) = range(e) else { continue };
+            let set = |f: &mut designcraft_doc::CharFormat| f.over.flow = Some(flow);
+            match e.get("cell").filter(|c| c.is_object()) {
+                Some(c) => {
+                    let (row, col) =
+                        (c["row"].as_u64().and_then(|v| usize::try_from(v).ok()), c["col"].as_u64().and_then(|v| usize::try_from(v).ok()));
+                    if let (Some(t), Some(row), Some(col)) =
+                        (c["table"].as_u64().and_then(|t| st.tables.get_mut(&t)).map(std::sync::Arc::make_mut), row, col)
+                        && let Some(cell) = t.cell_mut(row, col)
+                    {
+                        cell.text.format_chars(r, set);
+                    }
+                }
+                None => st.format_chars(r, set),
+            }
+        }
+    }
+    for p in problems {
+        let flow = if p.kind.blocks() { FlowMark::Error } else { FlowMark::Notice };
+        let set = |f: &mut designcraft_doc::CharFormat| f.over.flow = Some(flow);
+        match p.cell {
+            Some((row, col)) => {
+                if let Some(cell) = st.tables.values_mut().next().map(std::sync::Arc::make_mut).and_then(|t| t.cell_mut(row, col)) {
+                    let n = cell.text.len();
+                    cell.text.format_chars(0..n, set);
+                }
+            }
+            None if !p.shows.is_empty() => {
+                let found: Vec<usize> = st.text.match_indices(p.shows.as_str()).map(|(i, _)| i).collect();
+                for at in found {
+                    st.format_chars(at..at + p.shows.len(), set);
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 /// The 0% check run before a merge changes the document: the merged text differs from the file's

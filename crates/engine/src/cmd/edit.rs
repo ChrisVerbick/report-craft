@@ -37,7 +37,9 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let st = s.doc()?;
     let Some(t) = st.selection.text.filter(|t| !t.is_caret()) else { return Ok(None) };
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
-    let slice = story.extract(t.range());
+    let mut slice = story.extract(t.range());
+    // Flow's highlights stay with the text the file brought in, not with copies of it.
+    super::place_text::unmark(&mut slice, false);
     let text = plain(&slice);
     s.text_clipboard = Some((Arc::new(slice), text.clone()));
     Ok(Some(text))

@@ -376,6 +376,22 @@ pub fn language_subtag(tag: &str) -> &str {
     tag.split('-').next().unwrap_or(tag)
 }
 
+/// Flow: what the last update of a linked text file did to this text, highlighted on screen and
+/// never printed. The file's change, an edit made in the layout that the update kept, the file's
+/// text that won where both changed it, an error the file shows, a value from another workbook.
+/// Text typed or pasted in carries no mark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FlowMark {
+    #[default]
+    None,
+    File,
+    Kept,
+    Conflict,
+    Error,
+    Notice,
+}
+
 /// A tracked change on text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -872,6 +888,8 @@ attr_set! {
         conditions: Vec<String> = Vec::new(),
         /// Track Changes: text added or deleted while tracking (deleted text isn't laid out).
         change: ChangeMark = ChangeMark::None,
+        /// Flow's highlight of what the last update of the story's linked file brought in.
+        flow: FlowMark = FlowMark::None,
         /// XML: the element this text is tagged with (Tags panel, inline).
         xml_tag: String = String::new(),
     }

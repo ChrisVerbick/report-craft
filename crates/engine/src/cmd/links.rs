@@ -59,6 +59,15 @@ pub fn specs() -> Vec<CommandSpec> {
             update
         ),
         cmd!(
+            "links.clearHighlights",
+            "Clear Flow Highlights",
+            [],
+            None,
+            "{story?} — take Flow's highlights of the last update off a linked text story (all when none); errors stay highlighted until they are fixed → {cleared}",
+            has_doc,
+            clear_highlights
+        ),
+        cmd!(
             "links.embed",
             "Embed Link",
             ["Window", "Links"],
@@ -112,7 +121,17 @@ pub(crate) fn fnv_hex(bytes: &[u8]) -> String {
 
 /// Fingerprint of a story's text and formatting (edits made in the layout change it).
 pub(crate) fn story_hash(st: &Story) -> String {
-    fnv_hex(serde_json::to_string(&(&st.text, &st.paras, &st.chars)).unwrap_or_default().as_bytes())
+    // Flow's highlight marks are the panel's, not edits: hashed as if they weren't there.
+    let mut chars: Vec<designcraft_doc::CharRun> = Vec::with_capacity(st.chars.len());
+    for r in &st.chars {
+        let mut format = r.format.clone();
+        format.over.flow = None;
+        match chars.last_mut() {
+            Some(last) if last.format == format => last.len += r.len,
+            _ => chars.push(designcraft_doc::CharRun { len: r.len, format }),
+        }
+    }
+    fnv_hex(serde_json::to_string(&(&st.text, &st.paras, &chars)).unwrap_or_default().as_bytes())
 }
 
 /// Frames (graphic content) showing an asset, top-level or in groups.
@@ -496,6 +515,21 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         return run(&mut (*d).clone());
     }
     s.edit(|d, _| run(d))
+}
+
+/// Clear Flow Highlights: the marks of the last update off the linked text stories (or `story`),
+/// except errors, which stay until fixed.
+fn clear_highlights(s: &mut Session, p: &Value) -> Result<Value> {
+    let only = story_param(p);
+    s.edit(|d, _| {
+        let ids: Vec<StoryId> = d.stories.values().filter(|st| st.file_link.is_some() && only.is_none_or(|o| o == st.id)).map(|st| st.id).collect();
+        for sid in &ids {
+            if let Some(st) = d.story_mut(*sid) {
+                super::place_text::unmark(st, true);
+            }
+        }
+        Ok(json!({"cleared": ids.len()}))
+    })
 }
 
 /// Seconds since 1970 (0 on the web, which has no clock to ask here).
@@ -1429,6 +1463,104 @@ mod text_link_tests {
         let cell = story(&s, sid).tables.values().next().unwrap().cell(1, 1).unwrap().text.text.clone();
         assert_eq!(covered(&cell, e), "3.75");
         assert_eq!((e["page"].as_u64(), e["pageName"].as_str()), (Some(0), Some("1")), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The stretches of `st` (or a cell's text) a Flow mark covers, joined where they touch.
+    fn marked(st: &designcraft_doc::Story, mark: designcraft_doc::FlowMark) -> Vec<String> {
+        let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+        for (r, f) in st.runs() {
+            if f.over.flow != Some(mark) {
+                continue;
+            }
+            match spans.last_mut() {
+                Some(last) if last.end == r.start => last.end = r.end,
+                _ => spans.push(r),
+            }
+        }
+        // Its text, without marker characters (note anchors and the like).
+        let words = |r: std::ops::Range<usize>| st.text[r].chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).collect::<String>();
+        spans.into_iter().map(|r| words(r).trim().to_string()).filter(|t| !t.is_empty()).collect()
+    }
+
+    /// An update marks what it brought in on the text, for the page's highlights: the file's
+    /// changes, the layout's edits it kept, and the file's text that won a conflict.
+    #[test]
+    fn an_update_marks_what_it_brought_in_on_the_text() {
+        use designcraft_doc::FlowMark;
+        let (dir, path, mut s, sid) = placed("marks", "Revenue grew. Costs were flat. Prices held. Staff held.");
+        layout_edit(&mut s, sid, "grew", "grew strongly");
+        layout_edit(&mut s, sid, "were flat", "were steady");
+        revise(&path, "Revenue grew. Costs fell. Prices held. Staff held firm.");
+        s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let st = story(&s, sid);
+        assert_eq!(marked(&st, FlowMark::File), ["Staff held firm."]);
+        assert_eq!(marked(&st, FlowMark::Kept), ["Revenue grew strongly."]);
+        assert_eq!(marked(&st, FlowMark::Conflict), ["Costs fell."]);
+        // The next update's marks replace these.
+        revise(&path, "Revenue grew. Costs fell sharply. Prices held. Staff held firm.");
+        s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let st = story(&s, sid);
+        assert_eq!(marked(&st, FlowMark::File), ["Costs fell sharply."], "{:?}", st.text);
+        assert_eq!(marked(&st, FlowMark::Conflict), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The marks are the panel's, not the layout's: they don't count as edits made in the layout,
+    /// and text typed or pasted among them isn't marked.
+    #[test]
+    fn marks_are_not_layout_edits_and_new_text_is_unmarked() {
+        use designcraft_doc::FlowMark;
+        let (dir, path, mut s, sid) = placed("marks-edits", "Revenue grew.");
+        revise(&path, "Revenue grew in every region.");
+        s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(marked(&story(&s, sid), FlowMark::File), ["Revenue grew in every region."]);
+        assert_eq!(text_rows(&mut s)[0]["edited"], false, "marks are not edits");
+        let at = story(&s, sid).text.find("every").unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "X"})).unwrap();
+        assert_eq!(story(&s, sid).format_after(at).over.flow, None, "typed text isn't marked");
+        let word = story(&s, sid).text.find("region").unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": word, "focus": word + "region".len()})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let end = story(&s, sid).text.len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": end, "focus": end})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let st = story(&s, sid);
+        assert!(st.text.ends_with("region"), "{:?}", st.text);
+        assert_eq!(st.format_after(end).over.flow, None, "pasted text isn't marked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clear Highlights takes the marks off, but errors stay marked until they are fixed.
+    #[test]
+    fn clearing_highlights_keeps_errors_marked() {
+        use designcraft_doc::FlowMark;
+        let dir = std::env::temp_dir().join(format!("dc-text-link-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"], &["Cake", "2.00"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        std::fs::write(
+            &path,
+            workbook_xml(
+                r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Price</t></is></c></row>
+                <row r="2"><c r="A2" t="inlineStr"><is><t>Tea</t></is></c><c r="B2" t="e"><f>A9/0</f><v>#DIV/0!</v></c></row>
+                <row r="3"><c r="A3" t="inlineStr"><is><t>Cake</t></is></c><c r="B3" t="inlineStr"><is><t>2.50</t></is></c></row>"#,
+            ),
+        )
+        .unwrap();
+        s.execute("links.update", &json!({"story": sid.0, "allowErrors": true})).unwrap();
+        let cell = |s: &Session, r: usize, c: usize| story(s, sid).tables.values().next().unwrap().cell(r, c).unwrap().text.clone();
+        assert_eq!(marked(&cell(&s, 1, 1), FlowMark::Error), ["#DIV/0!"]);
+        assert_eq!(marked(&cell(&s, 2, 1), FlowMark::File), ["2.50"]);
+        s.execute("links.clearHighlights", &json!({"story": sid.0})).unwrap();
+        assert_eq!(marked(&cell(&s, 2, 1), FlowMark::File), Vec::<String>::new());
+        assert_eq!(marked(&cell(&s, 1, 1), FlowMark::Error), ["#DIV/0!"], "errors stay marked");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -405,6 +405,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             draw_dynamic_spelling(app, ui.ctx(), &painter, &xf, &doc, &layout);
         }
     }
+    // The line hovered in the Flow panel, outlined on the page (set again each frame it stays hovered).
+    if let Some(h) = app.ui.flow_hover.take()
+        && !preview
+    {
+        draw_flow_hover(app, &painter, &xf, &doc, &layout, &h);
+    }
     let sel_rect = draw_selection(app, &painter, &xf, &doc, &layout);
     draw_tool_overlays(app, &painter, &xf);
     if rulers {
@@ -526,6 +532,7 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
             highlight_missing_fonts: !preview && app.session.prefs.highlight_substituted_fonts,
             highlight_hj: !preview && app.session.prefs.highlight_hj,
             condition_indicators: !preview,
+            flow_highlights: !preview && app.session.prefs.flow_highlights,
             note_indicators: !preview && app.session.prefs.show_note_anchors,
             change_markup: !preview && app.session.prefs.show_added_text,
             tag_markers: !preview && app.ui.tag_markers,
@@ -647,6 +654,7 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
         highlight_missing_fonts: !preview && app.session.prefs.highlight_substituted_fonts,
         highlight_hj: !preview && app.session.prefs.highlight_hj,
         condition_indicators: !preview,
+        flow_highlights: !preview && app.session.prefs.flow_highlights,
         note_indicators: !preview && app.session.prefs.show_note_anchors,
         change_markup: !preview && app.session.prefs.show_added_text,
         tag_markers: !preview && app.ui.tag_markers,
@@ -913,6 +921,33 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
 
 fn layer_color(doc: &Document, it: &Item) -> Color32 {
     doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::from_rgb(79, 153, 255))
+}
+
+/// Outline the text or cell a hovered line of the Flow panel stands for, in its colour.
+fn draw_flow_hover(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, h: &crate::panels::flow::Hover) {
+    let cs = app.session.cache.get(doc, designcraft_doc::StoryId(h.story), None);
+    let stroke = Stroke::new(1.5, h.color);
+    for ft in &cs.frames {
+        let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+        let m = a * doc.text_xf(it);
+        if let Some((table, row, col)) = h.cell {
+            for c in ft.tables.iter().filter(|t| t.table == table).flat_map(|t| &t.cells).filter(|c| c.row == row && c.col == col) {
+                let r = c.rect;
+                let q = [Point::new(r.x0, r.y0), Point::new(r.x1, r.y0), Point::new(r.x1, r.y1), Point::new(r.x0, r.y1)];
+                painter.add(egui::Shape::closed_line(q.iter().map(|p| xf.to_screen(m * *p)).collect(), stroke));
+            }
+            continue;
+        }
+        for l in &ft.lines {
+            let (s, e) = (h.range.start.max(l.range.start), h.range.end.min(l.range.end));
+            if s >= e {
+                continue;
+            }
+            for q in compose::highlight_quads(l, s, e, false) {
+                painter.add(egui::Shape::closed_line(q.iter().map(|p| xf.to_screen(m * *p)).collect(), stroke));
+            }
+        }
+    }
 }
 
 /// Draw selection chrome; returns the selection's screen bounds (for the Contextual Task Bar).

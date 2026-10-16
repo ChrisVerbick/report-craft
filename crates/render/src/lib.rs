@@ -138,6 +138,8 @@ pub struct RenderOptions {
     pub condition_indicators: bool,
     /// Editorial note anchors (screen view).
     pub note_indicators: bool,
+    /// Flow's highlights of what the last update of a linked text file brought in (screen view).
+    pub flow_highlights: bool,
     /// Track Changes: added text highlighted (screen view).
     pub change_markup: bool,
     /// View › Structure › Show Tag Markers: brackets around inline-tagged text (screen view).
@@ -186,6 +188,7 @@ impl Default for RenderOptions {
             highlight_custom_tracking: false,
             condition_indicators: false,
             note_indicators: false,
+            flow_highlights: false,
             change_markup: false,
             tag_markers: false,
             plate: None,
@@ -1693,6 +1696,28 @@ mod tests {
         assert_eq!(plain.pixel(x, y)[1], 255, "no highlight in output");
         let p = shown.pixel(x, y);
         assert!(p[0] > 240 && p[1] < 200, "pink on screen: {p:?}");
+    }
+
+    /// Flow's highlights of what an update brought in show on screen, never in output.
+    #[test]
+    fn flow_highlights_show_on_screen_only() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 100.0), lid, "Updated text", ParaFormat::default()).unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..12, |f| f.over.flow = Some(designcraft_doc::FlowMark::File));
+        let cache = Cache::new();
+        let cs = cache.get(&d, sid, None);
+        let l = &cs.frames[0].lines[0];
+        // The space after "Updated": inside the line box, between glyph strokes.
+        let g = l.glyphs.iter().find(|g| g.byte == 7).unwrap();
+        let (x, y) = ((g.x + g.adv / 2.0) as u32, (l.baseline - l.ascent * 0.5) as u32);
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let plain = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let shown = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions { flow_highlights: true, ..Default::default() }).unwrap();
+        assert_eq!(plain.pixel(x, y)[..3], [255, 255, 255], "never in output");
+        let p = shown.pixel(x, y);
+        assert!(p[2] > p[0].saturating_add(20), "a blue tint on screen: {p:?}");
     }
 
     #[test]

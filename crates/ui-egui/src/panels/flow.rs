@@ -39,6 +39,16 @@ struct State {
     allow: Option<u64>,
 }
 
+/// A line hovered in the panel, outlined on the page (`canvas::draw_flow_hover`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hover {
+    pub story: u64,
+    /// A table cell (table, row, column) instead of a stretch of text.
+    pub cell: Option<(u64, usize, usize)>,
+    pub range: std::ops::Range<usize>,
+    pub color: Color32,
+}
+
 /// One line of a review or record.
 struct Line {
     kind: Kind,
@@ -190,6 +200,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let errors = rec["errors"].as_array().cloned().unwrap_or_default();
                 let sections = sections(sid, report, &errors, &[], false);
                 report_view(app, ui, &t, &lang, sid, report, &sections, false);
+                // The page's highlights of what this update brought in (F2.9).
+                let marks = flow_marks(app, sid);
+                if marks.0 || marks.1 {
+                    ui.add_space(6.0);
+                    let mut on = app.session.prefs.flow_highlights;
+                    if ui.checkbox(&mut on, tr("Highlight on the page")).changed() {
+                        let _ = app.run("prefs.set", json!({"flowHighlights": on}));
+                    }
+                    if ui.add_enabled(marks.0, egui::Button::new(tr("Clear highlights"))).clicked() {
+                        let _ = app.run("links.clearHighlights", json!({"story": sid}));
+                    }
+                    if marks.1 {
+                        crate::rtl::label(ui, RichText::new(tr("Errors stay highlighted until they're fixed.")).color(t.text_dim).size(10.5));
+                    }
+                }
             }
             None => {
                 crate::rtl::label(ui, RichText::new(tr("Up to date.")).color(t.text_dim));
@@ -393,11 +418,16 @@ fn report_view(
         if let Some(note) = note {
             crate::rtl::label(ui, RichText::new(tr(note)).color(t.text_dim).size(10.5));
         }
+        let table = first_table(app, sid);
         for (i, l) in lines.iter().enumerate() {
-            if line_row(ui, t, lang, l, ui.id().with(("flow_line", *kind as u8, i))).clicked()
-                && let Some(e) = &l.entry
-            {
-                go_to(app, sid, e, before);
+            let resp = line_row(ui, t, lang, l, ui.id().with(("flow_line", *kind as u8, i)));
+            if let Some(e) = &l.entry {
+                if resp.hovered() {
+                    app.ui.flow_hover = hover(sid, *kind, e, before, table);
+                }
+                if resp.clicked() {
+                    go_to(app, sid, e, before);
+                }
             }
         }
     }
@@ -475,6 +505,25 @@ fn quote(t: &Tokens, l: &Line, width: f32) -> LayoutJob {
     job
 }
 
+/// What hovering a line outlines on the page: its cell, or its text as it is now (while
+/// reviewing) or after the update. `table`: the story's table, for an error that names only a
+/// row and column.
+fn hover(sid: u64, kind: Kind, e: &Value, before: bool, table: Option<u64>) -> Option<Hover> {
+    let color = match kind {
+        Kind::Kept | Kind::Conflict => PAPER_YOURS,
+        Kind::Error => PAPER_ERROR,
+        Kind::Notice => PAPER_NOTICE,
+        _ => PAPER_FILE,
+    };
+    let index = |v: &Value| v.as_u64().and_then(|n| usize::try_from(n).ok());
+    if let Some(c) = e.get("cell").filter(|c| c.is_object()) {
+        let cell = (c["table"].as_u64().or(table)?, index(&c["row"])?, index(&c["col"])?);
+        return Some(Hover { story: sid, cell: Some(cell), range: 0..0, color });
+    }
+    let at = if before { e.get("was").filter(|w| w.is_object()).unwrap_or(&e["at"]) } else { &e["at"] };
+    Some(Hover { story: sid, cell: None, range: index(&at["start"])?..index(&at["end"])?, color })
+}
+
 /// Go to a line's place: select the text (as it is now, while reviewing) or the cell, and show
 /// its page.
 fn go_to(app: &mut DesignApp, sid: u64, e: &Value, before: bool) {
@@ -491,6 +540,24 @@ fn go_to(app: &mut DesignApp, sid: u64, e: &Value, before: bool) {
     if let Some(page) = e["page"].as_u64() {
         crate::canvas::go_to_page(app, page as usize);
     }
+}
+
+/// Whether story `sid` has Flow highlights, other than errors and of errors, in its text or cells.
+fn flow_marks(app: &DesignApp, sid: u64) -> (bool, bool) {
+    use designcraft_doc::FlowMark;
+    let Some(st) = app.session.active().and_then(|d| d.doc.story(designcraft_doc::StoryId(sid))) else { return (false, false) };
+    let texts = std::iter::once(st).chain(st.tables.values().flat_map(|t| t.cells.iter().map(|c| &c.text)));
+    let mut found = (false, false);
+    for text in texts {
+        for (_, f) in text.runs() {
+            match f.over.flow {
+                Some(FlowMark::Error) => found.1 = true,
+                Some(FlowMark::None) | None => {}
+                Some(_) => found.0 = true,
+            }
+        }
+    }
+    found
 }
 
 /// The story's first table (an error in a spreadsheet cell names its row and column only).
@@ -783,6 +850,40 @@ mod tests {
         h.run_steps(2);
         let sel = h.state().session.active().unwrap().selection.text.unwrap();
         assert_eq!((sel.story.0, sel.anchor.min(sel.focus), sel.anchor.max(sel.focus)), (sid, 5, 9), "Two. is selected");
+    }
+
+    /// Hovering a line outlines its place: its text as it is now while reviewing, after the
+    /// update in the record, or its cell.
+    #[test]
+    fn a_hovered_line_outlines_its_place() {
+        let e = json!({"at": {"start": 10, "end": 20}, "was": {"start": 3, "end": 7}});
+        assert_eq!(super::hover(5, super::Kind::Change, &e, true, None).map(|h| h.range), Some(3..7));
+        assert_eq!(super::hover(5, super::Kind::Change, &e, false, None).map(|h| h.range), Some(10..20));
+        let cell = json!({"cell": {"row": 1, "col": 2}, "story": 5});
+        assert_eq!(super::hover(5, super::Kind::Error, &cell, true, Some(9)).and_then(|h| h.cell), Some((9, 1, 2)));
+    }
+
+    /// After an update the record offers its highlights: switched off and on for the page, and
+    /// cleared.
+    #[test]
+    fn the_record_switches_and_clears_its_highlights() {
+        let (path, mut app, sid) = linked("highlights.txt", "One.");
+        std::fs::write(&path, "One. Two.").unwrap();
+        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
+        let mut h = harness(app);
+        h.run_steps(3);
+        h.get_by_label("Update").click();
+        h.run_steps(3);
+        assert_eq!(super::flow_marks(h.state(), sid), (true, false));
+        h.get_by_label("Highlight on the page").click();
+        h.run_steps(2);
+        assert!(!h.state().session.prefs.flow_highlights);
+        h.get_by_label("Highlight on the page").click();
+        h.run_steps(2);
+        assert!(h.state().session.prefs.flow_highlights);
+        h.get_by_label("Clear highlights").click();
+        h.run_steps(2);
+        assert_eq!(super::flow_marks(h.state(), sid), (false, false));
     }
 
     /// A link that replaces its story's text (placed before Flow could merge) says so.
