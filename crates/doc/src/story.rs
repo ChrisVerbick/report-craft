@@ -185,6 +185,11 @@ pub struct TextFileLink {
     /// was edited in the layout (an update replaces those edits).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub story_hash: String,
+    /// The story as the last import left it (placed, updated or relinked), detached (no frames,
+    /// no link): what a merge compares the file and the layout against. Only imported content,
+    /// never the file itself, so a file's comments, tracked deletions and properties stay out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<Arc<Story>>,
 }
 
 fn is_zero_i64(v: &i64) -> bool {
