@@ -315,7 +315,14 @@ fn report_text(mine: &str, theirs: &str, out: &str, m: &designcraft_flow::MergeO
         v
     };
     let [changes, deviations, conflicts] = into;
+    // Where each conflict is in `out`: its mark, then the file's version. A change there is the
+    // conflict, listed once, under conflicts.
+    let marked: Vec<std::ops::Range<usize>> =
+        m.conflicts.iter().map(|c| c.at..c.at.saturating_add(designcraft_doc::NOTE_MARK.len_utf8()).saturating_add(c.theirs.len())).collect();
     for h in designcraft_flow::sentences(mine, out, &designcraft_flow::diff_text(mine, out)) {
+        if marked.iter().any(|c| c.start <= h.new.start && h.new.end <= c.end) {
+            continue;
+        }
         let (before, after) = (text(mine, &h.old), text(out, &h.new));
         changes.push(entry(json!({"before": before, "after": after}), h.new.clone(), Some(h.old.clone()), &before, &after));
     }

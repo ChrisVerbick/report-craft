@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool} — reload modified links from their files (all when neither); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, …}], deviations: [{file, layout, …}], conflicts: [{file, layout, …}], warnings, pages: [{index, name}], fit: {overset, lines}}], errors: [as links.check]}; each entry has cell? {table, row, col}, at {start, end} (bytes in the updated story or cell, for text.select / table.select), was? {start, end} (the same place in the story or cell before the update, for Go To while reviewing), words [{kind: same|deleted|inserted, text}], page, pageName, y (0–1 from the page top) and overset (in text that doesn't fit)",
+            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool, text?: bool} — reload modified links from their files (all when neither; text: false leaves linked text files alone, for the app's Flow review); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, …}], deviations: [{file, layout, …}], conflicts: [{file, layout, …}], warnings, pages: [{index, name}], fit: {overset, lines}}], errors: [as links.check]}; each entry has cell? {table, row, col}, at {start, end} (bytes in the updated story or cell, for text.select / table.select), was? {start, end} (the same place in the story or cell before the update, for Go To while reviewing), words [{kind: same|deleted|inserted, text}], page, pageName, y (0–1 from the page top) and overset (in text that doesn't fit)",
             has_doc,
             update
         ),
@@ -432,6 +432,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let allow_errors = p.get("allowErrors").and_then(Value::as_bool).unwrap_or(false);
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
+    let with_text = p.get("text").and_then(Value::as_bool).unwrap_or(true);
     let d = s.doc()?.doc.clone();
     let checks = &mut s.text_link_checks;
     let (only_asset, only_story) = (p.get("asset").and_then(Value::as_u64), story_param(p));
@@ -446,7 +447,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     let texts: Vec<(StoryId, String)> = d
         .stories
         .values()
-        .filter(|st| all || only_story == Some(st.id))
+        .filter(|st| with_text && (all || only_story == Some(st.id)))
         .filter_map(|st| st.file_link.as_ref().filter(|l| text_status(l, checks) == "modified").map(|l| (st.id, l.path.clone())))
         .collect();
     let mut fresh = Vec::new();
@@ -1167,6 +1168,10 @@ mod text_link_tests {
         );
         let changes = report["changes"].as_array().unwrap();
         assert!(
+            !changes.iter().any(|c| c["after"].as_str().unwrap().contains("Costs") || c["after"] == "[note]"),
+            "a conflict is listed once, as a conflict: {report}"
+        );
+        assert!(
             changes.iter().any(|c| c["before"] == "Revenue grew in every region." && c["after"] == "Revenue grew in every region except the north."),
             "{report}"
         );
@@ -1341,10 +1346,11 @@ mod text_link_tests {
     /// the story's pages and says whether it still fits.
     #[test]
     fn report_entries_say_where_they_are() {
-        let (dir, path, mut s, sid) = placed("where", "Revenue grew. Costs were flat.");
+        let (dir, path, mut s, sid) = placed("where", "Revenue grew. Costs were flat. Prices held. Staff held.");
         layout_edit(&mut s, sid, "grew", "grew strongly");
         layout_edit(&mut s, sid, "were flat", "were steady");
-        revise(&path, "Revenue grew. Costs fell. Staff rose.");
+        // A kept edit, a conflict, and a change from the file away from it.
+        revise(&path, "Revenue grew. Costs fell. Prices held. Staff held firm.");
         let was = story(&s, sid).text;
         let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
         let rep = &r["reports"][0];
@@ -1423,6 +1429,18 @@ mod text_link_tests {
         let cell = story(&s, sid).tables.values().next().unwrap().cell(1, 1).unwrap().text.text.clone();
         assert_eq!(covered(&cell, e), "3.75");
         assert_eq!((e["page"].as_u64(), e["pageName"].as_str()), (Some(0), Some("1")), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `text: false` updates graphics only: the app reviews linked text files in Flow first.
+    #[test]
+    fn update_can_leave_linked_text_for_review() {
+        let (dir, path, mut s, sid) = placed("graphics-only", "Revenue grew.");
+        revise(&path, "Revenue grew in every region.");
+        let r = s.execute("links.update", &json!({"text": false})).unwrap();
+        assert_eq!(r["updated"], 0);
+        assert_eq!(story(&s, sid).text, "Head\nRevenue grew.");
+        assert_eq!(text_rows(&mut s)[0]["status"], "modified");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -755,6 +755,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.taskBar",
             "ui:window.controlBar",
             ">Editorial",
+            "ui:window.panel|Flow|{\"panel\": \"flow\"}",
             "ui:window.panel|Notes|{\"panel\": \"notes\"}",
             "ui:window.panel|Track Changes|{\"panel\": \"trackChanges\"}",
             "<",

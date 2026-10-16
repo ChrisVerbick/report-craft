@@ -2209,32 +2209,24 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
 /// first when a linked text story edited in the layout would lose those edits, as InDesign's
 /// Links panel does (a story that merges keeps them). The `links.update` command itself doesn't ask (as in InDesign scripting).
+/// Update Link: graphics reload at once; a linked text file opens its review in Flow, which shows
+/// what the update would change before anything does (Update there applies it).
 pub fn update_links(app: &mut DesignApp, target: Value) {
-    // A file that shows errors (#REF!, a broken cross-reference…) is applied only once confirmed.
-    if target.get("allowErrors").and_then(Value::as_bool) != Some(true) {
-        let mut errors = app.session.execute("links.check", &target).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-        // Values from other workbooks are reported after the update, not asked about.
-        errors.retain(|e| e["blocks"].as_bool() != Some(false));
-        if !errors.is_empty() {
-            let lines: Vec<String> =
-                errors.iter().map(|e| format!("{}: {}", e["name"].as_str().unwrap_or_default(), e["message"].as_str().unwrap_or_default())).collect();
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLinkErrors", json!({"target": target, "errors": lines.join("\n")})));
-            return;
-        }
-    }
-    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    let one = target.get("story").and_then(Value::as_u64);
-    let all = one.is_none() && target.get("asset").is_none();
-    let edited: Vec<&str> = rows
-        .iter()
-        .filter(|r| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true && r["merges"] != true && r["status"] == "modified")
-        .filter_map(|r| r["name"].as_str())
-        .collect();
-    if edited.is_empty() {
+    let (story, asset) = (target.get("story").and_then(Value::as_u64), target.get("asset").and_then(Value::as_u64));
+    if asset.is_some() {
         let _ = run_update_links(app, target);
-    } else {
-        let files = edited.join(", ");
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLink", json!({"target": target, "files": files})));
+        return;
+    }
+    let all = story.is_none();
+    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let modified = |r: &&Value| r["status"] == "modified";
+    if all && rows.iter().filter(modified).any(|r| r.get("asset").is_some()) {
+        let _ = run_update_links(app, json!({"text": false}));
+    }
+    let review = story.or_else(|| rows.iter().filter(modified).find_map(|r| r["story"].as_u64()));
+    if let Some(sid) = review {
+        app.ui.flow_request = Some(sid);
+        app.ui.open_panel = Some("flow".into());
     }
 }
 

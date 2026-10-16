@@ -1512,8 +1512,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
-        "updateLink" => crate::i18n::tr(&app.ui.language, "Update Link"),
-        "updateLinkErrors" => crate::i18n::tr(&app.ui.language, "Errors in Linked Files"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
@@ -1538,7 +1536,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
-            "closeDocument" | "updateLink" => 380.0,
+            "closeDocument" => 380.0,
             "newDocument" if crate::i18n::is_rtl(&app.ui.language) => 380.0,
             _ => 640.0,
         };
@@ -2024,21 +2022,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         .replace("{}", &d.s("title"));
                     crate::rtl::label(ui, text);
                 }
-                "updateLink" => {
-                    let text = crate::i18n::tr(
-                        &app.ui.language,
-                        "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.",
-                    )
-                    .replace("{}", &d.s("files"));
-                    crate::rtl::label(ui, text);
-                }
-                "updateLinkErrors" => {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "These linked files show errors. Updating brings them into the layout:"));
-                    ui.add_space(6.0);
-                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                        crate::rtl::label(ui, d.s("errors"));
-                    });
-                }
                 "newWorkspace" => {
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name:"));
@@ -2212,8 +2195,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         ui.add_space(12.0);
         let ok_label = match d.id.as_str() {
             "closeDocument" => "  Save  ",
-            "updateLink" => "  Update  ",
-            "updateLinkErrors" => "  Update Anyway  ",
             _ => "  OK  ",
         };
         ui.horizontal(|ui| {
@@ -2645,16 +2626,6 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.run("document.preferences", doc)
         }
         "newWorkspace" => app.run("window.newWorkspace", json!({"name": d.s("name")})),
-        "updateLink" => crate::panels::properties::run_update_links(app, d.fields.get("target").cloned().unwrap_or_else(|| json!({}))),
-        "updateLinkErrors" => {
-            // Confirmed: update with the errors (a replace confirmation may still follow).
-            let mut target = d.fields.get("target").cloned().unwrap_or_else(|| json!({}));
-            if let Some(t) = target.as_object_mut() {
-                t.insert("allowErrors".into(), json!(true));
-            }
-            crate::panels::properties::update_links(app, target);
-            Ok(Value::Null)
-        }
         "closeDocument" => {
             // The document may have moved in the tab row (or gone) while the dialog was open.
             let uid = d.fields.get("uid").and_then(Value::as_u64);
@@ -6513,129 +6484,6 @@ mod tests {
         assert!(!app.ui.pdf_export.bleed);
         assert!(app.ui.pdf_export.marks_crop);
         assert!(!app.ui.pdf_export.tagged);
-    }
-
-    #[test]
-    fn update_link_asks_before_replacing_edits_made_in_the_layout() {
-        let dir = std::env::temp_dir().join(format!("dc-update-link-dialog-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("note.txt");
-        std::fs::write(&path, "One").unwrap();
-        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", &json!({})).unwrap();
-        let r = app.session.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
-        let sid = r["story"].as_u64().unwrap();
-        let text = |app: &crate::DesignApp| app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
-
-        // Not edited in the layout: updates without asking.
-        std::fs::write(&path, "Two").unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app), "Two");
-
-        // Edited in the layout, but the link merges: nothing to ask. Both changed the sentence,
-        // so the file's text wins and a Flow note keeps the layout's.
-        app.session.execute("story.setText", &json!({"story": sid, "text": "Mine"})).unwrap();
-        std::fs::write(&path, "Three").unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app).replace(designcraft_doc::NOTE_MARK, ""), "Three");
-        assert!(app.ui.status.contains("1 conflict"), "the status bar sums the update up: {}", app.ui.status);
-        let story = app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
-        assert_eq!(story.editorial.iter().map(|n| n.author.as_str()).collect::<Vec<_>>(), ["Flow"]);
-
-        // A link that replaces (placed before merging existed), edited in the layout: asks first;
-        // Cancel changes nothing.
-        app.session
-            .edit(|d, _| {
-                if let Some(l) = d.story_mut(designcraft_doc::StoryId(sid)).and_then(|st| st.file_link.as_mut()) {
-                    l.base = None;
-                }
-                Ok(())
-            })
-            .unwrap();
-        app.session.execute("story.setText", &json!({"story": sid, "text": "Mine"})).unwrap();
-        std::fs::write(&path, "Four").unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        let d = app.ui.dialog.as_ref().unwrap();
-        assert_eq!((d.id.as_str(), d.s("files").as_str()), ("updateLink", "note.txt"));
-        app.ui.dialog = None;
-        assert_eq!(text(&app), "Mine");
-
-        // Window › Links › Update Link (all links) asks too; confirming replaces the edits.
-        crate::menus::activate(&mut app, "links.update", &Value::Null);
-        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("updateLink"));
-        confirm(&mut app).unwrap();
-        assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app), "Four");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A linked file that shows errors (here a Word cross-reference error) is not applied silently:
-    /// Update asks first, Cancel changes nothing, Update Anyway applies it and the status bar counts
-    /// the error.
-    #[test]
-    fn update_link_asks_before_applying_a_file_that_shows_errors() {
-        let dir = std::env::temp_dir().join(format!("dc-update-link-errors-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("note.txt");
-        std::fs::write(&path, "One").unwrap();
-        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", &json!({})).unwrap();
-        let r = app.session.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
-        let sid = r["story"].as_u64().unwrap();
-        let text = |app: &crate::DesignApp| app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
-
-        std::fs::write(&path, "See Error! Reference source not found. below").unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        let d = app.ui.dialog.as_ref().unwrap();
-        assert_eq!(d.id, "updateLinkErrors");
-        assert!(d.s("errors").contains("note.txt") && d.s("errors").contains("Word shows"), "{}", d.s("errors"));
-        app.ui.dialog = None;
-        assert_eq!(text(&app), "One");
-
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        confirm(&mut app).unwrap();
-        assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app), "See Error! Reference source not found. below");
-        assert!(app.ui.status.contains("1 error"), "{}", app.ui.status);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A value from another workbook is reported after the update, without asking first.
-    #[test]
-    fn update_link_reports_values_from_other_workbooks_without_asking() {
-        let dir = std::env::temp_dir().join(format!("dc-update-link-other-book-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("prices.xlsx");
-        let book = |cell: &str| {
-            use std::io::Write;
-            let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-            w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
-            w.write_all(
-                format!(r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Tea</t></is></c>{cell}</row></sheetData></worksheet>"#)
-                    .as_bytes(),
-            )
-            .unwrap();
-            w.finish().unwrap().into_inner()
-        };
-        std::fs::write(&path, book(r#"<c r="B1"><v>3.50</v></c>"#)).unwrap();
-        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", &json!({})).unwrap();
-        let r = app.session.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
-        let sid = r["story"].as_u64().unwrap();
-
-        std::fs::write(&path, book(r#"<c r="B1"><f>[1]Prices!B4</f><v>3.75</v></c>"#)).unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        assert!(app.ui.dialog.is_none(), "no question for a value from another workbook");
-        let doc = &app.session.doc().unwrap().doc;
-        let t = doc.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap();
-        assert_eq!(t.cell(0, 1).unwrap().text.text, "3.75");
-        assert!(app.ui.status.contains("1 value from another workbook"), "{}", app.ui.status);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

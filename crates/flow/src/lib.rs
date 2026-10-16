@@ -148,8 +148,10 @@ impl Mark {
 
 /// How the text `a` became `b`, word by word, for marking a reported change: in order, the
 /// unchanged runs and the runs only `a` has (deleted) or only `b` has (inserted). The unchanged and
-/// deleted runs make `a`; the unchanged and inserted runs make `b`. Texts over 20,000 bytes
-/// together aren't compared word by word: all of `a` is deleted and all of `b` inserted.
+/// deleted runs make `a`; the unchanged and inserted runs make `b`. Spaces and punctuation left
+/// between changed words join them, so a rewritten stretch reads as one deletion and one insertion.
+/// Texts over 20,000 bytes together aren't compared word by word: all of `a` is deleted and all of
+/// `b` inserted.
 pub fn words(a: &str, b: &str) -> Vec<(Mark, String)> {
     fn push(out: &mut Vec<(Mark, String)>, m: Mark, t: &str) {
         if t.is_empty() {
@@ -167,14 +169,36 @@ pub fn words(a: &str, b: &str) -> Vec<(Mark, String)> {
         push(&mut out, Mark::Deleted, a);
         push(&mut out, Mark::Inserted, b);
     } else {
+        let mut runs = Vec::new();
         for c in TextDiff::configure().algorithm(Algorithm::Patience).diff_unicode_words(a, b).iter_all_changes() {
             let m = match c.tag() {
                 ChangeTag::Equal => Mark::Same,
                 ChangeTag::Delete => Mark::Deleted,
                 ChangeTag::Insert => Mark::Inserted,
             };
-            push(&mut out, m, c.value());
+            push(&mut runs, m, c.value());
         }
+        // Each unchanged run without a letter or digit between two changes joins them: it goes
+        // into both the deletion and the insertion.
+        let (mut del, mut ins) = (String::new(), String::new());
+        for (i, (m, t)) in runs.iter().enumerate() {
+            match m {
+                Mark::Deleted => del.push_str(t),
+                Mark::Inserted => ins.push_str(t),
+                Mark::Same if (!del.is_empty() || !ins.is_empty()) && i + 1 < runs.len() && !t.chars().any(char::is_alphanumeric) => {
+                    del.push_str(t);
+                    ins.push_str(t);
+                }
+                Mark::Same => {
+                    push(&mut out, Mark::Deleted, &del);
+                    push(&mut out, Mark::Inserted, &ins);
+                    (del, ins) = (String::new(), String::new());
+                    push(&mut out, Mark::Same, t);
+                }
+            }
+        }
+        push(&mut out, Mark::Deleted, &del);
+        push(&mut out, Mark::Inserted, &ins);
     }
     out
 }
@@ -256,6 +280,11 @@ mod tests {
         assert_eq!(words("", "New."), w(&[(Mark::Inserted, "New.")]));
         assert_eq!(words("Same.", "Same."), w(&[(Mark::Same, "Same.")]));
         assert_eq!(words("", ""), w(&[]));
+        // A rewritten stretch reads as one deletion and one insertion, not word by word.
+        assert_eq!(
+            words("Costs were held steady.", "Costs fell by two percent."),
+            w(&[(Mark::Same, "Costs "), (Mark::Deleted, "were held steady"), (Mark::Inserted, "fell by two percent"), (Mark::Same, ".")])
+        );
     }
 
     proptest! {

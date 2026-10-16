@@ -622,6 +622,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Next Object Below", "შემდეგი ობიექტი ქვემოთ"),
     ("Next Object in Group", "ჯგუფის შემდეგი ობიექტი"),
     ("Notes", "შენიშვნები"),
+    ("Flow", "ნაკადი"),
     ("Object Export Options", "ობიექტის ექსპორტის პარამეტრები"),
     ("Object Export Options…", "ობიექტის ექსპორტის პარამეტრები…"),
     ("Object Layer Options…", "ობიექტის შრეების პარამეტრები…"),

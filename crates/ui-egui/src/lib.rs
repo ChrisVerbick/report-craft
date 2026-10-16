@@ -300,6 +300,10 @@ pub struct UiState {
     pub status: String,
     #[serde(skip)]
     pub dialog: Option<dialogs::Dialog>,
+    /// Flow: the linked text story whose review the panel shows next (Update from the Links
+    /// panel or a menu).
+    #[serde(skip)]
+    pub flow_request: Option<u64>,
     #[serde(skip)]
     pub palette: Option<String>,
     #[serde(skip)]
@@ -389,6 +393,7 @@ impl Default for UiState {
             pending_urls: Vec::new(),
             status: String::new(),
             dialog: None,
+            flow_request: None,
             palette: None,
             flyout: None,
             last_color: None,

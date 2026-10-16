@@ -2,6 +2,7 @@
 
 pub mod conditions;
 pub mod datamerge;
+pub mod flow;
 pub mod glyphs;
 pub mod interactive;
 pub mod layers;

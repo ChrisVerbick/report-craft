@@ -83,6 +83,14 @@ pub struct Tokens {
     /// Measurement labels on the canvas (smart dimensions, gaps).
     pub measure_bg: Color32,
     pub measure_text: Color32,
+    /// Flow (plan architecture §2b): who changed what. The file's changes, the layout's edits it
+    /// keeps (the note-anchor amber: a conflict's losing layout text goes into a note), errors the
+    /// file shows (`flow_error_fill` behind a white "!"), and the 0% check's tick.
+    pub flow_file: Color32,
+    pub flow_yours: Color32,
+    pub flow_error: Color32,
+    pub flow_error_fill: Color32,
+    pub flow_ok: Color32,
 }
 
 fn hex(s: u32) -> Color32 {
@@ -125,6 +133,11 @@ impl Tokens {
             smart_guide: hex(0x00c853),
             measure_bg: Color32::from_rgba_unmultiplied(70, 70, 70, 230),
             measure_text: Color32::WHITE,
+            flow_file: hex(0x6cb6ff),
+            flow_yours: hex(0xf2b544),
+            flow_error: hex(0xff8a80),
+            flow_error_fill: hex(0xe5484d),
+            flow_ok: hex(0x3fb950),
         };
         match b {
             Brightness::Dark => dark,
@@ -186,6 +199,11 @@ impl Tokens {
                 ruler_text: hex(0x1e1e1e),
                 section_divider: hex(0x9c9c9c),
                 tab_strip: hex(0xa6a6a6),
+                flow_file: hex(0x0b4fa8),
+                flow_yours: hex(0x6e4100),
+                flow_error: hex(0x9c1c14),
+                flow_error_fill: hex(0xb3261e),
+                flow_ok: hex(0x145c2a),
                 ..dark
             },
             Brightness::Light => Tokens {
@@ -216,6 +234,11 @@ impl Tokens {
                 ruler_text: hex(0x1e1e1e),
                 section_divider: hex(0xd0d0d0),
                 tab_strip: hex(0xe2e2e2),
+                flow_file: hex(0x1f6feb),
+                flow_yours: hex(0x9a5b00),
+                flow_error: hex(0xc62828),
+                flow_error_fill: hex(0xd93025),
+                flow_ok: hex(0x1a7f37),
                 ..dark
             },
             Brightness::HighContrast => Tokens {
@@ -247,6 +270,11 @@ impl Tokens {
                 ruler_text: hex(0xffffff),
                 section_divider: hex(0xffffff),
                 tab_strip: hex(0x000000),
+                flow_file: hex(0x59c3ff),
+                flow_yours: hex(0xffc046),
+                flow_error: hex(0xff7070),
+                flow_error_fill: hex(0xff4d4d),
+                flow_ok: hex(0x4be06e),
                 ..dark
             },
         }
@@ -452,6 +480,15 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);
+    // Flow quotes a report's own words in the report's face: the bundled Source Serif 4.
+    let serif = match designcraft_fonts::bundled().get(SERIF) {
+        Some(bytes) => {
+            add(&mut fonts, "serif", bytes);
+            vec!["serif".into(), "ui".into()]
+        }
+        None => vec!["ui".into()],
+    };
+    fonts.families.insert(FontFamily::Name("serif".into()), serif);
     let pick = |script: &str| -> Vec<&designcraft_fonts::CraftFont> { craft.iter().filter(|f| f.scripts.contains(&script)).collect() };
     let mut japanese = pick("Jpan");
     // BIZ UDPGothic (the UI face) first, Regular before Bold; the semibold family prefers Bold.
@@ -485,6 +522,14 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
         fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
     }
     fonts
+}
+
+/// Source Serif 4 Regular in [`designcraft_fonts::bundled`].
+const SERIF: usize = 4;
+
+/// The report's face, for quoting its text (Flow).
+pub fn serif(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("serif".into()))
 }
 
 pub fn semibold(size: f32) -> FontId {
@@ -760,5 +805,14 @@ mod ukrainian_font_tests {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod flow_font_tests {
+    /// Flow's serif is the bundled Source Serif 4 Regular (the index into `bundled()` stays right).
+    #[test]
+    fn flow_serif_is_source_serif_4() {
+        assert_eq!(designcraft_fonts::bundled()[super::SERIF], &include_bytes!("../../../assets/fonts/SourceSerif4-Regular.ttf")[..]);
     }
 }
