@@ -6,7 +6,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use designcraft_doc::{
-    ANCHOR_MARK, CharFormat, CharRun, ENDNOTE_REF, EditorialNote, FOOTNOTE_REF, INDEX_MARK, NOTE_MARK, OBJECT_MARK, ParaFormat, Story, XREF_MARK,
+    ANCHOR_MARK, CharFormat, CharRun, ENDNOTE_REF, EditorialNote, FOOTNOTE_REF, INDEX_MARK, NOTE_MARK, OBJECT_MARK, ParaFormat, Story, Table,
+    XREF_MARK,
 };
 
 use crate::{Hunk, MergeOut, diff_text, merge_text};
@@ -21,32 +22,78 @@ pub struct StoryMerge {
     /// More for the report: tables the file replaced although the layout had edited them, and
     /// the layout's tables kept over the file's.
     pub warnings: Vec<String>,
+    /// The cells of tables merged cell by cell (tables that kept their shape).
+    pub cells: Vec<CellMerge>,
+}
+
+/// One cell of a table merged cell by cell: where it is (the merged story's table id, row and
+/// column), its text merge, and the cell's text in the file and in the layout before the update.
+#[derive(Clone, Debug)]
+pub struct CellMerge {
+    pub table: u64,
+    pub row: usize,
+    pub col: usize,
+    pub text: MergeOut,
+    pub file: String,
+    pub layout: String,
 }
 
 /// Merges the layout's story (`mine`) with the file's new import (`theirs`), both descended from
 /// the story the last import left (`base`). `None` when the result would not be a valid story or
 /// the merge can't account for it.
 pub fn merge_story(base: &Story, mine: &Story, theirs: &Story) -> Option<StoryMerge> {
+    merge_story_at(base, mine, theirs, 0)
+}
+
+/// Nesting limit for tables inside table cells.
+const MAX_DEPTH: usize = 4;
+
+fn merge_story_at(base: &Story, mine: &Story, theirs: &Story, depth: usize) -> Option<StoryMerge> {
     let text = merge_text(&base.text, &mine.text, &theirs.text)?;
     let chars = char_runs(&text, base, mine, theirs)?;
 
-    // Paragraph formats; a table comes with the format that names it (the file's under a new id).
+    // Paragraph formats. A table all three have that kept its shape is merged cell by cell in the
+    // layout's table; any other table comes with the format that names it (the file's under a new id).
     let mut warnings = Vec::new();
+    let mut cells = Vec::new();
     let mut tables = BTreeMap::new();
     let mut next_table = mine.tables.keys().chain(theirs.tables.keys()).max().map_or(1, |k| k.saturating_add(1));
     let mut paras = Vec::new();
     for (i, start) in std::iter::once(0).chain(text.text.match_indices('\n').map(|(at, _)| at + 1)).enumerate() {
-        let (mut p, side) = para_format(&text, start, base, mine, theirs, &mut warnings, i)?;
+        let (mut p, side, three) = para_format(&text, start, base, mine, theirs)?;
         if let Some(id) = p.table {
-            let id = match side {
-                Side::Mine => {
+            let ids = three.and_then(|[b, m, t]| Some((b?, m?, t?)));
+            let cellwise = ids.and_then(|(b, m, t)| {
+                merge_cells(base.tables.get(&b)?, mine.tables.get(&m)?, theirs.tables.get(&t)?, m, depth).map(|merged| (m, merged))
+            });
+            let id = match (cellwise, side) {
+                (Some((m, (table, merged))), _) => {
+                    tables.insert(m, Arc::new(table));
+                    cells.extend(merged);
+                    m
+                }
+                (None, Side::Mine) => {
+                    if ids.is_some() {
+                        warnings.push(format!(
+                            "paragraph {}: the layout's table was kept; the file's version (its rows or columns changed) was not applied",
+                            i + 1
+                        ));
+                    }
                     tables.insert(id, mine.tables.get(&id)?.clone());
                     id
                 }
-                Side::Theirs => {
+                (None, Side::Theirs) => {
+                    if let Some((b, m, _)) = ids
+                        && mine.tables.get(&m) != base.tables.get(&b)
+                    {
+                        warnings.push(format!(
+                            "paragraph {}: the file's table (its rows or columns changed) replaced edits made to it in the layout",
+                            i + 1
+                        ));
+                    }
                     let new = next_table;
                     next_table = next_table.saturating_add(1);
-                    tables.insert(new, Arc::new(designcraft_doc::Table { id: new, ..(**theirs.tables.get(&id)?).clone() }));
+                    tables.insert(new, Arc::new(Table { id: new, ..(**theirs.tables.get(&id)?).clone() }));
                     new
                 }
             };
@@ -88,7 +135,51 @@ pub fn merge_story(base: &Story, mine: &Story, theirs: &Story) -> Option<StoryMe
     };
     keep_moved_formats(&mut story, &text, base, mine)?;
     story.check().ok()?;
-    Some(StoryMerge { story, text, warnings })
+    Some(StoryMerge { story, text, warnings, cells })
+}
+
+/// The 0% check for a merge: its text differs from the file's only by the reported deviations, and
+/// the changes from the layout's text rebuild it exactly. (Table cells merged cell by cell were
+/// checked as they were merged.)
+pub fn verified(theirs: &Story, mine: &Story, m: &StoryMerge) -> bool {
+    let out = m.story.text.as_str();
+    crate::apply(&theirs.text, out, &m.text.deviations).as_deref() == Some(out)
+        && crate::apply(&mine.text, out, &crate::diff_text(&mine.text, out)).as_deref() == Some(out)
+}
+
+/// The layout's table with each cell's text merged with the file's by Flow's rules, keeping the
+/// layout's table formatting (style, widths, heights, fills, strokes); a graphic cell keeps the
+/// layout's. `None` when the three tables don't have the same rows, columns and merged cells, or
+/// a cell's merge can't be accounted for.
+fn merge_cells(base: &Table, mine: &Table, theirs: &Table, id: u64, depth: usize) -> Option<(Table, Vec<CellMerge>)> {
+    let shape = |t: &Table| (t.nrows(), t.ncols(), t.cells.iter().map(|c| (c.row_span, c.col_span)).collect::<Vec<_>>());
+    if depth >= MAX_DEPTH || shape(base) != shape(mine) || shape(mine) != shape(theirs) {
+        return None;
+    }
+    let cols = mine.ncols().max(1);
+    let mut table = mine.clone();
+    let mut merged = Vec::new();
+    for (i, cell) in table.cells.iter_mut().enumerate() {
+        let (b, t) = (base.cells.get(i)?, theirs.cells.get(i)?);
+        if cell.graphic.is_some() || b.graphic.is_some() || t.graphic.is_some() {
+            continue;
+        }
+        let m = merge_story_at(&b.text, &cell.text, &t.text, depth + 1)?;
+        if !verified(&t.text, &cell.text, &m) {
+            return None;
+        }
+        merged.push(CellMerge {
+            table: id,
+            row: i / cols,
+            col: i % cols,
+            text: m.text.clone(),
+            file: t.text.text.clone(),
+            layout: cell.text.text.clone(),
+        });
+        merged.extend(m.cells);
+        cell.text = m.story;
+    }
+    Some((table, merged))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -180,41 +271,26 @@ impl<'s> Formats<'s> {
 /// The format of the merged paragraph starting at `pos` and the side it comes from: the source of
 /// its first character (a conflict mark belongs to the text after it); where all three have that
 /// paragraph, the file's format unless the layout changed it.
-fn para_format(
-    m: &MergeOut,
-    pos: usize,
-    base: &Story,
-    mine: &Story,
-    theirs: &Story,
-    warnings: &mut Vec<String>,
-    index: usize,
-) -> Option<(ParaFormat, Side)> {
+fn para_format(m: &MergeOut, pos: usize, base: &Story, mine: &Story, theirs: &Story) -> Option<(ParaFormat, Side, Option<[Option<u64>; 3]>)> {
     let from = m.segments.get(m.segments.partition_point(|s| s.out.end <= pos)..)?.iter().find(|s| s.mine.is_some() || s.theirs.is_some());
     let (pb, pm, pt) = match from {
         Some(s) => {
             let off = pos.saturating_sub(s.out.start);
             match (para_in(base, &s.base, off), para_in(mine, &s.mine, off), para_in(theirs, &s.theirs, off)) {
                 (Some(b), Some(m), Some(t)) => (b?, m?, t?),
-                (_, Some(m), _) => return Some((m?.clone(), Side::Mine)),
-                (_, None, Some(t)) => return Some((t?.clone(), Side::Theirs)),
+                (_, Some(m), _) => return Some((m?.clone(), Side::Mine, None)),
+                (_, None, Some(t)) => return Some((t?.clone(), Side::Theirs, None)),
                 _ => return None,
             }
         }
         // An empty last paragraph: the last paragraph on each side.
         None => (base.paras.last()?, mine.paras.last()?, theirs.paras.last()?),
     };
+    let tables = Some([pb.table, pm.table, pt.table]);
     if pm != pb {
-        if pm.table.is_some() && pt.table.is_some() {
-            warnings.push(format!("paragraph {}: the layout's table was kept; the file's version of it was not applied", index + 1));
-        }
-        return Some((pm.clone(), Side::Mine));
+        return Some((pm.clone(), Side::Mine, tables));
     }
-    if let (Some(a), Some(b)) = (pm.table, pb.table)
-        && mine.tables.get(&a) != base.tables.get(&b)
-    {
-        warnings.push(format!("paragraph {}: the file's table replaced edits made to it in the layout", index + 1));
-    }
-    Some((pt.clone(), Side::Theirs))
+    Some((pt.clone(), Side::Theirs, tables))
 }
 
 /// The format of the paragraph at offset `off` into range `r` of `st`; `None` without a range.
@@ -384,6 +460,70 @@ mod tests {
         assert!(notes[0].1.starts_with("Layout had: "), "{notes:?}");
     }
 
+    /// A story of `text` and then a table of `rows`.
+    fn with_table(text: &str, rows: &[&[&str]]) -> Story {
+        let mut st = story(text);
+        let data: Vec<Vec<String>> = rows.iter().map(|r| r.iter().map(|c| (*c).to_string()).collect()).collect();
+        let end = st.len();
+        st.insert_table(end, designcraft_doc::Table::from_strings(1, &data, 300.0, &ParaFormat::default(), &designcraft_doc::CharFormat::default()));
+        st
+    }
+
+    fn table(st: &Story) -> &designcraft_doc::Table {
+        st.tables.values().next().unwrap()
+    }
+
+    fn cell(st: &Story, r: usize, c: usize) -> String {
+        table(st).cell(r, c).unwrap().text.text.replace(NOTE_MARK, "")
+    }
+
+    fn edit_cell(st: &mut Story, r: usize, c: usize, text: &str) {
+        let id = *st.tables.keys().next().unwrap();
+        let cell = Arc::make_mut(st.tables.get_mut(&id).unwrap()).cell_mut(r, c).unwrap();
+        let n = cell.text.len();
+        cell.text.replace(0..n, text);
+    }
+
+    #[test]
+    fn a_table_that_kept_its_shape_merges_cell_by_cell_and_keeps_its_formatting() {
+        let base = with_table("Prices.", &[&["Item", "Price"], &["Tea", "3.50"]]);
+        let mut mine = base.clone();
+        edit_cell(&mut mine, 1, 0, "Green tea");
+        let id = *mine.tables.keys().next().unwrap();
+        let t = Arc::make_mut(mine.tables.get_mut(&id).unwrap());
+        t.style = "Data".into();
+        t.cell_mut(0, 0).unwrap().fill = "Black".into();
+        let theirs = with_table("Prices.", &[&["Item", "Price"], &["Tea", "3.75"]]);
+        let m = merged(&base, &mine, &theirs);
+        assert_eq!((cell(&m.story, 1, 0), cell(&m.story, 1, 1)), ("Green tea".to_string(), "3.75".to_string()));
+        assert_eq!((table(&m.story).style.as_str(), table(&m.story).cell(0, 0).unwrap().fill.as_str()), ("Data", "Black"));
+        let kept: Vec<(usize, usize)> = m.cells.iter().filter(|c| !c.text.deviations.is_empty()).map(|c| (c.row, c.col)).collect();
+        assert_eq!(kept, [(1, 0)], "the layout's cell edit is reported");
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+    }
+
+    #[test]
+    fn a_cell_both_changed_takes_the_files_text_with_a_flow_note_in_the_cell() {
+        let base = with_table("Prices.", &[&["Item", "Price"], &["Tea", "3.50"]]);
+        let mut mine = base.clone();
+        edit_cell(&mut mine, 1, 1, "3.60");
+        let m = merged(&base, &mine, &with_table("Prices.", &[&["Item", "Price"], &["Tea", "3.75"]]));
+        assert_eq!(cell(&m.story, 1, 1), "3.75");
+        let notes = &table(&m.story).cell(1, 1).unwrap().text.editorial;
+        assert_eq!(notes.iter().map(|n| (n.author.as_str(), n.text.as_str())).collect::<Vec<_>>(), [("Flow", "Layout had: 3.60")]);
+        assert_eq!(m.cells.iter().map(|c| c.text.conflicts.len()).sum::<usize>(), 1);
+    }
+
+    #[test]
+    fn a_table_whose_shape_changed_comes_from_the_file_with_a_warning() {
+        let base = with_table("Prices.", &[&["Item", "Price"], &["Tea", "3.50"]]);
+        let mut mine = base.clone();
+        edit_cell(&mut mine, 1, 0, "Green tea");
+        let m = merged(&base, &mine, &with_table("Prices.", &[&["Item", "Price"], &["Tea", "3.50"], &["Cake", "12.00"]]));
+        assert_eq!((table(&m.story).nrows(), cell(&m.story, 1, 0)), (3, "Tea".to_string()));
+        assert!(m.warnings.iter().any(|w| w.contains("rows or columns")), "{:?}", m.warnings);
+    }
+
     const PIECES: &[&str] = &["a", "b", " ", ".", "\n", "é", "中", "👍🏽"];
 
     /// `st` after random edits: insertions and deletions at character positions, bold ranges,
@@ -408,6 +548,35 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// Tables that keep their shape merge cell by cell: a cell only the file changed takes the
+        /// file's text, one only the layout changed keeps the layout's, one both changed differently
+        /// takes the file's with a Flow note in the cell.
+        #[test]
+        fn merging_edited_tables_follows_the_rules_in_every_cell(
+            cells in proptest::collection::vec(0..PIECES.len(), 4),
+            mine in proptest::collection::vec((0..4usize, 0..PIECES.len()), 0..4),
+            theirs in proptest::collection::vec((0..4usize, 0..PIECES.len()), 0..4),
+        ) {
+            let text: Vec<String> = cells.iter().map(|i| format!("v{}", PIECES[*i].trim())).collect();
+            let base = with_table("T.", &[&[&text[0], &text[1]], &[&text[2], &text[3]]]);
+            let edit = |edits: &[(usize, usize)]| {
+                let mut st = base.clone();
+                for &(i, p) in edits {
+                    let now = cell(&st, i / 2, i % 2);
+                    edit_cell(&mut st, i / 2, i % 2, &format!("{now}{}", PIECES[p].trim()));
+                }
+                st
+            };
+            let (m_story, t_story) = (edit(&mine), edit(&theirs));
+            let m = merge_story(&base, &m_story, &t_story).ok_or_else(|| proptest::test_runner::TestCaseError::fail("no merge"))?;
+            proptest::prop_assert!(m.story.check().is_ok());
+            for i in 0..4 {
+                let (b, y, t, out) = (cell(&base, i / 2, i % 2), cell(&m_story, i / 2, i % 2), cell(&t_story, i / 2, i % 2), cell(&m.story, i / 2, i % 2));
+                let expected = if y == b || y == t { t } else if t == b { y } else { t };
+                proptest::prop_assert_eq!(out, expected, "cell {}", i);
+            }
+        }
+
         #[test]
         fn merging_edited_stories_always_gives_a_valid_exact_story(
             base in proptest::collection::vec(0..PIECES.len(), 0..24),

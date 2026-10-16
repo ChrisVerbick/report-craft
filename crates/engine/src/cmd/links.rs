@@ -1095,6 +1095,53 @@ mod text_link_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A workbook whose first sheet holds `rows` as inline strings.
+    fn workbook(rows: &[&[&str]]) -> Vec<u8> {
+        use std::io::Write;
+        let rows: String = rows
+            .iter()
+            .map(|row| format!("<row>{}</row>", row.iter().map(|v| format!(r#"<c t="inlineStr"><is><t>{v}</t></is></c>"#)).collect::<String>()))
+            .collect();
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(format!("<worksheet><sheetData>{rows}</sheetData></worksheet>").as_bytes()).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    /// A linked spreadsheet that kept its shape merges cell by cell: the file's new values come in,
+    /// a cell edited in the layout keeps its text and is reported with its address, and the
+    /// layout's cell formatting stays.
+    #[test]
+    fn update_merges_a_linked_spreadsheets_cells_and_keeps_its_formatting() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-cells-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let table = *story(&s, sid).tables.keys().next().unwrap();
+        s.execute("table.select", &json!({"story": sid.0, "table": table, "rows": [0, 0], "cols": [0, 0]})).unwrap();
+        s.execute("table.setCell", &json!({"fill": "Black"})).unwrap();
+        s.execute("table.select", &json!({"story": sid.0, "table": table, "rows": [1, 1], "cols": [0, 0]})).unwrap();
+        s.execute("table.setCell", &json!({"text": "Green tea"})).unwrap();
+
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.75"]])).unwrap();
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let st = story(&s, sid);
+        let t = st.tables.values().next().unwrap();
+        let text = |r: usize, c: usize| t.cell(r, c).unwrap().text.text.clone();
+        assert_eq!((text(1, 0), text(1, 1)), ("Green tea".to_string(), "3.75".to_string()));
+        assert_eq!(t.cell(0, 0).unwrap().fill, "Black");
+        let report = &r["reports"][0];
+        assert_eq!(report["deviations"], json!([{"file": "Tea", "layout": "Green tea", "cell": {"table": table, "row": 1, "col": 0}}]), "{report}");
+        assert!(report["changes"].as_array().unwrap().iter().any(|c| c["after"] == "3.75" && c["cell"]["row"] == 1), "{report}");
+        assert_eq!(report["warnings"], json!([]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The 0% gate: a merged story whose text differs from the file's by anything unreported is
     /// refused.
     #[test]

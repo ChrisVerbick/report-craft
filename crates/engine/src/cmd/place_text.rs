@@ -255,32 +255,48 @@ pub(crate) fn remerge(
 /// The 0% check run before a merge changes the document: the merged text differs from the file's
 /// only by the reported deviations, and the reported changes turn the layout's text into it.
 pub(crate) fn verified(theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> bool {
-    let out = m.story.text.as_str();
-    designcraft_flow::apply(&theirs.text, out, &m.text.deviations).as_deref() == Some(out)
-        && designcraft_flow::apply(&mine.text, out, &designcraft_flow::diff_text(&mine.text, out)).as_deref() == Some(out)
+    designcraft_flow::verified(theirs, mine, m)
 }
 
 /// What a merge did to a story, in whole sentences: the changes to its text, the layout's edits
 /// that differ from the file, the conflicts (the file's text kept, the layout's in a Flow note) and
-/// its warnings. Markers show as labels; a difference that is only conflict marks is in conflicts.
+/// its warnings; table cells merged cell by cell add theirs, each with its `cell` (table, row,
+/// column). Markers show as labels; a difference that is only conflict marks is in conflicts.
 fn report(sid: StoryId, theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> Value {
-    let out = &m.story.text;
+    let mut entries: [Vec<Value>; 3] = Default::default();
+    report_text(&mine.text, &theirs.text, &m.story.text, &m.text, None, &mut entries);
+    for c in &m.cells {
+        let cell = json!({"table": c.table, "row": c.row, "col": c.col});
+        report_text(&c.layout, &c.file, &c.text.text, &c.text, Some(cell), &mut entries);
+    }
+    let [changes, deviations, conflicts] = entries;
+    json!({"story": sid.0, "changes": changes, "deviations": deviations, "conflicts": conflicts, "warnings": m.warnings})
+}
+
+/// Report entries for one merged text (`mine` → `out`, against the file's `theirs`): its changes,
+/// deviations and conflicts, in whole sentences.
+fn report_text(mine: &str, theirs: &str, out: &str, m: &designcraft_flow::MergeOut, cell: Option<Value>, into: &mut [Vec<Value>; 3]) {
     let raw = |s: &'_ str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
     let text = |s: &str, r: &std::ops::Range<usize>| designcraft_flow::shown(&raw(s, r)).trim().to_string();
     let notes_only = |a: String, b: String| a.replace(designcraft_doc::NOTE_MARK, "") == b.replace(designcraft_doc::NOTE_MARK, "");
-    let changes = designcraft_flow::sentences(&mine.text, out, &designcraft_flow::diff_text(&mine.text, out));
-    let deviations = designcraft_flow::sentences(&theirs.text, out, &m.text.deviations);
-    json!({
-        "story": sid.0,
-        "changes": changes.iter().map(|h| json!({"before": text(&mine.text, &h.old), "after": text(out, &h.new)})).collect::<Vec<_>>(),
-        "deviations": deviations
-            .iter()
-            .filter(|h| !notes_only(raw(&theirs.text, &h.old), raw(out, &h.new)))
-            .map(|h| json!({"file": text(&theirs.text, &h.old), "layout": text(out, &h.new)}))
-            .collect::<Vec<_>>(),
-        "conflicts": m.text.conflicts.iter().map(|c| json!({"file": text(&theirs.text, &c.theirs), "layout": text(&mine.text, &c.mine)})).collect::<Vec<_>>(),
-        "warnings": m.warnings,
-    })
+    let at = |mut v: Value| {
+        if let (Some(o), Some(c)) = (v.as_object_mut(), &cell) {
+            o.insert("cell".into(), c.clone());
+        }
+        v
+    };
+    let [changes, deviations, conflicts] = into;
+    for h in designcraft_flow::sentences(mine, out, &designcraft_flow::diff_text(mine, out)) {
+        changes.push(at(json!({"before": text(mine, &h.old), "after": text(out, &h.new)})));
+    }
+    for h in designcraft_flow::sentences(theirs, out, &m.deviations) {
+        if !notes_only(raw(theirs, &h.old), raw(out, &h.new)) {
+            deviations.push(at(json!({"file": text(theirs, &h.old), "layout": text(out, &h.new)})));
+        }
+    }
+    for c in &m.conflicts {
+        conflicts.push(at(json!({"file": text(theirs, &c.theirs), "layout": text(mine, &c.mine)})));
+    }
 }
 
 /// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?

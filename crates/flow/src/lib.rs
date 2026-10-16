@@ -14,7 +14,7 @@ use std::ops::Range;
 
 pub use merge::{Conflict, MergeOut, Segment, is_anchor, merge_text};
 use similar::{Algorithm, DiffTag, TextDiff};
-pub use story::{StoryMerge, merge_story};
+pub use story::{CellMerge, StoryMerge, merge_story, verified};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// One change from text `a` to text `b`: bytes `old` of `a` become bytes `new` of `b`. Both start
