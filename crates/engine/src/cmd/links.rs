@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool} — reload modified links from their files (all when neither); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, …}], deviations: [{file, layout, …}], conflicts: [{file, layout, …}], warnings, pages: [{index, name}], fit: {overset, lines}}], errors: [as links.check]}; each entry has cell? {table, row, col}, at {start, end} (bytes in the updated story or cell, for text.select / table.select), words [{kind: same|deleted|inserted, text}], page, pageName, y (0–1 from the page top) and overset (in text that doesn't fit)",
+            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool} — reload modified links from their files (all when neither); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, …}], deviations: [{file, layout, …}], conflicts: [{file, layout, …}], warnings, pages: [{index, name}], fit: {overset, lines}}], errors: [as links.check]}; each entry has cell? {table, row, col}, at {start, end} (bytes in the updated story or cell, for text.select / table.select), was? {start, end} (the same place in the story or cell before the update, for Go To while reviewing), words [{kind: same|deleted|inserted, text}], page, pageName, y (0–1 from the page top) and overset (in text that doesn't fit)",
             has_doc,
             update
         ),
@@ -1322,7 +1322,12 @@ mod text_link_tests {
 
     /// The text an entry's `at` covers in `text`, as the report shows it.
     fn covered(text: &str, e: &Value) -> String {
-        let (a, b) = (e["at"]["start"].as_u64().unwrap() as usize, e["at"]["end"].as_u64().unwrap() as usize);
+        covered_by(text, e, "at")
+    }
+
+    /// The text an entry's range `key` (`at` or `was`) covers in `text`, as the report shows it.
+    fn covered_by(text: &str, e: &Value, key: &str) -> String {
+        let (a, b) = (e[key]["start"].as_u64().unwrap() as usize, e[key]["end"].as_u64().unwrap() as usize);
         designcraft_flow::shown(text.get(a..b).unwrap()).trim().to_string()
     }
 
@@ -1340,12 +1345,20 @@ mod text_link_tests {
         layout_edit(&mut s, sid, "grew", "grew strongly");
         layout_edit(&mut s, sid, "were flat", "were steady");
         revise(&path, "Revenue grew. Costs fell. Staff rose.");
+        let was = story(&s, sid).text;
         let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
         let rep = &r["reports"][0];
         let text = story(&s, sid).text;
         let (changes, kept, conflicts) =
             (rep["changes"].as_array().unwrap(), rep["deviations"].as_array().unwrap(), rep["conflicts"].as_array().unwrap());
         assert!(!changes.is_empty() && !kept.is_empty() && !conflicts.is_empty(), "{rep}");
+        // `was`: the same place in the story before the update, for Go To while reviewing.
+        for e in changes {
+            assert_eq!(covered_by(&was, e, "was"), e["before"], "{e}");
+        }
+        for e in kept.iter().chain(conflicts) {
+            assert_eq!(covered_by(&was, e, "was"), e["layout"], "{e}");
+        }
         for e in changes {
             assert_eq!(covered(&text, e), e["after"], "{e}");
             assert_eq!((rebuilt(e, "deleted"), rebuilt(e, "inserted")), (e["before"].as_str().unwrap().into(), e["after"].as_str().unwrap().into()));

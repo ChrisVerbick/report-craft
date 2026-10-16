@@ -300,12 +300,15 @@ fn report_text(mine: &str, theirs: &str, out: &str, m: &designcraft_flow::MergeO
     let raw = |s: &'_ str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
     let text = |s: &str, r: &std::ops::Range<usize>| designcraft_flow::shown(&raw(s, r)).trim().to_string();
     let notes_only = |a: String, b: String| a.replace(designcraft_doc::NOTE_MARK, "") == b.replace(designcraft_doc::NOTE_MARK, "");
-    let entry = |mut v: Value, at: std::ops::Range<usize>, from: &str, to: &str| {
+    let entry = |mut v: Value, at: std::ops::Range<usize>, was: Option<std::ops::Range<usize>>, from: &str, to: &str| {
         if let Some(o) = v.as_object_mut() {
             if let Some(c) = &cell {
                 o.insert("cell".into(), c.clone());
             }
             o.insert("at".into(), json!({"start": at.start, "end": at.end}));
+            if let Some(w) = was {
+                o.insert("was".into(), json!({"start": w.start, "end": w.end}));
+            }
             let words = designcraft_flow::words(from, to).into_iter().map(|(k, t)| json!({"kind": k.name(), "text": t}));
             o.insert("words".into(), Value::Array(words.collect()));
         }
@@ -314,20 +317,40 @@ fn report_text(mine: &str, theirs: &str, out: &str, m: &designcraft_flow::MergeO
     let [changes, deviations, conflicts] = into;
     for h in designcraft_flow::sentences(mine, out, &designcraft_flow::diff_text(mine, out)) {
         let (before, after) = (text(mine, &h.old), text(out, &h.new));
-        changes.push(entry(json!({"before": before, "after": after}), h.new.clone(), &before, &after));
+        changes.push(entry(json!({"before": before, "after": after}), h.new.clone(), Some(h.old.clone()), &before, &after));
     }
     for h in designcraft_flow::sentences(theirs, out, &m.deviations) {
         if !notes_only(raw(theirs, &h.old), raw(out, &h.new)) {
             let (file, layout) = (text(theirs, &h.old), text(out, &h.new));
-            deviations.push(entry(json!({"file": file, "layout": layout}), h.new.clone(), &file, &layout));
+            deviations.push(entry(json!({"file": file, "layout": layout}), h.new.clone(), kept_from(m, &h.new), &file, &layout));
         }
     }
     for c in &m.conflicts {
         // The merged text has the conflict mark at `at`, then the file's version.
         let (file, layout) = (text(theirs, &c.theirs), text(mine, &c.mine));
         let start = c.at.saturating_add(designcraft_doc::NOTE_MARK.len_utf8());
-        conflicts.push(entry(json!({"file": file, "layout": layout}), start..start.saturating_add(c.theirs.len()), &layout, &file));
+        conflicts.push(entry(
+            json!({"file": file, "layout": layout}),
+            start..start.saturating_add(c.theirs.len()),
+            Some(c.mine.clone()),
+            &layout,
+            &file,
+        ));
     }
+}
+
+/// Where the merged text's range `r` is in the layout's text before the update (`mine`): the span
+/// of the layout's side of the segments it covers. `None` when none of it came from the layout.
+fn kept_from(m: &designcraft_flow::MergeOut, r: &std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+    let mut span: Option<std::ops::Range<usize>> = None;
+    for seg in m.segments.iter().filter(|s| s.out.start < r.end && r.start < s.out.end) {
+        let Some(mine) = &seg.mine else { continue };
+        // A segment from the layout holds its text unchanged, so offsets carry over one for one.
+        let start = mine.start.saturating_add(r.start.saturating_sub(seg.out.start));
+        let end = mine.end.saturating_sub(seg.out.end.saturating_sub(r.end));
+        span = Some(span.map_or(start..end, |s| s.start.min(start)..s.end.max(end)));
+    }
+    span
 }
 
 /// Where a report's differences land once the updated story is laid out: the pages its frames are
