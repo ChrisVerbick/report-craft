@@ -1514,6 +1514,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
+        "placeWithFlow" => crate::i18n::tr(&app.ui.language, "Place with Flow"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
@@ -1946,10 +1947,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         }
                     });
                 }
-                "importOptions" => {
+                "importOptions" | "placeWithFlow" => {
                     ui.label(egui::RichText::new(d.s("path")).size(10.5));
-                    check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
-                    if !d.b("removeStyles") {
+                    // Word and RTF files have styles to map; a workbook or plain text has none.
+                    let styled = d.id == "importOptions" || d.b("word");
+                    if styled {
+                        check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
+                    }
+                    if styled && !d.b("removeStyles") {
                         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Name Conflicts")).font(semibold(12.0)));
                         let conflicts: Vec<String> = d
                             .fields
@@ -2015,6 +2020,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 }
                             });
                         });
+                    }
+                    if d.id == "placeWithFlow" {
+                        crate::panels::flow::place_check(ui, &app.ui.language, &mut d);
                     }
                 }
                 "closeDocument" => {
@@ -2195,12 +2203,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         ui.add_space(12.0);
         let ok_label = match d.id.as_str() {
             "closeDocument" => "  Save  ",
+            "placeWithFlow" => "  Place  ",
             _ => "  OK  ",
         };
+        // Place with Flow waits for "Place with N errors" when the file shows errors.
+        let ok_enabled = !(d.id == "placeWithFlow" && d.n("blocking").unwrap_or(0.0) > 0.0 && !d.b("allow"));
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(
+                    .add_enabled(
+                        ok_enabled,
                         egui::Button::new(crate::rtl::widget(
                             ui,
                             egui::RichText::new(crate::i18n::tr(&app.ui.language, ok_label)).color(egui::Color32::WHITE),
@@ -2208,7 +2220,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    || (ok_enabled && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
@@ -2651,6 +2663,19 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             "file.place",
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
+        "placeWithFlow" => {
+            let blocking = d.n("blocking").unwrap_or(0.0) as usize;
+            if blocking > 0 && !d.b("allow") {
+                let message = format!("Tick “Place with {blocking} {}” to place it with them.", if blocking == 1 { "error" } else { "errors" });
+                app.ui.dialog = Some(d);
+                return Err(message);
+            }
+            app.open_file(
+                "file.place",
+                json!({"path": d.s("path"), "link": true, "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"),
+                    "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
+            )
+        }
         "fittingOptions" => {
             let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
             app.run(

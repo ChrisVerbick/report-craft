@@ -89,6 +89,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     state.reviews.insert(sid, (rev, dry_run(app, sid)));
                 }
             }
+            if ui.button(tr("Place with Flow…")).clicked() {
+                let _ = app.run("app.placeWithFlow", json!({}));
+            }
         });
     });
     if rows.is_empty() {
@@ -222,6 +225,70 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         },
     }
     ui.data_mut(|d| d.insert_temp(key, state));
+}
+
+/// Place with Flow's dialog, below the import options: what the file shows as errors, a preview,
+/// "Place with N errors" when it shows errors, and that it is placed linked.
+pub(crate) fn place_check(ui: &mut egui::Ui, lang: &str, d: &mut crate::dialogs::Dialog) {
+    let t = Tokens::get(ui.ctx());
+    let tr = |s: &'static str| crate::i18n::tr(lang, s).to_string();
+    let problems = d.fields.get("problems").and_then(Value::as_array).cloned().unwrap_or_default();
+    ui.add_space(8.0);
+    crate::rtl::label(ui, RichText::new(tr("Found in the file")).font(semibold(12.0)));
+    if problems.is_empty() {
+        crate::rtl::label(ui, RichText::new(tr("Nothing that needs your attention.")).color(t.text_dim));
+    }
+    let width = ui.available_width();
+    for (kind, lines) in sections(0, None, &problems, &[], true) {
+        for (i, l) in lines.iter().enumerate() {
+            line_row(ui, &t, lang, l, ui.id().with(("place_check", kind as u8, i)));
+        }
+    }
+    ui.add_space(8.0);
+    crate::rtl::label(ui, RichText::new(tr("Preview")).font(semibold(12.0)));
+    let preview = d.fields.get("preview").cloned().unwrap_or(Value::Null);
+    egui::Frame::NONE.fill(Color32::WHITE).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+        ui.set_width(width - 16.0);
+        let ink = Color32::from_gray(26);
+        if let Some(rows) = preview["rows"].as_array() {
+            egui::Grid::new("place_preview").spacing([12.0, 3.0]).show(ui, |ui| {
+                for r in rows {
+                    for c in r.as_array().into_iter().flatten() {
+                        ui.label(RichText::new(c.as_str().unwrap_or_default()).color(ink).size(11.0));
+                    }
+                    ui.end_row();
+                }
+            });
+            if let Some(more) = preview["more"].as_u64().filter(|m| *m > 0) {
+                ui.label(
+                    RichText::new(format!("{more} {}", tr(if more == 1 { "more row" } else { "more rows" })))
+                        .color(Color32::from_gray(107))
+                        .size(10.5),
+                );
+            }
+        } else {
+            for p in preview["paragraphs"].as_array().into_iter().flatten() {
+                ui.add(egui::Label::new(RichText::new(p.as_str().unwrap_or_default()).font(serif(12.0)).color(ink)).wrap());
+            }
+        }
+    });
+    ui.add_space(6.0);
+    crate::rtl::label(
+        ui,
+        RichText::new(tr(
+            "Placed linked: when the file changes, Flow shows you the update before anything on the page changes, and keeps your layout edits.",
+        ))
+        .color(t.text_dim)
+        .size(10.5),
+    );
+    let blocking = problems.iter().filter(|e| e["blocks"] != false).count();
+    if blocking > 0 {
+        let mut allow = d.fields.get("allow").and_then(Value::as_bool).unwrap_or(false);
+        let label = format!("{} {blocking} {}", tr("Place with"), tr(if blocking == 1 { "error" } else { "errors" }));
+        if ui.checkbox(&mut allow, label).changed() {
+            d.fields.insert("allow".into(), json!(allow));
+        }
+    }
 }
 
 /// `links.list`'s linked text files, read at most twice a second (it looks at the files).
@@ -884,6 +951,79 @@ mod tests {
         h.get_by_label("Clear highlights").click();
         h.run_steps(2);
         assert_eq!(super::flow_marks(h.state(), sid), (false, false));
+    }
+
+    /// Place with Flow shows what a file shows as errors and a preview before it lands, waits for
+    /// "Place with N errors" when it shows errors, and places it linked.
+    #[test]
+    fn place_with_flow_checks_the_file_and_places_it_linked() {
+        let dir = std::env::temp_dir().join(format!("dc-flow-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("letter.txt");
+        std::fs::write(&path, "Dear readers.\nSee Error! Reference source not found. below.").unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
+        app.run("app.placeWithFlow", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.id.as_str(), d.fields["blocking"].as_u64()), ("placeWithFlow", Some(1)));
+        assert_eq!(d.fields["preview"]["paragraphs"][0], "Dear readers.");
+        // Not without the box: nothing is placed and the dialog stays.
+        assert!(crate::dialogs::confirm(&mut app).is_err());
+        assert!(app.ui.dialog.is_some());
+        assert_eq!(app.session.doc().unwrap().doc.stories.len(), 0);
+        app.ui.dialog.as_mut().unwrap().fields.insert("allow".into(), json!(true));
+        crate::dialogs::confirm(&mut app).unwrap();
+        let rows = app.session.execute("links.list", &json!({})).unwrap();
+        let linked: Vec<_> = rows.as_array().unwrap().iter().filter(|r| r.get("story").is_some()).collect();
+        assert_eq!(linked.len(), 1, "placed linked: {rows}");
+        assert_eq!(linked[0]["merges"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Not a check: renders Place with Flow for a workbook that shows an error, into `plan/shots/`
+    /// (`cargo test -p designcraft-ui-egui --lib -- --ignored render_place_with_flow`).
+    #[test]
+    #[ignore]
+    fn render_place_with_flow() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("dc-flow-render-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("q3-figures.xlsx");
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        let cell = |r: usize, c: &str, v: &str| format!(r#"<c r="{c}{r}" t="inlineStr"><is><t>{v}</t></is></c>"#);
+        let mut rows = String::new();
+        for (r, (item, cost, margin)) in
+            [("Item", "Cost", "Margin"), ("Paper", "3,200", "22%"), ("Ink", "1,850", "20%"), ("Labels", "960", "19%")].iter().enumerate()
+        {
+            rows.push_str(&format!(r#"<row r="{}">{}{}{}</row>"#, r + 1, cell(r + 1, "A", item), cell(r + 1, "B", cost), cell(r + 1, "C", margin)));
+        }
+        rows.push_str(r#"<row r="5"><c r="A5" t="inlineStr"><is><t>Total</t></is></c><c r="B5"><f>[2]Freight!C9</f><v>6010</v></c><c r="C5" t="e"><f>VLOOKUP(A5,Rates!A:B,2,0)</f><v>#N/A</v></c></row>"#);
+        w.write_all(format!("<worksheet><sheetData>{rows}</sheetData></worksheet>").as_bytes()).unwrap();
+        std::fs::write(&path, w.finish().unwrap().into_inner()).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.run("window.brightness", json!({"brightness": "mediumDark"})).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
+        app.run("app.placeWithFlow", json!({})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        h.render().unwrap().save(shots.join("f2.13-place.png")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A link that replaces its story's text (placed before Flow could merge) says so.

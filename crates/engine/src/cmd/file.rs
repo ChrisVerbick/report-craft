@@ -69,15 +69,21 @@ pub fn specs() -> Vec<CommandSpec> {
         has_doc, |s, p| {
             let (bytes, name, _) = read_source(p)?;
             let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
-            let st = &s.doc()?.doc.styles;
-            let conflicts: Vec<&str> = imp
-                .para_styles
-                .iter()
-                .filter(|x| st.para(&x.name).is_some())
-                .chain(imp.char_styles.iter().filter(|x| st.char_style(&x.name).is_some()))
-                .map(|x| x.name.as_str())
-                .collect();
-            Ok(json!({"paragraph": imp.para_styles.iter().map(|x| &x.name).collect::<Vec<_>>(), "character": imp.char_styles.iter().map(|x| &x.name).collect::<Vec<_>>(), "conflicts": conflicts}))
+            Ok(import_styles(&s.doc()?.doc, &imp))
+        }),
+        cmd!(query "place.check", "Place with Flow: Check", [], None,
+        "{path | base64, name} → {paragraph, character, conflicts (as place.styles), problems: [{at, cell?, shows, formula?, kind, blocks, message}], warnings, preview: {paragraphs: [text]} | {rows: [[text]], more}} — what a text file or workbook would bring in, before it is placed (Place with Flow)",
+        has_doc, |s, p| {
+            let (bytes, name, _) = read_source(p)?;
+            let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.check", e.to_string()))?;
+            let mut out = import_styles(&s.doc()?.doc, &imp);
+            if let Some(o) = out.as_object_mut() {
+                let path = p.get("path").and_then(Value::as_str).unwrap_or(&name);
+                o.insert("problems".into(), Value::Array(imp.problems.iter().map(|x| super::links::problem_json(None, path, x)).collect()));
+                o.insert("warnings".into(), json!(imp.warnings));
+                o.insert("preview".into(), preview(&imp.story));
+            }
+            Ok(out)
         }),
         cmd!(
             "snippet.place",
@@ -732,6 +738,38 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         let _ = (s, path);
         Err(EngineError::Other("revert isn't available on the web".into()))
     }
+}
+
+/// The styles an import brings, and those the document already has (Import Options).
+fn import_styles(doc: &designcraft_doc::Document, imp: &designcraft_textimport::Imported) -> Value {
+    let st = &doc.styles;
+    let conflicts: Vec<&str> = imp
+        .para_styles
+        .iter()
+        .filter(|x| st.para(&x.name).is_some())
+        .chain(imp.char_styles.iter().filter(|x| st.char_style(&x.name).is_some()))
+        .map(|x| x.name.as_str())
+        .collect();
+    json!({"paragraph": imp.para_styles.iter().map(|x| &x.name).collect::<Vec<_>>(), "character": imp.char_styles.iter().map(|x| &x.name).collect::<Vec<_>>(), "conflicts": conflicts})
+}
+
+/// The start of an import, to preview it: its table's first five rows, or its first six
+/// paragraphs (markers shown as labels, each cut at 300 characters).
+fn preview(st: &designcraft_doc::Story) -> Value {
+    if let Some(t) = st.tables.values().next() {
+        let rows: Vec<Vec<String>> =
+            (0..t.nrows().min(5)).map(|r| (0..t.ncols()).map(|c| t.cell(r, c).map(|x| x.text.text.clone()).unwrap_or_default()).collect()).collect();
+        return json!({"rows": rows, "more": t.nrows().saturating_sub(5)});
+    }
+    let paragraphs: Vec<String> = st
+        .para_ranges()
+        .into_iter()
+        .filter_map(|r| st.text.get(r))
+        .map(|p| designcraft_flow::shown(p).trim().chars().take(300).collect::<String>())
+        .filter(|p| !p.is_empty())
+        .take(6)
+        .collect();
+    json!({"paragraphs": paragraphs})
 }
 
 #[cfg(test)]

@@ -335,7 +335,7 @@ fn reimport(
 
 /// A file's error for the check and the update result: the story, the file, where, what it shows,
 /// its formula, what kind of error, and a one-line message.
-fn problem_json(sid: StoryId, path: &str, p: &designcraft_textimport::Problem) -> Value {
+pub(super) fn problem_json(sid: Option<StoryId>, path: &str, p: &designcraft_textimport::Problem) -> Value {
     use designcraft_textimport::ProblemKind;
     let kind = match p.kind {
         ProblemKind::ErrorValue => "errorValue",
@@ -344,7 +344,7 @@ fn problem_json(sid: StoryId, path: &str, p: &designcraft_textimport::Problem) -
         ProblemKind::FieldError => "fieldError",
     };
     let cell = p.cell.map(|(row, col)| json!({"row": row, "col": col}));
-    json!({"story": sid.0, "name": file_name(path), "at": p.at, "cell": cell, "shows": p.shows, "formula": p.formula, "kind": kind, "blocks": p.kind.blocks(), "message": p.message()})
+    json!({"story": sid.map(|s| s.0), "name": file_name(path), "at": p.at, "cell": cell, "shows": p.shows, "formula": p.formula, "kind": kind, "blocks": p.kind.blocks(), "message": p.message()})
 }
 
 /// The errors the files of modified linked text stories show, as an update would bring them in.
@@ -359,7 +359,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
         let (bytes, _) = read_text(&l.path)?;
         let name = file_name(&l.path);
         let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("links.check", format!("{name}: {e}")))?;
-        out.extend(imp.problems.iter().map(|pr| problem_json(st.id, &l.path, pr)));
+        out.extend(imp.problems.iter().map(|pr| problem_json(Some(st.id), &l.path, pr)));
     }
     Ok(Value::Array(out))
 }
@@ -502,7 +502,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
                 warnings.extend(w);
                 (json!({"story": sid.0, "replaced": true}), problems)
             };
-            let found: Vec<Value> = problems.iter().map(|p| problem_json(*sid, path, p)).collect();
+            let found: Vec<Value> = problems.iter().map(|p| problem_json(Some(*sid), path, p)).collect();
             if let Some(l) = d.story_mut(*sid).and_then(|st| st.file_link.as_mut()) {
                 l.last_update = Some(designcraft_doc::UpdateRecord { at: now_secs(), report, errors: found.clone() });
             }
@@ -1562,6 +1562,24 @@ mod text_link_tests {
         assert_eq!(marked(&cell(&s, 2, 1), FlowMark::File), Vec::<String>::new());
         assert_eq!(marked(&cell(&s, 1, 1), FlowMark::Error), ["#DIV/0!"], "errors stay marked");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Before a file is placed, place.check says what it would bring in: the errors it shows and a
+    /// preview (the first rows of a workbook, the first paragraphs of a text).
+    #[test]
+    fn place_check_shows_what_a_file_would_bring_in() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let b64 = crate::cmd::base64_encode(&workbook_xml(DIV0));
+        let r = s.execute("place.check", &json!({"base64": b64, "name": "prices.xlsx"})).unwrap();
+        assert_eq!(r["problems"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!((r["problems"][0]["at"].as_str(), r["problems"][0]["blocks"].as_bool()), (Some("B2"), Some(true)));
+        assert_eq!(r["preview"]["rows"], json!([["Item", "Price"], ["Tea", "#DIV/0!"]]));
+        let b64 = crate::cmd::base64_encode(b"First paragraph.\nSecond one.");
+        let r = s.execute("place.check", &json!({"base64": b64, "name": "notes.txt"})).unwrap();
+        assert_eq!(r["preview"]["paragraphs"], json!(["First paragraph.", "Second one."]));
+        assert_eq!(r["problems"], json!([]));
+        assert_eq!(s.doc().unwrap().doc.stories.len(), 0, "nothing placed");
     }
 
     /// `text: false` updates graphics only: the app reviews linked text files in Flow first.

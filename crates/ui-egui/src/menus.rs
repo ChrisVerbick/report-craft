@@ -51,6 +51,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.graphicCell", "Convert Cell to Graphic Cell…", None, "{} — pick an image for the target table cell"),
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{} — Word/RTF style mapping before placing"),
+    (
+        "app.placeWithFlow",
+        "Place with Flow…",
+        None,
+        "{} — a text file or workbook's import options, the errors it shows and a preview, then placed linked",
+    ),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
@@ -240,6 +246,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "ui:app.placeDialog",
             "ui:app.placeWithOptions",
+            "ui:app.placeWithFlow",
             "-",
             "ui:app.exportPdf",
             "ui:app.packageDialog",
@@ -889,6 +896,24 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.dialog = Some(crate::dialogs::Dialog::new(
                 "importOptions",
                 json!({"path": path, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {}}),
+            ));
+            Ok(Value::Null)
+        }
+        "app.placeWithFlow" => {
+            // Place with Flow: the file's import options, the errors it shows and a preview, then
+            // placed linked so later updates merge (Flow panel).
+            let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
+            let info = match app.run("place.check", json!({"path": path})) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let blocking = info["problems"].as_array().map_or(0, |p| p.iter().filter(|x| x["blocks"] != false).count());
+            let l = path.to_lowercase();
+            let word = l.ends_with(".docx") || l.ends_with(".rtf");
+            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                "placeWithFlow",
+                json!({"path": path, "word": word, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {},
+                    "problems": info["problems"], "preview": info["preview"], "blocking": blocking, "allow": false}),
             ));
             Ok(Value::Null)
         }
