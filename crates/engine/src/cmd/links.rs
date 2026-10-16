@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool} — reload modified links from their files (all when neither); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, cell?}], deviations: [{file, layout, cell?}], conflicts: [{file, layout, cell?}], warnings}], errors: [as links.check]}",
+            "{asset? | story?, mode?: merge|replace, allowErrors?: bool, dryRun?: bool} — reload modified links from their files (all when neither); with dryRun, return what the update would do and change nothing; a file that shows errors (see links.check; values from other workbooks are only reported) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, …}], deviations: [{file, layout, …}], conflicts: [{file, layout, …}], warnings, pages: [{index, name}], fit: {overset, lines}}], errors: [as links.check]}; each entry has cell? {table, row, col}, at {start, end} (bytes in the updated story or cell, for text.select / table.select), words [{kind: same|deleted|inserted, text}], page, pageName, y (0–1 from the page top) and overset (in text that doesn't fit)",
             has_doc,
             update
         ),
@@ -1157,8 +1157,14 @@ mod text_link_tests {
         revise(&path, "Revenue grew in every region except the north. The board approved the new plan. Costs fell by two percent.");
         let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
         let report = &r["reports"][0];
-        assert_eq!(report["deviations"], json!([{"file": "The board approved the new plan.", "layout": "The board backed the plan."}]));
-        assert_eq!(report["conflicts"], json!([{"file": "Costs fell by two percent.", "layout": "Costs were held steady."}]));
+        assert_eq!(
+            only(&report["deviations"], &["file", "layout"]),
+            json!([{"file": "The board approved the new plan.", "layout": "The board backed the plan."}])
+        );
+        assert_eq!(
+            only(&report["conflicts"], &["file", "layout"]),
+            json!([{"file": "Costs fell by two percent.", "layout": "Costs were held steady."}])
+        );
         let changes = report["changes"].as_array().unwrap();
         assert!(
             changes.iter().any(|c| c["before"] == "Revenue grew in every region." && c["after"] == "Revenue grew in every region except the north."),
@@ -1212,7 +1218,11 @@ mod text_link_tests {
         assert_eq!((text(1, 0), text(1, 1)), ("Green tea".to_string(), "3.75".to_string()));
         assert_eq!(t.cell(0, 0).unwrap().fill, "Black");
         let report = &r["reports"][0];
-        assert_eq!(report["deviations"], json!([{"file": "Tea", "layout": "Green tea", "cell": {"table": table, "row": 1, "col": 0}}]), "{report}");
+        assert_eq!(
+            only(&report["deviations"], &["file", "layout", "cell"]),
+            json!([{"file": "Tea", "layout": "Green tea", "cell": {"table": table, "row": 1, "col": 0}}]),
+            "{report}"
+        );
         assert!(report["changes"].as_array().unwrap().iter().any(|c| c["after"] == "3.75" && c["cell"]["row"] == 1), "{report}");
         assert_eq!(report["warnings"], json!([]));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1302,6 +1312,105 @@ mod text_link_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("file.place", &json!({"base64": b64, "name": "prices.xlsx", "rect": [72, 72, 300, 200]})).unwrap();
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w == "B2: #DIV/0! (formula =A9/0)"), "{r}");
+    }
+
+    /// Report entries with only the given fields.
+    fn only(entries: &Value, keys: &[&str]) -> Value {
+        let keep = |e: &Value| keys.iter().filter_map(|k| e.get(*k).map(|v| (k.to_string(), v.clone()))).collect::<serde_json::Map<_, _>>();
+        Value::Array(entries.as_array().unwrap().iter().map(|e| Value::Object(keep(e))).collect())
+    }
+
+    /// The text an entry's `at` covers in `text`, as the report shows it.
+    fn covered(text: &str, e: &Value) -> String {
+        let (a, b) = (e["at"]["start"].as_u64().unwrap() as usize, e["at"]["end"].as_u64().unwrap() as usize);
+        designcraft_flow::shown(text.get(a..b).unwrap()).trim().to_string()
+    }
+
+    /// What an entry's `words` rebuild: the unchanged runs and those of `kind`.
+    fn rebuilt(e: &Value, kind: &str) -> String {
+        e["words"].as_array().unwrap().iter().filter(|w| w["kind"] == "same" || w["kind"] == kind).map(|w| w["text"].as_str().unwrap()).collect()
+    }
+
+    /// Each reported difference says where it is in the updated story (for Go To), word by word
+    /// how it changed, and where it lands: its page and its height on the page. The report lists
+    /// the story's pages and says whether it still fits.
+    #[test]
+    fn report_entries_say_where_they_are() {
+        let (dir, path, mut s, sid) = placed("where", "Revenue grew. Costs were flat.");
+        layout_edit(&mut s, sid, "grew", "grew strongly");
+        layout_edit(&mut s, sid, "were flat", "were steady");
+        revise(&path, "Revenue grew. Costs fell. Staff rose.");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let rep = &r["reports"][0];
+        let text = story(&s, sid).text;
+        let (changes, kept, conflicts) =
+            (rep["changes"].as_array().unwrap(), rep["deviations"].as_array().unwrap(), rep["conflicts"].as_array().unwrap());
+        assert!(!changes.is_empty() && !kept.is_empty() && !conflicts.is_empty(), "{rep}");
+        for e in changes {
+            assert_eq!(covered(&text, e), e["after"], "{e}");
+            assert_eq!((rebuilt(e, "deleted"), rebuilt(e, "inserted")), (e["before"].as_str().unwrap().into(), e["after"].as_str().unwrap().into()));
+        }
+        for e in kept {
+            assert_eq!(covered(&text, e), e["layout"], "{e}");
+            assert_eq!(rebuilt(e, "inserted"), e["layout"].as_str().unwrap());
+        }
+        for e in conflicts {
+            assert_eq!(covered(&text, e), e["file"], "{e}");
+            assert_eq!(rebuilt(e, "inserted"), e["file"].as_str().unwrap());
+        }
+        for e in changes.iter().chain(kept).chain(conflicts) {
+            assert_eq!((e["page"].as_u64(), e["pageName"].as_str(), e.get("overset")), (Some(0), Some("1"), None), "{e}");
+            assert!((0.0..=1.0).contains(&e["y"].as_f64().unwrap()), "{e}");
+        }
+        assert_eq!(rep["pages"], json!([{"index": 0, "name": "1"}]));
+        assert_eq!(rep["fit"], json!({"overset": false, "lines": 0}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When the updated story doesn't fit its frames, the report says how many lines don't, and a
+    /// difference in the overset text says so: it is on no page.
+    #[test]
+    fn the_report_says_when_the_story_does_not_fit() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-fit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.docx");
+        let long = (0..40).map(|i| format!("Sentence {i} fills the frame.")).collect::<Vec<_>>().join(" ");
+        std::fs::write(&path, docx(&format!("<w:r><w:t>{long} End one.</w:t></w:r>"))).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 160], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        std::fs::write(&path, docx(&format!("<w:r><w:t>{long} End two.</w:t></w:r>"))).unwrap();
+        let r = s.execute("links.update", &json!({"story": sid.0, "dryRun": true})).unwrap();
+        let rep = &r["reports"][0];
+        assert_eq!(rep["fit"]["overset"], true, "{rep}");
+        assert!(rep["fit"]["lines"].as_u64().unwrap() > 5, "{rep}");
+        let e = &rep["changes"][0];
+        assert_eq!((e["after"].as_str(), e["overset"].as_bool(), e["page"].as_u64()), (Some("End two."), Some(true), Some(0)), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A changed spreadsheet cell says where it is in the cell (`at`) and on the page.
+    #[test]
+    fn cell_entries_say_where_they_are() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-cell-where-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.75"]])).unwrap();
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let e = &r["reports"][0]["changes"][0];
+        assert_eq!((e["cell"]["row"].as_u64(), e["cell"]["col"].as_u64()), (Some(1), Some(1)), "{e}");
+        let cell = story(&s, sid).tables.values().next().unwrap().cell(1, 1).unwrap().text.text.clone();
+        assert_eq!(covered(&cell, e), "3.75");
+        assert_eq!((e["page"].as_u64(), e["pageName"].as_str()), (Some(0), Some("1")), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A dry run returns what the update would do, with nothing changed: the story, its link, the

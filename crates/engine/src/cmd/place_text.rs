@@ -258,7 +258,7 @@ pub(crate) fn remerge(
     let m = designcraft_flow::merge_story(&base, &mine, &theirs)
         .filter(|m| verified(&theirs, &mine, m))
         .ok_or_else(|| bad("links.update", format!("story {}: the merge couldn't be verified, so nothing was changed", sid.0)))?;
-    let report = report(sid, &theirs, &mine, &m);
+    let mut report = report(sid, &theirs, &mine, &m);
     let mut warnings = imp.warnings;
     warnings.extend(m.warnings.iter().cloned());
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
@@ -267,6 +267,7 @@ pub(crate) fn remerge(
     let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
     let story_hash = super::links::story_hash(&theirs);
     story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, ..applied });
+    place_report(d, sid, &mut report);
     Ok((warnings, report, imp.problems))
 }
 
@@ -292,29 +293,112 @@ fn report(sid: StoryId, theirs: &Story, mine: &Story, m: &designcraft_flow::Stor
 }
 
 /// Report entries for one merged text (`mine` → `out`, against the file's `theirs`): its changes,
-/// deviations and conflicts, in whole sentences.
+/// deviations and conflicts, in whole sentences, each with where it is in `out` (`at`, for Go To)
+/// and how it changed word by word (`words`: changes from before to after, deviations from the
+/// file to the layout, conflicts from the layout to the file).
 fn report_text(mine: &str, theirs: &str, out: &str, m: &designcraft_flow::MergeOut, cell: Option<Value>, into: &mut [Vec<Value>; 3]) {
     let raw = |s: &'_ str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
     let text = |s: &str, r: &std::ops::Range<usize>| designcraft_flow::shown(&raw(s, r)).trim().to_string();
     let notes_only = |a: String, b: String| a.replace(designcraft_doc::NOTE_MARK, "") == b.replace(designcraft_doc::NOTE_MARK, "");
-    let at = |mut v: Value| {
-        if let (Some(o), Some(c)) = (v.as_object_mut(), &cell) {
-            o.insert("cell".into(), c.clone());
+    let entry = |mut v: Value, at: std::ops::Range<usize>, from: &str, to: &str| {
+        if let Some(o) = v.as_object_mut() {
+            if let Some(c) = &cell {
+                o.insert("cell".into(), c.clone());
+            }
+            o.insert("at".into(), json!({"start": at.start, "end": at.end}));
+            let words = designcraft_flow::words(from, to).into_iter().map(|(k, t)| json!({"kind": k.name(), "text": t}));
+            o.insert("words".into(), Value::Array(words.collect()));
         }
         v
     };
     let [changes, deviations, conflicts] = into;
     for h in designcraft_flow::sentences(mine, out, &designcraft_flow::diff_text(mine, out)) {
-        changes.push(at(json!({"before": text(mine, &h.old), "after": text(out, &h.new)})));
+        let (before, after) = (text(mine, &h.old), text(out, &h.new));
+        changes.push(entry(json!({"before": before, "after": after}), h.new.clone(), &before, &after));
     }
     for h in designcraft_flow::sentences(theirs, out, &m.deviations) {
         if !notes_only(raw(theirs, &h.old), raw(out, &h.new)) {
-            deviations.push(at(json!({"file": text(theirs, &h.old), "layout": text(out, &h.new)})));
+            let (file, layout) = (text(theirs, &h.old), text(out, &h.new));
+            deviations.push(entry(json!({"file": file, "layout": layout}), h.new.clone(), &file, &layout));
         }
     }
     for c in &m.conflicts {
-        conflicts.push(at(json!({"file": text(theirs, &c.theirs), "layout": text(mine, &c.mine)})));
+        // The merged text has the conflict mark at `at`, then the file's version.
+        let (file, layout) = (text(theirs, &c.theirs), text(mine, &c.mine));
+        let start = c.at.saturating_add(designcraft_doc::NOTE_MARK.len_utf8());
+        conflicts.push(entry(json!({"file": file, "layout": layout}), start..start.saturating_add(c.theirs.len()), &layout, &file));
     }
+}
+
+/// Where a report's differences land once the updated story is laid out: the pages its frames are
+/// on (`pages`), each entry's page, page name and height on the page from the top (`y`, 0–1; a
+/// table cell's is its table's), `overset` for one in text that doesn't fit, and whether the story
+/// still fits (`fit`: overset, and how many lines don't fit).
+fn place_report(d: &Document, sid: StoryId, report: &mut Value) {
+    let Some(story) = d.story(sid) else { return };
+    let specs = designcraft_compose::frame_specs(d, sid);
+    let cs = designcraft_compose::compose(d, story, &specs, &Default::default());
+    // Frames come back in the order of their specs.
+    let frames: Vec<_> = specs.iter().zip(&cs.frames).collect();
+    fn name(sp: &designcraft_compose::FrameSpec) -> String {
+        sp.page_name.clone().unwrap_or_default()
+    }
+    let mut pages: Vec<Value> = Vec::new();
+    for (sp, _) in &frames {
+        if let Some(p) = sp.page
+            && !pages.iter().any(|v| v["index"] == p)
+        {
+            pages.push(json!({"index": p, "name": name(sp)}));
+        }
+    }
+    let locate = |at: usize| -> Option<Value> {
+        if cs.overset_at.is_some_and(|o| at >= o) {
+            let (sp, _) = frames.last()?;
+            return Some(json!({"page": sp.page, "pageName": name(sp), "y": 1.0, "overset": true}));
+        }
+        let (sp, f) = frames.iter().find(|(_, f)| f.range.contains(&at)).or_else(|| frames.iter().rev().find(|(_, f)| f.range.start <= at))?;
+        let line = f.lines.iter().find(|l| l.range.contains(&at)).or_else(|| f.lines.iter().rev().find(|l| l.range.start <= at));
+        let y = match (line, sp.page_rect) {
+            (Some(l), Some((page, _))) if page.height() > 0.0 => ((l.baseline - page.y0) / page.height()).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        Some(json!({"page": sp.page, "pageName": name(sp), "y": (y * 1000.0).round() / 1000.0}))
+    };
+    // A table cell is placed where its table is anchored.
+    let paras = story.para_ranges();
+    let table_at = |t: u64| story.paras.iter().position(|p| p.table == Some(t)).and_then(|i| paras.get(i)).map(|r| r.start);
+    for key in ["changes", "deviations", "conflicts"] {
+        let Some(list) = report.get_mut(key).and_then(Value::as_array_mut) else { continue };
+        for e in list.iter_mut() {
+            let at = match e.get("cell").and_then(|c| c["table"].as_u64()) {
+                Some(t) => table_at(t),
+                None => e["at"]["start"].as_u64().and_then(|v| usize::try_from(v).ok()),
+            };
+            let place = at.and_then(locate);
+            if let (Some(Value::Object(place)), Some(o)) = (place, e.as_object_mut()) {
+                o.extend(place);
+            }
+        }
+    }
+    let lines = if cs.overset_at.is_some() { overset_lines(d, story, &specs) } else { 0 };
+    if let Some(o) = report.as_object_mut() {
+        o.insert("pages".into(), Value::Array(pages));
+        o.insert("fit".into(), json!({"overset": cs.overset_at.is_some(), "lines": lines}));
+    }
+}
+
+/// How many lines of the story don't fit: its overset text composed in one more frame, as wide as
+/// the last frame's last column and tall enough to hold it.
+fn overset_lines(d: &Document, story: &Story, specs: &[designcraft_compose::FrameSpec]) -> usize {
+    let Some(last) = specs.last() else { return 0 };
+    let col = last.columns().last().copied().unwrap_or(last.area);
+    let mut more = specs.to_vec();
+    let mut extra = last.clone();
+    extra.area = designcraft_geom::Rect::new(col.x0, col.y0, col.x1, col.y0 + 1.0e6);
+    extra.opts.columns = 1;
+    extra.exclusions.clear();
+    more.push(extra);
+    designcraft_compose::compose(d, story, &more, &Default::default()).frames.get(specs.len()).map_or(0, |f| f.lines.len())
 }
 
 /// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?

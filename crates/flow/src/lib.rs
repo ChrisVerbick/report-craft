@@ -13,7 +13,7 @@ mod story;
 use std::ops::Range;
 
 pub use merge::{Conflict, MergeOut, Segment, is_anchor, merge_text};
-use similar::{Algorithm, DiffTag, TextDiff};
+use similar::{Algorithm, ChangeTag, DiffTag, TextDiff};
 pub use story::{CellMerge, StoryMerge, merge_story, verified};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -128,6 +128,57 @@ pub fn shown(s: &str) -> String {
     out
 }
 
+/// A run of [`words`]: unchanged, only in the old text, or only in the new.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Same,
+    Deleted,
+    Inserted,
+}
+
+impl Mark {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mark::Same => "same",
+            Mark::Deleted => "deleted",
+            Mark::Inserted => "inserted",
+        }
+    }
+}
+
+/// How the text `a` became `b`, word by word, for marking a reported change: in order, the
+/// unchanged runs and the runs only `a` has (deleted) or only `b` has (inserted). The unchanged and
+/// deleted runs make `a`; the unchanged and inserted runs make `b`. Texts over 20,000 bytes
+/// together aren't compared word by word: all of `a` is deleted and all of `b` inserted.
+pub fn words(a: &str, b: &str) -> Vec<(Mark, String)> {
+    fn push(out: &mut Vec<(Mark, String)>, m: Mark, t: &str) {
+        if t.is_empty() {
+            return;
+        }
+        match out.last_mut() {
+            Some((last, text)) if *last == m => text.push_str(t),
+            _ => out.push((m, t.to_string())),
+        }
+    }
+    let mut out = Vec::new();
+    if a == b {
+        push(&mut out, Mark::Same, a);
+    } else if a.len().saturating_add(b.len()) > 20_000 {
+        push(&mut out, Mark::Deleted, a);
+        push(&mut out, Mark::Inserted, b);
+    } else {
+        for c in TextDiff::configure().algorithm(Algorithm::Patience).diff_unicode_words(a, b).iter_all_changes() {
+            let m = match c.tag() {
+                ChangeTag::Equal => Mark::Same,
+                ChangeTag::Delete => Mark::Deleted,
+                ChangeTag::Insert => Mark::Inserted,
+            };
+            push(&mut out, m, c.value());
+        }
+    }
+    out
+}
+
 /// `a` rebuilt with `b`'s text in each hunk: equal to `b` exactly when the hunks cover every
 /// difference between the two. `None` when the hunks are out of order or overlap, put an unchanged
 /// stretch of `a` at another place in `b`, or cut through a character.
@@ -194,7 +245,31 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn words_mark_what_changed_word_by_word() {
+        let w = |v: &[(Mark, &str)]| v.iter().map(|(m, t)| (*m, t.to_string())).collect::<Vec<_>>();
+        assert_eq!(
+            words("We expect steady growth.", "We expect modest growth."),
+            w(&[(Mark::Same, "We expect "), (Mark::Deleted, "steady"), (Mark::Inserted, "modest"), (Mark::Same, " growth.")])
+        );
+        assert_eq!(words("3.50", "3.75"), w(&[(Mark::Deleted, "3.50"), (Mark::Inserted, "3.75")]), "a number is one word");
+        assert_eq!(words("", "New."), w(&[(Mark::Inserted, "New.")]));
+        assert_eq!(words("Same.", "Same."), w(&[(Mark::Same, "Same.")]));
+        assert_eq!(words("", ""), w(&[]));
+    }
+
     proptest! {
+        #[test]
+        fn words_rebuild_both_texts(a in pieces(), b in pieces()) {
+            let (a, b) = (join(&a), join(&b));
+            let w = words(&a, &b);
+            let side = |keep: Mark| w.iter().filter(|(m, _)| *m == Mark::Same || *m == keep).map(|(_, t)| t.as_str()).collect::<String>();
+            prop_assert_eq!(side(Mark::Deleted), a);
+            prop_assert_eq!(side(Mark::Inserted), b);
+            prop_assert!(w.windows(2).all(|p| p[0].0 != p[1].0), "runs of one kind are joined: {:?}", w);
+            prop_assert!(w.iter().all(|(_, t)| !t.is_empty()));
+        }
+
         #[test]
         fn hunks_rebuild_any_new_text(a in pieces(), b in pieces()) {
             check(&join(&a), &join(&b))?;
