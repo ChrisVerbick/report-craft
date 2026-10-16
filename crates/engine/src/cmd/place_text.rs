@@ -207,13 +207,27 @@ pub(crate) fn reimport(
     path: &str,
     bytes: &[u8],
     before: Option<designcraft_doc::Fingerprint>,
-) -> Result<Vec<String>> {
+    allow_errors: bool,
+) -> Result<(Vec<String>, Vec<designcraft_textimport::Problem>)> {
     let link = linked(d, sid)?;
     let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    allowed(&imp, path, allow_errors)?;
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &imp.story);
     story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
-    Ok(imp.warnings)
+    Ok((imp.warnings, imp.problems))
+}
+
+/// Errors the file shows stop an update unless allowed: the app asks first, scripts pass
+/// `allowErrors`.
+fn allowed(imp: &designcraft_textimport::Imported, path: &str, allow: bool) -> Result<()> {
+    if allow || imp.problems.is_empty() {
+        return Ok(());
+    }
+    let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
+    let list = imp.problems.iter().map(designcraft_textimport::Problem::message).collect::<Vec<_>>().join("; ");
+    let n = imp.problems.len();
+    Err(bad("links.update", format!("{name} shows {n} error{}: {list}. Fix the file, or update with allowErrors", if n == 1 { "" } else { "s" })))
 }
 
 /// Update Link by merging (see [`designcraft_flow::merge_story`]): the file's changes come into the
@@ -226,7 +240,8 @@ pub(crate) fn remerge(
     path: &str,
     bytes: &[u8],
     before: Option<designcraft_doc::Fingerprint>,
-) -> Result<(Vec<String>, Value)> {
+    allow_errors: bool,
+) -> Result<(Vec<String>, Value, Vec<designcraft_textimport::Problem>)> {
     let link = linked(d, sid)?;
     let base = link.base.clone().ok_or_else(|| bad("links.update", format!("story {} has nothing to merge with", sid.0)))?;
     let mine = d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.clone();
@@ -234,6 +249,7 @@ pub(crate) fn remerge(
         return Err(bad("links.update", format!("story {}: accept or reject its tracked changes before updating it", sid.0)));
     }
     let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    allowed(&imp, path, allow_errors)?;
     // The file as a plain update would leave the story: what this merge and the next compare with.
     let mut theirs = Story::new(sid);
     fill(&mut theirs, &imp.story);
@@ -249,7 +265,7 @@ pub(crate) fn remerge(
     let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
     let story_hash = super::links::story_hash(&theirs);
     story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, ..applied });
-    Ok((warnings, report))
+    Ok((warnings, report, imp.problems))
 }
 
 /// The 0% check run before a merge changes the document: the merged text differs from the file's
@@ -392,6 +408,7 @@ pub(super) fn place_text(
     let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1));
     let rect = super::rect_param(p, "rect");
     let mut warnings = imp.warnings.clone();
+    warnings.extend(imp.problems.iter().map(designcraft_textimport::Problem::message));
     if too_large {
         warnings.push("not linked: the file is too large to keep linked".into());
     }

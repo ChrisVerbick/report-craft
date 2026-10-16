@@ -2210,6 +2210,16 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// first when a linked text story edited in the layout would lose those edits, as InDesign's
 /// Links panel does (a story that merges keeps them). The `links.update` command itself doesn't ask (as in InDesign scripting).
 pub fn update_links(app: &mut DesignApp, target: Value) {
+    // A file that shows errors (#REF!, a broken cross-reference…) is applied only once confirmed.
+    if target.get("allowErrors").and_then(Value::as_bool) != Some(true) {
+        let errors = app.session.execute("links.check", &target).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        if !errors.is_empty() {
+            let lines: Vec<String> =
+                errors.iter().map(|e| format!("{}: {}", e["name"].as_str().unwrap_or_default(), e["message"].as_str().unwrap_or_default())).collect();
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLinkErrors", json!({"target": target, "errors": lines.join("\n")})));
+            return;
+        }
+    }
     let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let one = target.get("story").and_then(Value::as_u64);
     let all = one.is_none() && target.get("asset").is_none();
@@ -2244,6 +2254,11 @@ pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Val
             some(count("deviations"), "layout edit kept", "layout edits kept"),
             some(count("conflicts"), "conflict (see Notes)", "conflicts (see Notes)"),
         ));
+    }
+    let errors = r["errors"].as_array().map_or(0, Vec::len);
+    if errors > 0 {
+        let n = |one: &str, many: &str| format!("{errors} {}", crate::i18n::tr(&lang, if errors == 1 { one } else { many }));
+        status.push(n("error in the linked files", "errors in the linked files"));
     }
     status.extend(warning.map(str::to_string));
     if !status.is_empty() {

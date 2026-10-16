@@ -18,6 +18,15 @@ use crate::{EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            query "links.check",
+            "Check Links",
+            [],
+            None,
+            "{asset? | story?} — the errors the files of modified linked text stories show, as Update would bring them in: Excel error values, formulas taking values from another workbook or never calculated, Word field errors → [{story, name, at, cell?: {row, col}, shows, formula?, kind: errorValue|otherWorkbook|notCalculated|fieldError, message}]",
+            has_doc,
+            check
+        ),
         cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), uses: [{id, page}]}]", has_doc, |s, _| {
             let d = s.doc()?.doc.clone();
             Ok(Value::Array(list(&d, &mut s.text_link_checks)))
@@ -45,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Link",
             ["Window", "Links"],
             None,
-            "{asset? | story?, mode?: merge|replace} — reload modified links from their files (all when neither). A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after}], deviations: [{file, layout}], conflicts: [{file, layout}], warnings}]}",
+            "{asset? | story?, mode?: merge|replace, allowErrors?: bool} — reload modified links from their files (all when neither); a file that shows errors (see links.check) is refused unless allowErrors. A linked text file's changes merge into its story with the import options it was placed with: the layout's own edits survive and are reported, and where both changed a sentence the file's text wins and a Flow note keeps the layout's; refused for a story with tracked changes. With mode replace, or for a link placed before merging existed, the file is imported again, replacing edits made in the layout → {updated, warnings, reports: [{story, changes: [{before, after, cell?}], deviations: [{file, layout, cell?}], conflicts: [{file, layout, cell?}], warnings}], errors: [as links.check]}",
             has_doc,
             update
         ),
@@ -289,13 +298,51 @@ fn read_text(path: &str) -> Result<(Vec<u8>, Fingerprint)> {
 }
 
 /// Import a linked text file again; a warning says when edits made in the layout were replaced.
-fn reimport(d: &mut Document, sid: StoryId, path: &str, bytes: &[u8], before: Fingerprint) -> Result<Vec<String>> {
+fn reimport(
+    d: &mut Document,
+    sid: StoryId,
+    path: &str,
+    bytes: &[u8],
+    before: Fingerprint,
+    allow_errors: bool,
+) -> Result<(Vec<String>, Vec<designcraft_textimport::Problem>)> {
     let edited = d.story(sid).is_some_and(|st| st.file_link.as_ref().is_some_and(|l| story_hash(st) != l.story_hash));
-    let mut warnings = super::place_text::reimport(d, sid, path, bytes, Some(before))?;
+    let (mut warnings, problems) = super::place_text::reimport(d, sid, path, bytes, Some(before), allow_errors)?;
     if edited {
         warnings.insert(0, format!("{}: edits made to story {} in the layout were replaced by the file's text", file_name(path), sid.0));
     }
-    Ok(warnings)
+    Ok((warnings, problems))
+}
+
+/// A file's error for the check and the update result: the story, the file, where, what it shows,
+/// its formula, what kind of error, and a one-line message.
+fn problem_json(sid: StoryId, path: &str, p: &designcraft_textimport::Problem) -> Value {
+    use designcraft_textimport::ProblemKind;
+    let kind = match p.kind {
+        ProblemKind::ErrorValue => "errorValue",
+        ProblemKind::OtherWorkbook => "otherWorkbook",
+        ProblemKind::NotCalculated => "notCalculated",
+        ProblemKind::FieldError => "fieldError",
+    };
+    let cell = p.cell.map(|(row, col)| json!({"row": row, "col": col}));
+    json!({"story": sid.0, "name": file_name(path), "at": p.at, "cell": cell, "shows": p.shows, "formula": p.formula, "kind": kind, "message": p.message()})
+}
+
+/// The errors the files of modified linked text stories show, as an update would bring them in.
+fn check(s: &mut Session, p: &Value) -> Result<Value> {
+    let d = s.doc()?.doc.clone();
+    let checks = &mut s.text_link_checks;
+    let only = story_param(p);
+    let all = only.is_none() && p.get("asset").is_none();
+    let mut out = Vec::new();
+    for st in d.stories.values().filter(|st| all || only == Some(st.id)) {
+        let Some(l) = st.file_link.as_ref().filter(|l| text_status(l, checks) == "modified") else { continue };
+        let (bytes, _) = read_text(&l.path)?;
+        let name = file_name(&l.path);
+        let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("links.check", format!("{name}: {e}")))?;
+        out.extend(imp.problems.iter().map(|pr| problem_json(st.id, &l.path, pr)));
+    }
+    Ok(Value::Array(out))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -316,7 +363,9 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         let (bytes, before) = read_text(&path)?;
         let name = file_name(&path);
         return s.edit(|d, _| {
-            let warnings = reimport(d, sid, &path, &bytes, before)?;
+            // A relinked file is chosen by hand: its errors are warnings.
+            let (mut warnings, problems) = reimport(d, sid, &path, &bytes, before, true)?;
+            warnings.extend(problems.iter().map(designcraft_textimport::Problem::message));
             Ok(json!({"name": name, "warnings": warnings}))
         });
     }
@@ -381,6 +430,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         Some("replace") => false,
         Some(m) => return Err(bad("links.update", format!("unknown mode `{m}` (merge, replace)"))),
     };
+    let allow_errors = p.get("allowErrors").and_then(Value::as_bool).unwrap_or(false);
     let d = s.doc()?.doc.clone();
     let checks = &mut s.text_link_checks;
     let (only_asset, only_story) = (p.get("asset").and_then(Value::as_u64), story_param(p));
@@ -409,7 +459,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let n = fresh.len() + fresh_texts.len();
     if n == 0 {
-        return Ok(json!({"updated": 0, "warnings": [], "reports": []}));
+        return Ok(json!({"updated": 0, "warnings": [], "reports": [], "errors": []}));
     }
     s.edit(|d, _| {
         for (aid, (bytes, px)) in &fresh {
@@ -419,17 +469,21 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
                 a.pixels = Some(*px);
             }
         }
-        let (mut warnings, mut reports) = (Vec::new(), Vec::new());
+        let (mut warnings, mut reports, mut errors) = (Vec::new(), Vec::new(), Vec::new());
         for (sid, path, bytes, before) in &fresh_texts {
-            if merge && d.story(*sid).and_then(|st| st.file_link.as_ref()).is_some_and(|l| l.base.is_some()) {
-                let (w, r) = super::place_text::remerge(d, *sid, path, bytes, Some(*before))?;
+            let problems = if merge && d.story(*sid).and_then(|st| st.file_link.as_ref()).is_some_and(|l| l.base.is_some()) {
+                let (w, r, problems) = super::place_text::remerge(d, *sid, path, bytes, Some(*before), allow_errors)?;
                 warnings.extend(w);
                 reports.push(r);
+                problems
             } else {
-                warnings.extend(reimport(d, *sid, path, bytes, *before)?);
-            }
+                let (w, problems) = reimport(d, *sid, path, bytes, *before, allow_errors)?;
+                warnings.extend(w);
+                problems
+            };
+            errors.extend(problems.iter().map(|p| problem_json(*sid, path, p)));
         }
-        Ok(json!({"updated": n, "warnings": warnings, "reports": reports}))
+        Ok(json!({"updated": n, "warnings": warnings, "reports": reports, "errors": errors}))
     })
 }
 
@@ -1140,6 +1194,61 @@ mod text_link_tests {
         assert!(report["changes"].as_array().unwrap().iter().any(|c| c["after"] == "3.75" && c["cell"]["row"] == 1), "{report}");
         assert_eq!(report["warnings"], json!([]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A workbook whose first sheet is `sheet_data` (the cells of `<sheetData>`).
+    fn workbook_xml(sheet_data: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(format!("<worksheet><sheetData>{sheet_data}</sheetData></worksheet>").as_bytes()).unwrap();
+        w.finish().unwrap().into_inner()
+    }
+
+    const DIV0: &str = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Price</t></is></c></row>
+        <row r="2"><c r="A2" t="inlineStr"><is><t>Tea</t></is></c><c r="B2" t="e"><f>A9/0</f><v>#DIV/0!</v></c></row>"#;
+
+    /// A file that shows errors is not applied silently: the check lists them, Update refuses
+    /// without `allowErrors`, and with it applies the file and reports them.
+    #[test]
+    fn update_asks_before_applying_a_file_that_shows_errors() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-errors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let price = |s: &Session| story(s, sid).tables.values().next().unwrap().cell(1, 1).unwrap().text.text.clone();
+
+        std::fs::write(&path, workbook_xml(DIV0)).unwrap();
+        let found = s.execute("links.check", &json!({"story": sid.0})).unwrap();
+        assert_eq!(found.as_array().unwrap().len(), 1, "{found}");
+        let e = &found[0];
+        assert_eq!((e["story"].as_u64(), e["name"].as_str(), e["at"].as_str()), (Some(sid.0), Some("prices.xlsx"), Some("B2")));
+        assert_eq!((e["shows"].as_str(), e["formula"].as_str(), e["kind"].as_str()), (Some("#DIV/0!"), Some("A9/0"), Some("errorValue")));
+        assert_eq!(e["cell"], json!({"row": 1, "col": 1}));
+
+        let refused = s.execute("links.update", &json!({"story": sid.0})).unwrap_err().to_string();
+        assert!(refused.contains("#DIV/0!") && refused.contains("allowErrors"), "{refused}");
+        assert_eq!(price(&s), "3.50", "nothing changed");
+        let r = s.execute("links.update", &json!({"story": sid.0, "allowErrors": true})).unwrap();
+        assert_eq!(price(&s), "#DIV/0!");
+        assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(r["errors"][0]["message"], "B2: #DIV/0! (formula =A9/0)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Placing a file that shows errors places it, with the errors as warnings.
+    #[test]
+    fn placing_a_file_that_shows_errors_warns() {
+        let b64 = crate::cmd::base64_encode(&workbook_xml(DIV0));
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"base64": b64, "name": "prices.xlsx", "rect": [72, 72, 300, 200]})).unwrap();
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w == "B2: #DIV/0! (formula =A9/0)"), "{r}");
     }
 
     /// The 0% gate: a merged story whose text differs from the file's by anything unreported is

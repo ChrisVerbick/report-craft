@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
 use crate::docx::{El, parse, part};
-use crate::{ImportError, Imported};
+use crate::{ImportError, Imported, Problem, ProblemKind};
 
 /// "B12" → (row 11, column 1).
 fn cell_ref(r: &str) -> Option<(usize, usize)> {
@@ -33,6 +33,27 @@ fn first_sheet_target(wb: &str, rels: &str) -> Option<String> {
     let rels = parse(rels).ok()?;
     let target = rels.els().find(|r| r.attr("Id") == Some(rid.as_str()))?.attr("Target")?.trim_start_matches('/').to_string();
     Some(if target.starts_with("xl/") { target } else { format!("xl/{target}") })
+}
+
+/// Whether formula `f` takes a value from another workbook: Excel writes those references with
+/// the linked workbook's number, `[1]Sheet!A1` (a table's `Table1[Column]` is not one).
+fn other_workbook(f: &str) -> bool {
+    f.match_indices('[').any(|(i, _)| {
+        let rest = f.get(i + 1..).unwrap_or_default();
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && rest.get(digits..).is_some_and(|r| r.starts_with(']'))
+    })
+}
+
+/// Excel's name for the cell at (row, column), both from 0: (1, 1) is B2.
+fn a1((row, col): (usize, usize)) -> String {
+    let mut letters = Vec::new();
+    let mut n = col.saturating_add(1);
+    while n > 0 {
+        letters.push(char::from(b'A' + ((n - 1) % 26) as u8));
+        n = (n - 1) / 26;
+    }
+    letters.iter().rev().collect::<String>() + &row.saturating_add(1).to_string()
 }
 
 fn value(c: &El, shared: &[String]) -> String {
@@ -181,11 +202,27 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         .map(|sst| sst.els().filter(|e| e.name == "si").map(El::text).collect())
         .unwrap_or_default();
     let mut cells: Vec<((usize, usize), String)> = Vec::new();
+    // What Excel would show as a problem, by sheet position (made table positions below).
+    let mut problems: Vec<((usize, usize), Problem)> = Vec::new();
     if let Some(data) = sheet.child("sheetData") {
         for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
             for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
                 let at = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
                 let v = value(c, &shared);
+                let formula = c.child("f").map(El::text).filter(|f| !f.trim().is_empty());
+                let address = c.attr("r").map_or_else(|| a1(at), str::to_string);
+                let problem =
+                    |kind, shows: &str| Problem { kind, at: address.clone(), cell: None, shows: shows.to_string(), formula: formula.clone() };
+                if c.attr("t") == Some("e") {
+                    problems.push((at, problem(ProblemKind::ErrorValue, &v)));
+                } else if let Some(f) = &formula {
+                    if other_workbook(f) {
+                        problems.push((at, problem(ProblemKind::OtherWorkbook, &v)));
+                    }
+                    if c.child("v").is_none() {
+                        problems.push((at, problem(ProblemKind::NotCalculated, &v)));
+                    }
+                }
                 if !v.is_empty() {
                     cells.push((at, v));
                 }
@@ -217,11 +254,19 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
             *cell = v;
         }
     }
+    // A problem's table cell, when the table keeps it.
+    let problems = problems
+        .into_iter()
+        .map(|((r, c), p)| {
+            let cell = r.checked_sub(r0).zip(c.checked_sub(c0)).filter(|(r, c)| *r < nrows_kept && *c < ncols_kept);
+            Problem { cell, ..p }
+        })
+        .collect();
     let mut story = Story::new(StoryId(0));
     let width = 72.0 * ncols_kept as f64;
     let t = Table::from_strings(1, &rows, width, &ParaFormat::default(), &CharFormat::default());
     story.insert_table(0, t);
-    Ok(Imported { story, para_styles: vec![], char_styles: vec![], warnings })
+    Ok(Imported { story, para_styles: vec![], char_styles: vec![], warnings, problems })
 }
 
 #[cfg(test)]
@@ -229,6 +274,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::ProblemKind;
 
     fn workbook() -> Vec<u8> {
         workbook_with(
@@ -259,6 +305,37 @@ mod tests {
             z.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    /// Error values, formulas taking their value from another workbook and formulas never
+    /// calculated are reported with their cell; a structured table reference is not another
+    /// workbook.
+    #[test]
+    fn error_cells_and_risky_formulas_are_reported() {
+        let wb = workbook_with(
+            r#"<worksheet><sheetData>
+            <row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Total</t></is></c></row>
+            <row r="2"><c r="A2" t="inlineStr"><is><t>Tea</t></is></c><c r="B2" t="e"><f>SUM(Z9:Z99)/0</f><v>#DIV/0!</v></c></row>
+            <row r="3"><c r="A3" t="inlineStr"><is><t>Cake</t></is></c><c r="B3"><f>[1]Prices!B4</f><v>12</v></c></row>
+            <row r="4"><c r="A4" t="inlineStr"><is><t>Jam</t></is></c><c r="B4"><f>SUM(Table1[Amount])</f><v>7</v></c></row>
+            <row r="5"><c r="A5" t="inlineStr"><is><t>Bread</t></is></c><c r="B5"><f>A1*2</f></c></row>
+            </sheetData></worksheet>"#,
+        );
+        let imp = import(&wb).unwrap();
+        let found: Vec<(ProblemKind, &str, Option<(usize, usize)>, Option<&str>)> =
+            imp.problems.iter().map(|p| (p.kind, p.at.as_str(), p.cell, p.formula.as_deref())).collect();
+        assert_eq!(
+            found,
+            [
+                (ProblemKind::ErrorValue, "B2", Some((1, 1)), Some("SUM(Z9:Z99)/0")),
+                (ProblemKind::OtherWorkbook, "B3", Some((2, 1)), Some("[1]Prices!B4")),
+                (ProblemKind::NotCalculated, "B5", Some((4, 1)), Some("A1*2")),
+            ]
+        );
+        assert_eq!(imp.problems[0].shows, "#DIV/0!");
+        let t = imp.story.tables.values().next().unwrap();
+        assert_eq!(t.cell(1, 1).unwrap().text.text, "#DIV/0!", "the cell still shows what Excel shows");
+        assert_eq!(imp.problems[0].message(), "B2: #DIV/0! (formula =SUM(Z9:Z99)/0)");
     }
 
     #[test]

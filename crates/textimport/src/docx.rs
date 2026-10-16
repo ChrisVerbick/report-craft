@@ -535,7 +535,13 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         }
         list.into_iter().filter(|s| want.contains(&s.name)).collect::<Vec<_>>()
     };
-    Ok(Imported { story: st, para_styles: keep(para_styles, &used_p), char_styles: keep(char_styles, &used_c), warnings: ctx.warnings })
+    Ok(Imported {
+        story: st,
+        para_styles: keep(para_styles, &used_p),
+        char_styles: keep(char_styles, &used_c),
+        warnings: ctx.warnings,
+        problems: Vec::new(),
+    })
 }
 
 #[cfg(test)]

@@ -224,7 +224,13 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         }
     }
     let mk = |n: &String| ImportedStyle { name: n.clone(), ..Default::default() };
-    Ok(Imported { story: st, para_styles: para_styles.iter().map(mk).collect(), char_styles: char_styles.iter().map(mk).collect(), warnings })
+    Ok(Imported {
+        story: st,
+        para_styles: para_styles.iter().map(mk).collect(),
+        char_styles: char_styles.iter().map(mk).collect(),
+        warnings,
+        problems: Vec::new(),
+    })
 }
 
 #[cfg(test)]

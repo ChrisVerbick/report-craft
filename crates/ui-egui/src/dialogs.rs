@@ -1513,6 +1513,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "updateLink" => crate::i18n::tr(&app.ui.language, "Update Link"),
+        "updateLinkErrors" => crate::i18n::tr(&app.ui.language, "Errors in Linked Files"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
@@ -2031,6 +2032,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     .replace("{}", &d.s("files"));
                     crate::rtl::label(ui, text);
                 }
+                "updateLinkErrors" => {
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "These linked files show errors. Updating brings them into the layout:"));
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        crate::rtl::label(ui, d.s("errors"));
+                    });
+                }
                 "newWorkspace" => {
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name:"));
@@ -2205,6 +2213,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let ok_label = match d.id.as_str() {
             "closeDocument" => "  Save  ",
             "updateLink" => "  Update  ",
+            "updateLinkErrors" => "  Update Anyway  ",
             _ => "  OK  ",
         };
         ui.horizontal(|ui| {
@@ -2637,6 +2646,15 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "newWorkspace" => app.run("window.newWorkspace", json!({"name": d.s("name")})),
         "updateLink" => crate::panels::properties::run_update_links(app, d.fields.get("target").cloned().unwrap_or_else(|| json!({}))),
+        "updateLinkErrors" => {
+            // Confirmed: update with the errors (a replace confirmation may still follow).
+            let mut target = d.fields.get("target").cloned().unwrap_or_else(|| json!({}));
+            if let Some(t) = target.as_object_mut() {
+                t.insert("allowErrors".into(), json!(true));
+            }
+            crate::panels::properties::update_links(app, target);
+            Ok(Value::Null)
+        }
         "closeDocument" => {
             // The document may have moved in the tab row (or gone) while the dialog was open.
             let uid = d.fields.get("uid").and_then(Value::as_u64);
@@ -6551,6 +6569,38 @@ mod tests {
         confirm(&mut app).unwrap();
         assert!(app.ui.dialog.is_none());
         assert_eq!(text(&app), "Four");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A linked file that shows errors (here a Word cross-reference error) is not applied silently:
+    /// Update asks first, Cancel changes nothing, Update Anyway applies it and the status bar counts
+    /// the error.
+    #[test]
+    fn update_link_asks_before_applying_a_file_that_shows_errors() {
+        let dir = std::env::temp_dir().join(format!("dc-update-link-errors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.txt");
+        std::fs::write(&path, "One").unwrap();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let r = app.session.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        let text = |app: &crate::DesignApp| app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
+
+        std::fs::write(&path, "See Error! Reference source not found. below").unwrap();
+        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.id, "updateLinkErrors");
+        assert!(d.s("errors").contains("note.txt") && d.s("errors").contains("Word shows"), "{}", d.s("errors"));
+        app.ui.dialog = None;
+        assert_eq!(text(&app), "One");
+
+        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
+        confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(text(&app), "See Error! Reference source not found. below");
+        assert!(app.ui.status.contains("1 error"), "{}", app.ui.status);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
