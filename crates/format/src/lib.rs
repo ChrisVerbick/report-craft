@@ -5,6 +5,7 @@
 //! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte: one per distinct file, and only
 //!   the ones the document references (see [`Document::compact_assets`])
 //! - `meta.json`: format version and generator
+//! - `preview.png` (optional): a small picture of the first page, for the start screen's recent files
 //!
 //! Older single-file JSON documents (assets as base64 in `assetData`) still open. Documents
 //! from older format versions are upgraded on load so they lay out as they did.
@@ -30,6 +31,9 @@ pub enum FormatError {
     TooNew(u32),
     #[error("{0}")]
     Io(String),
+    /// The document holds something the file can't represent; nothing is written.
+    #[error("{0}")]
+    Unsaveable(String),
 }
 
 fn ext_for(mime: &str) -> &'static str {
@@ -48,6 +52,23 @@ fn ext_for(mime: &str) -> &'static str {
 /// Serialize a document to `.designcraft` bytes. The file holds each distinct placed file once
 /// and leaves out assets nothing references; `doc` itself keeps them (undo can bring them back).
 pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
+    save_with_preview(doc, None)
+}
+
+/// [`save`], plus `preview` (PNG bytes) as `preview.png`.
+pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    save_with_large_entries_from(doc, preview, LARGE_ENTRY)
+}
+
+/// Asset entries this size or larger are written with zip64 sizes. Zip rejects an entry over
+/// 4 GiB written without them; the margin covers deflate output that is larger than its input.
+const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
+
+fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
+    if let Some(id) = doc.non_finite_item() {
+        return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
+    }
     let mut compact = doc.clone();
     compact.compact_assets();
     let doc = &compact;
@@ -62,6 +83,10 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
         z.start_file("meta.json", deflate).map_err(io)?;
         let meta = json!({"format": "designcraft", "version": VERSION, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
         z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
+        if let Some(png) = preview {
+            z.start_file(PREVIEW, stored).map_err(io)?;
+            z.write_all(png).map_err(|e| FormatError::Io(e.to_string()))?;
+        }
         z.start_file("document.json", deflate).map_err(io)?;
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
@@ -71,6 +96,7 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
             }
             // Already-compressed images are stored as-is.
             let opts = if matches!(a.mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") { stored } else { deflate };
+            let opts = opts.large_file(a.data.len() >= large_entry);
             z.start_file(format!("assets/{}.{}", id.0, ext_for(&a.mime)), opts).map_err(io)?;
             z.write_all(&a.data).map_err(|e| FormatError::Io(e.to_string()))?;
         }
@@ -78,6 +104,46 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     }
     Ok(buf.into_inner())
 }
+
+/// The file name extension of a DesignCraft document.
+pub const EXTENSION: &str = "designcraft";
+
+/// Whether `bytes` are a DesignCraft document package: a zip holding `document.json`. Files
+/// without an extension are recognised by this (the legacy JSON form is too generic to sniff).
+pub fn is_designcraft(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK") && zip::ZipArchive::new(Cursor::new(bytes)).is_ok_and(|z| z.index_for_name("document.json").is_some())
+}
+
+/// Whether `prefix`, the start of a file, opens a DesignCraft package: a zip whose first, stored
+/// entry is the `mimetype` naming this format. Packages saved before they had one are recognised
+/// only whole ([`is_designcraft`]).
+pub fn starts_designcraft(prefix: &[u8]) -> bool {
+    prefix.starts_with(b"PK\x03\x04") && prefix.get(26..28) == Some(&8u16.to_le_bytes()[..]) && prefix.get(30..38) == Some(b"mimetype") && {
+        let extra = prefix.get(28..30).map_or(0, |e| usize::from(u16::from_le_bytes([e[0], e[1]])));
+        prefix.get(38 + extra..).is_some_and(|rest| rest.starts_with(MIME.as_bytes()))
+    }
+}
+
+/// The zip entry holding the first page's picture.
+pub const PREVIEW: &str = "preview.png";
+
+/// The PNG bytes of a `.designcraft` file's preview, reading only the zip's directory and that
+/// entry. None for files without one (saved before previews, or legacy JSON) or that aren't ours.
+pub fn read_preview<R: Read + std::io::Seek>(file: R) -> Option<Vec<u8>> {
+    let mut z = zip::ZipArchive::new(file).ok()?;
+    let f = z.by_name(PREVIEW).ok()?;
+    // A preview is small; a huge entry is not one we wrote.
+    if f.size() > MAX_PREVIEW_BYTES {
+        return None;
+    }
+    // The declared size can lie: bound what the entry inflates to as well.
+    let mut v = Vec::new();
+    f.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut v).ok()?;
+    (u64::try_from(v.len()).ok()? <= MAX_PREVIEW_BYTES).then_some(v)
+}
+
+/// The largest preview read back (a first-page PNG is far smaller).
+const MAX_PREVIEW_BYTES: u64 = 4 << 20;
 
 /// Read `.designcraft` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
@@ -162,6 +228,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     }
     upgrade(&mut doc, version);
     doc.merge_duplicate_assets();
+    doc.mark_differing_margins_local();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -228,6 +295,7 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
     }
     upgrade(&mut doc, 1);
     doc.merge_duplicate_assets();
+    doc.mark_differing_margins_local();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -312,13 +380,12 @@ mod tests {
     fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
         let aid = AssetId(d.alloc());
         let a = Asset {
-            page: 0,
             id: aid,
             name: "x.png".into(),
             mime: "image/png".into(),
-            link: None,
             data: Arc::new(data.to_vec()),
             pixels: Some((1, 1)),
+            ..Default::default()
         };
         d.assets.insert(aid, Arc::new(a));
         aid
@@ -333,9 +400,12 @@ mod tests {
             asset,
             size: (1.0, 1.0),
             xf: Affine::translate((crop, crop)),
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [crop; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         id
@@ -494,6 +564,20 @@ mod tests {
         assert!(now.styles.resolve_para(&now.story(sid).unwrap().paras[0]).0.drop_cap_align_left);
     }
 
+    /// Assets over the zip size limit are written with zip64 sizes (scaled down here: the real
+    /// threshold is near 4 GiB); smaller ones are written exactly as before.
+    #[test]
+    fn large_assets_are_written_with_zip64_sizes_and_open_again() {
+        let mut d = Document::new(&NewDocument::default());
+        let aid = png_asset(&mut d, &[5; 64]);
+        place(&mut d, aid, 0.0);
+        let normal = save(&d).unwrap();
+        assert_eq!(normal, save_with_large_entries_from(&d, None, 65).unwrap(), "an asset under the threshold is unchanged");
+        let large = save_with_large_entries_from(&d, None, 64).unwrap();
+        assert!(large.len() > normal.len(), "the asset entry carries zip64 sizes");
+        assert_eq!(*load(&large).unwrap().assets[&aid].data, vec![5; 64]);
+    }
+
     #[test]
     fn saves_hold_each_used_file_once() {
         let mut d = Document::new(&NewDocument::default());
@@ -634,6 +718,58 @@ mod tests {
         assert!(load(&serde_json::to_vec(&v).unwrap()).unwrap().settings.glyph_fallback);
     }
 
+    /// A saved tab list over the limits loads repaired, as an imported one does: a non-finite
+    /// position (saved as `null`) dropped, positions clamped, leaders cut, the count capped.
+    #[test]
+    fn saved_tab_lists_load_sanitized() {
+        use designcraft_doc::{MAX_TAB_LEADER, MAX_TAB_POSITION, MAX_TAB_STOPS, TabAlign, TabStop};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 300.0), lid, "a\tb", ParaFormat::default()).unwrap();
+        let stop = |position: f64| TabStop { position, align: TabAlign::Right, leader: "0123456789".into(), align_on: String::new() };
+        let mut tabs: Vec<TabStop> = (0..500).rev().map(|i| stop(i as f64 * 40.0)).collect();
+        tabs.push(stop(f64::NAN));
+        d.story_mut(sid).unwrap().paras[0].para.tabs = Some(tabs);
+        let bytes = save(&d).unwrap();
+        let back = load(&bytes).unwrap();
+        let tabs = back.stories[&sid].paras[0].para.tabs.clone().unwrap();
+        assert_eq!(tabs.len(), MAX_TAB_STOPS);
+        assert!(tabs.windows(2).all(|w| w[0].position < w[1].position), "sorted");
+        assert!(tabs.iter().all(|t| t.position.is_finite() && t.position <= MAX_TAB_POSITION && t.leader.chars().count() <= MAX_TAB_LEADER));
+        assert_eq!(tabs.last().map(|t| t.position), Some(3960.0), "the first stops by position");
+    }
+
+    #[test]
+    fn the_preview_is_read_back_without_the_document() {
+        let d = Document::new(&NewDocument::default());
+        let png = b"\x89PNG fake".to_vec();
+        let bytes = save_with_preview(&d, Some(&png)).unwrap();
+        assert_eq!(read_preview(Cursor::new(&bytes)), Some(png));
+        assert!(load(&bytes).is_ok(), "the preview doesn't get in the way of opening");
+        // Files without one, legacy JSON and garbage have none.
+        assert_eq!(read_preview(Cursor::new(save(&d).unwrap())), None);
+        assert_eq!(read_preview(Cursor::new(b"{}".to_vec())), None);
+        assert_eq!(read_preview(Cursor::new(Vec::new())), None);
+    }
+
+    #[test]
+    fn a_preview_that_inflates_past_its_declared_size_is_refused() {
+        use std::io::Write;
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file(PREVIEW, opts).unwrap();
+        z.write_all(&vec![0u8; usize::try_from(MAX_PREVIEW_BYTES).unwrap() + 4096]).unwrap();
+        let mut bytes = z.finish().unwrap().into_inner();
+        // Declare the entry tiny in the local header and the central directory.
+        let patch = |bytes: &mut Vec<u8>, sig: &[u8], at: usize| {
+            let start = bytes.windows(4).position(|w| w == sig).unwrap();
+            bytes[start + at..start + at + 4].copy_from_slice(&16u32.to_le_bytes());
+        };
+        patch(&mut bytes, b"PK\x03\x04", 22);
+        patch(&mut bytes, b"PK\x01\x02", 24);
+        assert_eq!(read_preview(Cursor::new(&bytes)), None);
+    }
+
     #[test]
     fn rejects_garbage_and_newer_versions() {
         assert!(load(b"nope").is_err());
@@ -645,6 +781,122 @@ mod tests {
             z.finish().unwrap();
         }
         assert!(matches!(load(&buf.into_inner()), Err(FormatError::TooNew(99))));
+    }
+
+    fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
+        use designcraft_doc::{CharAttrs, ParaAttrs};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let base = d.styles.default_paragraph.clone();
+        let chars = CharAttrs {
+            leading_aki: Some(Some(4.0)),
+            trailing_aki: Some(Some(3.0)),
+            underline_weight: Some(Some(2.0)),
+            underline_offset: Some(Some(1.0)),
+            strikethrough_weight: Some(Some(2.0)),
+            strikethrough_offset: Some(Some(1.0)),
+            ..Default::default()
+        };
+        // Legacy JSON loads as format 1, whose upgrade pins Keep Lines Together and Align Left
+        // Edge where a style chain leaves them unset; the base style sets them so both
+        // formats resolve the same.
+        let para = ParaAttrs {
+            start_at: Some(Some(7)),
+            paragraph_kashida_width: Some(Some(0.5)),
+            kinsoku: Some(Some(Default::default())),
+            keep_all_lines: Some(true),
+            drop_cap_align_left: Some(true),
+            ..Default::default()
+        };
+        let style = std::sync::Arc::make_mut(&mut d.styles).paragraph.iter_mut().find(|s| s.name == base).unwrap();
+        style.chars = chars;
+        style.para = para;
+        let clear_chars = CharAttrs {
+            leading_aki: Some(None),
+            trailing_aki: Some(None),
+            underline_weight: Some(None),
+            underline_offset: Some(None),
+            strikethrough_weight: Some(None),
+            strikethrough_offset: Some(None),
+            ..Default::default()
+        };
+        let clear_para = ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), ..Default::default() };
+        let selected = if style_clear {
+            std::sync::Arc::make_mut(&mut d.styles).paragraph.push(designcraft_doc::styles::ParagraphStyle {
+                name: "Defaults".into(),
+                based_on: Some(base.clone()),
+                next_style: None,
+                para: clear_para.clone(),
+                chars: clear_chars.clone(),
+                shortcut: String::new(),
+            });
+            "Defaults".to_string()
+        } else {
+            base
+        };
+        let format = ParaFormat {
+            style: selected,
+            para: if local_clear { clear_para } else { ParaAttrs::default() },
+            chars: if local_clear { clear_chars } else { CharAttrs::default() },
+            table: None,
+        };
+        // Pin legacy paragraph defaults so both formats isolate nullable overrides.
+        for style in &mut d.styles_mut().paragraph {
+            style.para.keep_all_lines = Some(true);
+            style.para.drop_cap_align_left = Some(false);
+        }
+        let layer = d.default_layer();
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), layer, "clear", format).unwrap();
+        d
+    }
+
+    fn r7a_nullable_resolution(d: &Document) -> (designcraft_doc::ParaProps, designcraft_doc::CharProps) {
+        let s = d.stories.values().find(|s| s.text == "clear").unwrap();
+        d.styles.resolve_para(s.paras.first().unwrap())
+    }
+
+    fn r7a_assert_nullable_defaults_survive(d: &Document) {
+        let expected = r7a_nullable_resolution(d);
+        assert_eq!(expected.0.start_at, None);
+        assert_eq!(expected.0.paragraph_kashida_width, None);
+        assert_eq!(expected.0.kinsoku, None);
+        assert_eq!(expected.1.leading_aki, None);
+        // Legacy JSON is format 1: its upgrade pins older defaults on the other styles, so only
+        // the native ZIP compares as the whole document.
+        for (bytes, native) in [(save(d).unwrap(), true), (serde_json::to_vec(d).unwrap(), false)] {
+            let back = load(&bytes).unwrap();
+            assert_eq!(r7a_nullable_resolution(&back), expected, "saved explicit defaults must not become inherited values");
+            if native {
+                assert_eq!(back, *d, "the native ZIP preserves the complete document");
+            }
+        }
+    }
+
+    #[test]
+    fn r7a_native_local_default_text_overrides_survive_zip_and_legacy_json() {
+        r7a_assert_nullable_defaults_survive(&r7a_nullable_document(true, false));
+    }
+
+    #[test]
+    fn r7a_native_named_style_default_overrides_survive_zip_and_legacy_json() {
+        r7a_assert_nullable_defaults_survive(&r7a_nullable_document(false, true));
+    }
+
+    #[test]
+    fn r7a_native_nullable_missing_and_explicit_value_controls() {
+        let d = r7a_nullable_document(false, false);
+        assert_eq!(r7a_nullable_resolution(&d).0.start_at, Some(7));
+        assert_eq!(r7a_nullable_resolution(&d).1.leading_aki, Some(4.0));
+        for (bytes, native) in [(save(&d).unwrap(), true), (serde_json::to_vec(&d).unwrap(), false)] {
+            let back = load(&bytes).unwrap();
+            assert_eq!(r7a_nullable_resolution(&back), r7a_nullable_resolution(&d));
+            if native {
+                assert_eq!(back, d);
+            }
+        }
+        let attrs: designcraft_doc::CharAttrs = serde_json::from_value(json!({"size":null})).unwrap();
+        assert!(attrs.size.is_none(), "nonnullable fields retain their existing null contract");
+        let props: designcraft_doc::CharProps = serde_json::from_value(json!({"leadingAki":null})).unwrap();
+        assert_eq!(props.leading_aki, None);
     }
 
     /// Write `len` bytes of `fill` to the current entry of `z`.

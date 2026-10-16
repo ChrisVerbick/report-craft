@@ -50,6 +50,19 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `--all-pages` that follow them, so one run can write several sizes
 (`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
 
+`--export` writes the file type its extension names: `.png` or `.jpg` (a page), `.pdf`, `.designcraft`, `.idml`,
+`.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
+is a PNG of the page; another extension is an error, and nothing runs.
+
+## Color themes
+
+`color.extractTheme {id?}` previews up to five RGB colours from a placed raster image (or the selected image).
+`swatch.addColorTheme {colors, name?}` adds that palette as a colour group in one undo step.
+Extraction samples the whole source image on a bounded grid, weights partial transparency, and ignores fully transparent pixels.
+The image must contain at most 16 million pixels. PDF/SVG graphics are unsupported. This is local median-cut extraction,
+not Adobe's palette algorithm. In the UI, click an image with the Color Theme Tool (Shift+I), or choose Color Theme…
+in the Swatches panel menu with one image selected. Cancel keeps the document unchanged.
+
 ## Data merge
 
 `data.source.select {path, sheet?}` links a CSV/TSV/`.xlsx` file to the document (`data.source.update` re-reads it,

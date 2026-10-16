@@ -143,8 +143,10 @@ fn a_book_writes_its_chapters_only_inside_the_write_root() {
         s.execute("book.new", &json!({"path": p(&base.join("out/b.dcbook"))})).unwrap();
         s.execute("book.add", &json!({"path": p(&chapter)})).unwrap();
         s.execute("book.add", &json!({"path": p(&second)})).unwrap();
-        for command in ["book.paginate", "book.syncStyles", "book.exportPdf"] {
-            let r = s.execute(command, &json!({"path": p(&base.join("outside/book.pdf"))}));
+        // Paginate and Synchronize rewrite the chapters (in the read root); Export writes `path`.
+        let outside_pdf = json!({"path": p(&base.join("outside/book.pdf"))});
+        for (command, params) in [("book.paginate", json!({})), ("book.syncStyles", json!({})), ("book.exportPdf", outside_pdf)] {
+            let r = s.execute(command, &params);
             let e = r.unwrap_err().to_string();
             assert!(e.contains("outside the write root"), "{command}: {e}");
         }

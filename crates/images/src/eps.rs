@@ -28,7 +28,8 @@ pub fn bounding_box(bytes: &[u8]) -> Option<[f64; 4]> {
     let (ps, _) = sections(bytes);
     let head = String::from_utf8_lossy(&ps[..ps.len().min(64 * 1024)]);
     let read = |key: &str| {
-        head.lines().find_map(|l| {
+        // Lines may end in `\r` alone (classic Mac files).
+        head.split(['\n', '\r']).find_map(|l| {
             let v: Vec<f64> = l.strip_prefix(key)?.split_whitespace().filter_map(|t| t.parse().ok()).collect();
             // Finite corners and a finite size (subtracting extreme corners can overflow to infinity).
             let [x0, y0, x1, y1] = <[f64; 4]>::try_from(v).ok()?;
@@ -82,7 +83,23 @@ const RENDER_SCALE: f64 = 8.0;
 const MAX_RECTS: usize = 200_000;
 const MAX_TOKENS: usize = 2_000_000;
 /// The most pixels painted, in multiples of the image's area (overlapping rectangles repaint).
-const MAX_PAINT_AREAS: u64 = 64;
+const MAX_PAINT_AREAS: u64 = 4;
+/// The deepest `gsave`/`save` nesting read.
+const MAX_SAVE_DEPTH: usize = 64;
+
+/// PostScript tokens without comments, `{` and `}` as tokens of their own. Lazy and borrowed, so
+/// a huge input costs no memory beyond itself; lines may end in `\n`, `\r\n` or `\r`.
+fn ps_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(['\n', '\r']).flat_map(|line| {
+        line.split('%').next().unwrap_or("").split_whitespace().flat_map(|w| w.split_inclusive(['{', '}'])).flat_map(|piece| {
+            let (body, brace) = match piece.char_indices().last() {
+                Some((at, '{' | '}')) => (piece.get(..at).unwrap_or(""), piece.get(at..)),
+                _ => (piece, None),
+            };
+            [Some(body).filter(|b| !b.is_empty()), brace].into_iter().flatten()
+        })
+    })
+}
 
 /// PostScript that only fills rectangles in solid colours (`setcmykcolor`, `setrgbcolor`,
 /// `setgray`, `rectfill`, and procedures that stand for one of them, such as InDesign's
@@ -103,20 +120,16 @@ fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
     let mut drawn = 0usize;
     let mut painted = 0u64;
     let paint_budget = u64::from(pw) * u64::from(ph) * MAX_PAINT_AREAS;
-    // Tokens without comments; `{ … }` procedures kept whole.
-    let mut tokens: Vec<String> = Vec::new();
-    for line in text.lines() {
-        let line = line.split('%').next().unwrap_or("");
-        let spaced = line.replace('{', " { ").replace('}', " } ");
-        tokens.extend(spaced.split_whitespace().map(str::to_string));
-        if tokens.len() > MAX_TOKENS {
-            return None;
-        }
-    }
+    let mut saved: Vec<[u8; 4]> = Vec::new();
+    let mut tokens = ps_tokens(text);
+    let mut read = 0usize;
+    let mut next = || {
+        read += 1;
+        if read > MAX_TOKENS { None } else { Some(tokens.next()) }
+    };
     let unit = |v: f64| v.clamp(0.0, 1.0);
-    let mut i = 0;
-    while let Some(tok) = tokens.get(i) {
-        i += 1;
+    // `None` from `next`: over the token limit; `Some(None)`: the end.
+    while let Some(tok) = next()? {
         if let Ok(v) = tok.parse::<f64>() {
             if !v.is_finite() {
                 return None;
@@ -127,16 +140,21 @@ fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
         // `/name { op } bind def`: name stands for op.
         if let Some(name) = tok.strip_prefix('/') {
             // At most `{ op } bind`: anything longer isn't an alias this reader knows.
-            let body: Vec<&String> = tokens.iter().skip(i).take(5).take_while(|t| *t != "def").collect();
+            let mut body: Vec<&str> = Vec::new();
+            while body.len() < 5 {
+                match next()? {
+                    Some("def") | None => break,
+                    Some(t) => body.push(t),
+                }
+            }
             let op = match body.as_slice() {
-                [open, op, close] | [open, op, close, _] if *open == "{" && *close == "}" => (*op).clone(),
+                ["{", op, "}"] | ["{", op, "}", _] => (*op).to_string(),
                 _ => return None,
             };
             aliases.insert(name.to_string(), op);
-            i += body.len() + 1;
             continue;
         }
-        let op = aliases.get(tok).map_or(tok.as_str(), String::as_str);
+        let op = aliases.get(tok).map_or(tok, String::as_str);
         let mut pop = |n: usize| -> Option<Vec<f64>> { (stack.len() >= n).then(|| stack.split_off(stack.len() - n)) };
         match op {
             "setcmykcolor" => {
@@ -180,7 +198,21 @@ fn render_rectangles(ps: &[u8], bb: [f64; 4]) -> Option<Vec<u8>> {
                     }
                 }
             }
-            "bind" | "gsave" | "grestore" | "newpath" | "showpage" | "save" | "restore" | "pop" | "end" | "begin" => {}
+            "gsave" | "save" => {
+                if saved.len() >= MAX_SAVE_DEPTH {
+                    return None;
+                }
+                saved.push(color);
+            }
+            "grestore" | "restore" => {
+                if let Some(c) = saved.pop() {
+                    color = c;
+                }
+            }
+            "pop" => {
+                pop(1)?;
+            }
+            "bind" | "newpath" | "showpage" | "end" | "begin" => {}
             _ => return None,
         }
     }
@@ -214,6 +246,33 @@ mod tests {
         let (png, _) = eps_proxy(curve).unwrap();
         let img = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!(img.get_pixel(2, 4).0, [228, 228, 228, 255]);
+    }
+
+    /// The colour at pixel (x, y) of a drawn simple EPS (8 pixels per point).
+    fn drawn(eps: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let (png, _) = eps_proxy(eps).unwrap();
+        image::load_from_memory(&png).unwrap().to_rgba8().get_pixel(x, y).0
+    }
+
+    #[test]
+    fn gsave_grestore_pop_and_cr_line_ends_in_simple_eps() {
+        // `\r`-only lines; red inside gsave/grestore, black again after; `pop` drops the 7.
+        let eps = b"%!PS-Adobe-3.1 EPSF-3.0\r%%BoundingBox: 0 0 4 4\r/rf { rectfill } bind def\r0 0 0 1 setcmykcolor\rgsave 1 0 0 setrgbcolor 0 2 2 2 7 pop rf grestore\r2 0 2 2 rf\r%%EOF\r";
+        assert_eq!(drawn(eps, 4, 4), [255, 0, 0, 255], "top left: red");
+        assert_eq!(drawn(eps, 28, 28), [0, 0, 0, 255], "bottom right: the colour from before gsave");
+        assert_eq!(drawn(eps, 28, 4)[3], 0, "top right: nothing (pop removed the extra operand)");
+        // Unbounded nesting isn't drawn.
+        let deep = format!("{} 0 0 2 2 rectfill", "gsave ".repeat(MAX_SAVE_DEPTH + 1));
+        assert_eq!(render_rectangles(deep.as_bytes(), [0.0, 0.0, 4.0, 4.0]), None);
+    }
+
+    #[test]
+    fn a_huge_token_stream_on_one_line_is_refused() {
+        // One line of more operands than the token limit, then a rectangle.
+        let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(MAX_TOKENS));
+        assert_eq!(render_rectangles(ps.as_bytes(), [0.0, 0.0, 4.0, 4.0]), None);
+        let ps = format!("{}\n0 0 2 2 rectfill\n", "0 ".repeat(1000));
+        assert!(render_rectangles(ps.as_bytes(), [0.0, 0.0, 4.0, 4.0]).is_some(), "under the limit it is drawn");
     }
 
     #[test]

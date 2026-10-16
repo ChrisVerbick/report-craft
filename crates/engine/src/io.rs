@@ -37,6 +37,15 @@ pub fn read_capped(path: impl AsRef<Path>, cap: u64) -> std::io::Result<Vec<u8>>
     Ok(b)
 }
 
+/// The file at `path` opened for reading, inside the automation read root when there is one, for
+/// callers that read only part of it. A refused path is a `PermissionDenied` error carrying the
+/// roots' message.
+pub fn open(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
+    let path = path.as_ref();
+    crate::file_access::check_read(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+    std::fs::File::open(path)
+}
+
 /// The text of the file at `path`, inside the automation read root when there is one.
 pub fn read_to_string(path: impl AsRef<Path>) -> Result<String, String> {
     let path = path.as_ref();

@@ -27,9 +27,12 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             check
         ),
-        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, uses: [{id, page}]}]", has_doc, |s, _| {
-            let d = s.doc()?.doc.clone();
-            Ok(Value::Array(list(&d, &mut s.text_link_checks)))
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, uses: [{id, page}]}]", has_doc, |s, _| {
+            // Taken out for the call so the document needn't be cloned on every poll.
+            let mut checks = std::mem::take(&mut s.text_link_checks);
+            let links = s.doc().map(|d| list(&d.doc, &mut checks));
+            s.text_link_checks = checks;
+            Ok(Value::Array(links?))
         }),
         cmd!(
             "links.relink",
@@ -99,7 +102,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("links.goTo", "the graphic isn't placed"));
             }
             st.selection = Selection::items(ids.clone());
-            st.revision += 1;
+            st.bump_revision();
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
     ]
@@ -149,6 +152,21 @@ fn uses(d: &Document, aid: AssetId) -> Vec<ItemId> {
         }
     }
     out
+}
+
+/// Whether an asset's linked file is gone ([`status`] "missing" without reading the file). An
+/// asset can hold data while its file is missing: the document's preview of it.
+pub fn link_missing(a: &designcraft_doc::Asset) -> bool {
+    let Some(path) = &a.link else { return false };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        !crate::io::exists(path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// Link status of an asset.
@@ -283,7 +301,8 @@ fn list(d: &Document, checks: &mut TextChecks) -> Vec<Value> {
                     json!({"id": id.0, "page": page, "ppi": ppi})
                 })
                 .collect();
-            json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status(a), "pixels": a.pixels, "uses": uses})
+            let pdf_crop = (a.mime == "application/pdf").then(|| a.pdf_crop.name());
+            json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status(a), "pixels": a.pixels, "pdfCrop": pdf_crop, "uses": uses})
         })
         .chain(texts)
         .collect()
@@ -399,6 +418,8 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         a.pixels = Some(px);
         a.name = name.clone();
         a.link = Some(path.clone());
+        // A placed PDF keeps its crop choice; its box is found on the new file.
+        super::file::crop_pdf(a);
         Ok(json!({"name": name}))
     })
 }
@@ -488,6 +509,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
                 let a = Arc::make_mut(a);
                 a.data = Arc::new(bytes.clone());
                 a.pixels = Some(*px);
+                super::file::crop_pdf(a);
             }
         }
         let (mut warnings, mut reports, mut errors) = (Vec::new(), Vec::new(), Vec::new());
@@ -697,10 +719,8 @@ mod shared_asset_tests {
             id: AssetId(id),
             name: "p.png".into(),
             mime: "image/png".into(),
-            link: None,
             data: Arc::new(data),
-            pixels: None,
-            page: 0,
+            ..Default::default()
         };
         let mut src = Document::new(&NewDocument::default());
         let mut dst = Document::new(&NewDocument::default());
@@ -724,9 +744,12 @@ mod shared_asset_tests {
             asset: sid,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [1.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         src.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         let ids = super::super::object::duplicate_from(&mut dst, &src, &[iid], SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
@@ -752,7 +775,7 @@ mod shared_asset_tests {
                 link: None,
                 data: Arc::new(png(8, 4)),
                 pixels: None,
-                page: 0,
+                ..Default::default()
             }),
         );
         let iid = ItemId(src.alloc());
@@ -766,15 +789,53 @@ mod shared_asset_tests {
             asset: missing,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [1.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         src.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         let ids = super::super::object::duplicate_from(&mut dst, &src, &[iid], SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
         let g = dst.item(ids[0]).and_then(|i| i.graphic()).unwrap();
         assert_ne!(g.asset, missing);
         assert!(!dst.assets.contains_key(&g.asset));
+    }
+
+    #[test]
+    fn pasted_missing_graphic_never_takes_an_asset_placed_later() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Graphic, Item, ItemId, Shape, SpreadRef};
+        let mut src = Document::new(&NewDocument::default());
+        let mut dst = Document::new(&NewDocument::default());
+        // The source's missing id is ahead of the target's counter: the target would allocate it to its next image.
+        for _ in 0..50 {
+            src.alloc();
+        }
+        let missing = AssetId(src.alloc());
+        let iid = ItemId(src.alloc());
+        let mut it = Item::new(
+            iid,
+            src.default_layer(),
+            Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
+        );
+        it.content = Content::Graphic(Graphic {
+            asset: missing,
+            size: (4.0, 4.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [1.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        src.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let ids = super::super::object::duplicate_from(&mut dst, &src, &[iid], SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
+        let g = dst.item(ids[0]).and_then(|i| i.graphic()).unwrap().asset;
+        assert!((0..100).all(|_| AssetId(dst.alloc()) != g), "a later image in the target takes the pasted graphic's id");
     }
 }
 

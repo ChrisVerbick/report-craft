@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Data Fields",
             [],
             None,
-            "{csv? | rows? | path? | bytes?, name?} → [{name, kind, uses}]; no params reads the linked source and does not attach one",
+            "{csv? | rows? | path? | bytes? | base64?, name?, delimiter?, sheet?} → [{name, kind, uses}]; no params reads the linked source and does not attach one",
             has_doc,
             fields_cmd
         ),
@@ -81,7 +81,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Merged Document…",
             [],
             None,
-            "{csv? | rows? | path? | bytes?, name?, records?, one?, range?, perPage?, arrange?, insets?, columnSpacing?, rowSpacing?, fitting?, center?, linkImages?, limit?} → {records, pages, missingImages, oversetStories, warnings}",
+            "{csv? | rows? | path? | bytes? | base64?, name?, delimiter?, sheet?, records?, one?, range?, perPage?, arrange?, insets?, columnSpacing?, rowSpacing?, fitting?, center?, linkImages?, limit?, spread?: removed (passing it is an error)} → {records, pages, missingImages, oversetStories, warnings}",
             has_doc,
             merge_cmd
         ),
@@ -204,7 +204,7 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     fill_row(&mut doc, &source.fields, &row, record as u32, &options, &maps, data_dir.as_deref(), doc_dir.as_deref());
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
-    st.revision = st.revision.saturating_add(1);
+    st.bump_revision();
     Ok(json!({"record": record}))
 }
 
@@ -428,6 +428,7 @@ fn assign_page(dst: &mut Document, abs: usize, from: &Page) {
     p.parent = from.parent;
     p.margins = from.margins;
     p.columns = from.columns.clone();
+    p.local_margins = from.local_margins;
     p.width = from.width;
     p.height = from.height;
     if size_changed {
@@ -716,7 +717,7 @@ fn remember_source_status(s: &mut Session, status: SourceStatus) {
         return;
     }
     st.doc = Arc::new(doc);
-    st.revision = st.revision.saturating_add(1);
+    st.bump_revision();
 }
 
 fn load_inline(p: &Value) -> std::result::Result<(Table, Option<PathBuf>), String> {
@@ -778,13 +779,13 @@ fn read_path(path: &str) -> std::result::Result<Vec<u8>, String> {
 /// `cap`, so a device or a file that grows while it is read can't exhaust memory.
 pub(crate) fn read_path_capped(path: &str, cap: u64) -> std::result::Result<Vec<u8>, String> {
     let too_big = || format!("{path}: the file is larger than {} MiB", cap / (1024 * 1024));
+    // The roots' own message when they refuse the path, missing or not.
+    crate::file_access::check_read(path)?;
     match crate::io::metadata(path) {
         Ok(m) if m.len() > cap => return Err(too_big()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the file is missing")),
         _ => {}
     }
-    // The roots' own message when they refuse the path.
-    crate::file_access::check_read(path)?;
     let b = match crate::io::read_capped(path, cap) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{path}: the file is missing")),

@@ -165,12 +165,12 @@ Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 | Tool | What it does |
 |---|---|
 | `list_commands` | Every command (id, label, menu path, shortcut, params, enabled), with `filter` / `enabledOnly` |
-| `execute` | Run any command: `{command, params}` |
+| `execute` | Run any command: `{command, params}`. A params key the command doesn't take is a JSON-RPC `-32602` (invalid params) error naming it, as is an argument a tool doesn't take; `batch` checks every step before running the first |
 | `batch` | Run `commands: [{command, params}]` (or `script` text, one `command.id {json}` per line) in order, stopping at the first error (reports `failedIndex`); `"$N.path"` parameters use earlier results ([agents.md](agents.md)) |
 | `inspect_document` | Pages, spreads, items (ids, bounds, fill, story), stories (overset), layers, styles, swatches, selection |
 | `get_story` | Text, frames, paragraphs, lines, overset of a story (`story` or text `frame`) |
 | `set_story_text` | Replace a story's text (`\n` = new paragraph) |
-| `new_document` | `file.new` (preset, width, height, pages, facingPages, columns, gutter, margins, bleed, title) or `sample: true` |
+| `new_document` | `file.new` (preset, intent, units, width, height, pages, startPage, facingPages, columns, gutter, margins, bleed, slug, title, primaryTextFrame) or `sample: true` |
 | `open_document` / `save_document` | Native `.designcraft` files |
 | `place_image` | Image from `path` or `base64` into `frame`, the selected frame, or a new frame at x, y, width |
 | `render_page` | Render a page → MCP image content (PNG, base64); optional `path` to also save it |
@@ -180,6 +180,7 @@ Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
 | `pointer` | Mouse gesture events (`down`/`drag`/`up`/`move`/`doubleclick`) for the active tool, optional `tool` |
 | `key` | Key press with modifiers (headless: active tool → command shortcuts → tool shortcuts) |
 | `type_text` | Type at the text insertion point (or into the focused dialog field in the app) |
+| `ime` | Input method events at the Type tool's caret: `preedit` (marked text in place, `active` = converting clause in characters), `commit` (typed as one step) |
 | `click` / `drag` | Real pointer input at screen points (connected only) |
 | `menu_list`, `ui_inspect`, `ui_set` | Menu tree, UI state, change UI state (connected only) |
 | `dialog_set` / `dialog_confirm` / `dialog_cancel` | Fill in and close the open dialog (connected only) |

@@ -62,11 +62,30 @@ pub struct CellStroke {
     pub color: String,
     pub tint: f32,
     pub kind: StrokeType,
+    /// Painted in the gaps of dashed, dotted and striped types.
+    #[serde(skip_serializing_if = "is_no_swatch")]
+    pub gap_color: String,
+    #[serde(skip_serializing_if = "is_full")]
+    pub gap_tint: f32,
+}
+
+fn is_no_swatch(s: &str) -> bool {
+    s == designcraft_color::swatch::NONE
+}
+fn is_full(t: &f32) -> bool {
+    *t == 1.0
 }
 
 impl Default for CellStroke {
     fn default() -> Self {
-        CellStroke { weight: 1.0, color: designcraft_color::swatch::BLACK.into(), tint: 1.0, kind: StrokeType::Solid }
+        CellStroke {
+            weight: 1.0,
+            color: designcraft_color::swatch::BLACK.into(),
+            tint: 1.0,
+            kind: StrokeType::Solid,
+            gap_color: designcraft_color::swatch::NONE.into(),
+            gap_tint: 1.0,
+        }
     }
 }
 
@@ -931,6 +950,47 @@ impl Table {
         }
     }
 
+    /// Header and footer row counts after Table ▸ Convert Rows turns rows `r0..=r1` into `kind`
+    /// rows. Header rows grow from the top and footer rows from the bottom, so the rows must
+    /// touch the table's edge or the rows already converted; back to body, they must touch the
+    /// body. One body row stays, and no merged cell may straddle a moved boundary.
+    pub fn convert_rows_counts(&self, r0: usize, r1: usize, kind: RowKind) -> Result<(usize, usize), String> {
+        let (r0, r1) = (r0.min(r1), r0.max(r1));
+        let n = self.nrows();
+        if r1 >= n {
+            return Err("row out of range".into());
+        }
+        let (h, f) = (self.header_rows(), self.footer_rows());
+        let body_end = n - f;
+        let (nh, nf) = match kind {
+            RowKind::Header if r0 > h => return Err("select rows at the top of the table or right after its header rows".into()),
+            RowKind::Header if r1 >= body_end => return Err("footer rows can't become header rows".into()),
+            RowKind::Header => (h.max(r1 + 1), f),
+            RowKind::Footer if r1 + 1 < body_end => return Err("select rows at the bottom of the table or right before its footer rows".into()),
+            RowKind::Footer if r0 < h => return Err("header rows can't become footer rows".into()),
+            RowKind::Footer => (h, f.max(n - r0)),
+            RowKind::Body => {
+                if (r0 < h && r1 + 1 < h) || (r1 >= body_end && r0 > body_end) {
+                    return Err("select the header or footer rows next to the body".into());
+                }
+                (if r0 < h { r0 } else { h }, if r1 >= body_end { n - 1 - r1 } else { f })
+            }
+        };
+        if (nh, nf) == (h, f) {
+            return Err("the rows already are of that kind".into());
+        }
+        if nh + nf >= n {
+            return Err("a table keeps at least one body row".into());
+        }
+        let owners = self.owners();
+        let nc = self.ncols();
+        let straddled = |b: usize| (0..nc).any(|c| owners.get(b * nc + c).is_some_and(|o| o.0 < b));
+        if (nh != h && straddled(nh)) || (nf != f && straddled(n - nf)) {
+            return Err("unmerge the cells that span header, body and footer rows first".into());
+        }
+        Ok((nh, nf))
+    }
+
     /// Cell texts, rows separated by `\n`, cells by `\t` (Convert Table to Text, search, agents).
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
@@ -997,7 +1057,7 @@ impl Table {
 fn append_story(s: &mut Story, other: &Story) {
     if s.is_empty() {
         *s = Story { id: s.id, ..other.clone() };
-        s.rev += 1;
+        s.rev = s.rev.wrapping_add(1);
         return;
     }
     let base = s.len();
@@ -1074,7 +1134,7 @@ impl Story {
     /// Mutable table (copy-on-write); bumps the story revision.
     pub fn table_mut(&mut self, id: u64) -> Option<&mut Table> {
         let t = self.tables.get_mut(&id)?;
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         Some(Arc::make_mut(t))
     }
 
@@ -1099,7 +1159,7 @@ impl Story {
         let api = self.para_at(anchor);
         self.paras[api].table = Some(id);
         self.fix_tables();
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         anchor
     }
 

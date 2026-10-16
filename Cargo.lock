@@ -799,12 +799,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-text"
+version = "20.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d2790b5c08465d49f8dc05c8bcae9fea467855947db39b0f8145c091aaced5"
+dependencies = [
+ "core-foundation",
+ "core-graphics",
+ "foreign-types",
+ "libc",
+]
+
+[[package]]
 name = "core_maths"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "craft-atomic"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e#e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e"
+dependencies = [
+ "rustix 1.1.5",
+]
+
+[[package]]
+name = "craft-cms"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e#e9546e191dd62f2bc1d61eca45dbdc2f1b3c1d8e"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]
@@ -914,13 +942,17 @@ dependencies = [
  "designcraft-ui-egui",
  "eframe",
  "egui",
+ "fmv-macos-events",
  "log",
  "muda",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "rfd",
  "serde",
  "serde_json",
  "winit",
  "winresource",
+ "winsafe",
 ]
 
 [[package]]
@@ -943,8 +975,8 @@ dependencies = [
 name = "designcraft-color"
 version = "0.8.0"
 dependencies = [
+ "craft-cms",
  "kurbo",
- "moxcms",
  "proptest",
  "serde",
  "serde_json",
@@ -959,6 +991,7 @@ dependencies = [
  "designcraft-doc",
  "designcraft-fonts",
  "designcraft-geom",
+ "fancy-regex",
  "hypher",
  "log",
  "miniz_oxide 0.8.9",
@@ -966,6 +999,7 @@ dependencies = [
  "regex",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-script",
  "unicode-segmentation",
 ]
 
@@ -986,6 +1020,7 @@ name = "designcraft-engine"
 version = "0.8.0"
 dependencies = [
  "caseless",
+ "craft-atomic",
  "craft-print",
  "designcraft-color",
  "designcraft-compose",
@@ -1005,10 +1040,11 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
+ "indd",
  "kurbo",
  "log",
  "quick-xml",
- "regex",
+ "same-file",
  "serde",
  "serde_json",
  "tempfile",
@@ -1041,6 +1077,7 @@ dependencies = [
 name = "designcraft-fonts"
 version = "0.8.0"
 dependencies = [
+ "core-text",
  "harfrust 0.13.3",
  "kurbo",
  "log",
@@ -1081,6 +1118,7 @@ dependencies = [
  "designcraft-compose",
  "designcraft-doc",
  "designcraft-geom",
+ "log",
  "quick-xml",
  "thiserror 2.0.21",
  "zip",
@@ -1090,11 +1128,15 @@ dependencies = [
 name = "designcraft-images"
 version = "0.8.0"
 dependencies = [
+ "craft-cms",
  "designcraft-color",
  "designcraft-fonts",
  "image",
+ "log",
  "resvg",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1205,7 +1247,6 @@ dependencies = [
  "egui",
  "egui_kittest",
  "log",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -1574,6 +1615,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1636,6 +1688,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "fmv-macos-events"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90642cf66dde7f205dc8b42dfe57b47d0f3a29f571b832742883ef512e23fe55"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -2314,6 +2377,11 @@ name = "imagesize"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
+
+[[package]]
+name = "indd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/indd-utils?branch=main#7f3060e5bce78d21ea70e0d5eacb96edce15dfbe"
 
 [[package]]
 name = "indexmap"
@@ -5643,6 +5711,12 @@ dependencies = [
  "toml",
  "version_check",
 ]
+
+[[package]]
+name = "winsafe"
+version = "0.0.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ef0ffc427f045c0cc9ebffd6f4f91153dcd2a1547b5c3c29ee3f541e16e95c6"
 
 [[package]]
 name = "wit-bindgen"
