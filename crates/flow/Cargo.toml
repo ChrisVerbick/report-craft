@@ -1,0 +1,17 @@
+[package]
+name = "designcraft-flow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft Flow: text diff, three-way merge and compare for linked text"
+
+[lints]
+workspace = true
+
+[dependencies]
+designcraft-doc = { workspace = true }
+similar = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

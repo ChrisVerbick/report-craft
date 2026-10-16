@@ -185,6 +185,28 @@ pub struct TextFileLink {
     /// was edited in the layout (an update replaces those edits).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub story_hash: String,
+    /// The story as the last import left it (placed, updated or relinked), detached (no frames,
+    /// no link): what a merge compares the file and the layout against. Only imported content,
+    /// never the file itself, so a file's comments, tracked deletions and properties stay out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<Arc<Story>>,
+    /// What the last update did (the Flow panel shows it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update: Option<UpdateRecord>,
+}
+
+/// One update of a linked text file: when, and its report and errors as `links.update` returned
+/// them for the story.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRecord {
+    /// Seconds since 1970 (0: unknown, as on the web).
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub report: serde_json::Value,
+    #[serde(default)]
+    pub errors: Vec<serde_json::Value>,
 }
 
 fn is_zero_i64(v: &i64) -> bool {
@@ -314,11 +336,13 @@ impl Story {
         self.insert_with_raw(pos, text, fmt);
     }
 
-    /// [`Story::insert_with`] without the table fix-up.
-    pub(crate) fn insert_with_raw(&mut self, pos: usize, text: &str, fmt: CharFormat) {
+    /// [`Story::insert_with`] without the table fix-up. New text never carries Flow's highlight
+    /// mark: it isn't what the linked file brought in.
+    pub(crate) fn insert_with_raw(&mut self, pos: usize, text: &str, mut fmt: CharFormat) {
         if text.is_empty() {
             return;
         }
+        fmt.over.flow = None;
         let pos = floor_char_boundary(&self.text, pos);
         let refs = text.matches(crate::notes::FOOTNOTE_REF).count();
         if refs > 0 {

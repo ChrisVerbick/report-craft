@@ -2067,9 +2067,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "deletePages" => crate::i18n::tr(&app.ui.language, "Warning"),
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
-        "updateLink" => crate::i18n::tr(&app.ui.language, "Update Link"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
+        "placeWithFlow" => crate::i18n::tr(&app.ui.language, "Place with Flow"),
         "loadStyles" => crate::i18n::tr(&app.ui.language, "Load Styles"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
@@ -2098,7 +2098,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
-            "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
+            "closeDocument" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
             "newDocument" => 960.0,
             "numberingSection" => 560.0,
             crate::effects_dialog::ID => 720.0,
@@ -2481,10 +2481,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             }
                         });
                     }
-                    "importOptions" => {
+                    "importOptions" | "placeWithFlow" => {
                         ui.label(egui::RichText::new(d.s("path")).size(10.5));
-                        check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
-                        if !d.b("removeStyles") {
+                        // Word and RTF files have styles to map; a workbook or plain text has none.
+                        let styled = d.id == "importOptions" || d.b("word");
+                        if styled {
+                            check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
+                        }
+                        if styled && !d.b("removeStyles") {
                             crate::rtl::label(
                                 ui,
                                 egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Name Conflicts")).font(semibold(12.0)),
@@ -2560,6 +2564,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 });
                             });
                         }
+                        if d.id == "placeWithFlow" {
+                            crate::panels::flow::place_check(ui, &app.ui.language, &mut d);
+                        }
                     }
                     "loadStyles" => load_styles(app, ui, &mut d),
                     "closeDocument" => {
@@ -2621,14 +2628,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             crate::rtl::label(ui, crate::i18n::tr(&lang, "Resize:"));
                             combo(ui, &mut d, "resize", &resizes);
                         });
-                    }
-                    "updateLink" => {
-                        let text = crate::i18n::tr(
-                            &app.ui.language,
-                            "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.",
-                        )
-                        .replace("{}", &d.s("files"));
-                        crate::rtl::label(ui, text);
                     }
                     "newWorkspace" => {
                         ui.horizontal(|ui| {
@@ -2814,7 +2813,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let ok_label = match d.id.as_str() {
             "colorTheme" => crate::i18n::tr(&app.ui.language, "Add to Swatches").to_string(),
             "closeDocument" => crate::i18n::tr(&app.ui.language, "  Save  ").to_string(),
-            "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
+            "placeWithFlow" => crate::i18n::tr(&app.ui.language, "  Place  ").to_string(),
             "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
             "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
             _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
@@ -2824,6 +2823,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "findFont" => "Done",
             _ => "Cancel",
         };
+        // Place with Flow waits for "Place with N errors" when the file shows errors.
+        let ok_enabled = !(d.id == "placeWithFlow" && d.n("blocking").unwrap_or(0.0) > 0.0 && !d.b("allow"));
         ui.horizontal(|ui| {
             if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && !d.b("new") {
                 check(ui, &mut d, "preview", crate::i18n::tr(&app.ui.language, "Preview"));
@@ -2831,12 +2832,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(
+                    .add_enabled(
+                        ok_enabled,
                         egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(ok_label).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
-                    || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    || (ok_enabled && !popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
@@ -3461,7 +3463,6 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             o.resize = PanelResize::from_key(&d.s("resize")).unwrap_or(o.resize);
             Ok(Value::Null)
         }
-        "updateLink" => crate::panels::properties::run_update_links(app, d.fields.get("target").cloned().unwrap_or_else(|| json!({}))),
         "closeDocument" => {
             // The document may have moved in the tab row (or gone) while the dialog was open.
             let uid = d.fields.get("uid").and_then(Value::as_u64);
@@ -3497,6 +3498,19 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             "file.place",
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
+        "placeWithFlow" => {
+            let blocking = d.n("blocking").unwrap_or(0.0) as usize;
+            if blocking > 0 && !d.b("allow") {
+                let message = format!("Tick “Place with {blocking} {}” to place it with them.", if blocking == 1 { "error" } else { "errors" });
+                app.ui.dialog = Some(d);
+                return Err(message);
+            }
+            app.open_file(
+                "file.place",
+                json!({"path": d.s("path"), "link": true, "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"),
+                    "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
+            )
+        }
         "fittingOptions" => {
             let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
             app.run(
@@ -9503,43 +9517,6 @@ mod tests {
         assert!(!app.ui.pdf_export.bleed);
         assert!(app.ui.pdf_export.marks_crop);
         assert!(!app.ui.pdf_export.tagged);
-    }
-
-    #[test]
-    fn update_link_asks_before_replacing_edits_made_in_the_layout() {
-        let dir = std::env::temp_dir().join(format!("dc-update-link-dialog-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("note.txt");
-        std::fs::write(&path, "One").unwrap();
-        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", &json!({})).unwrap();
-        let r = app.session.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
-        let sid = r["story"].as_u64().unwrap();
-        let text = |app: &crate::DesignApp| app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
-
-        // Not edited in the layout: updates without asking.
-        std::fs::write(&path, "Two").unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app), "Two");
-
-        // Edited in the layout: asks first; Cancel changes nothing.
-        app.session.execute("story.setText", &json!({"story": sid, "text": "Mine"})).unwrap();
-        std::fs::write(&path, "Three").unwrap();
-        crate::panels::properties::update_links(&mut app, json!({"story": sid}));
-        let d = app.ui.dialog.as_ref().unwrap();
-        assert_eq!((d.id.as_str(), d.s("files").as_str()), ("updateLink", "note.txt"));
-        app.ui.dialog = None;
-        assert_eq!(text(&app), "Mine");
-
-        // Window › Links › Update Link (all links) asks too; confirming updates.
-        crate::menus::activate(&mut app, "links.update", &Value::Null);
-        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("updateLink"));
-        confirm(&mut app).unwrap();
-        assert!(app.ui.dialog.is_none());
-        assert_eq!(text(&app), "Three");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -164,7 +164,42 @@ fn text_link(
         style_conflicts: conflict.name().into(),
         remove_styles: remove,
         story_hash: super::links::story_hash(story),
+        base: Some(std::sync::Arc::new(Story { frames: Vec::new(), file_link: None, ..story.clone() })),
+        last_update: None,
     }
+}
+
+/// The story's link, or why there is none.
+fn linked(d: &Document, sid: StoryId) -> Result<TextFileLink> {
+    d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))
+}
+
+/// The linked file imported again with the import options it was placed with, and its styles
+/// added to the document as on placing: the import, and the style map and policy to record.
+fn import_again(
+    d: &mut Document,
+    link: &TextFileLink,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(designcraft_textimport::Imported, std::collections::HashMap<String, String>, Conflict)> {
+    let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
+    let mut imp = designcraft_textimport::import(&name, bytes).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
+    if link.remove_styles {
+        strip(&mut imp.story);
+        imp.para_styles.clear();
+        imp.char_styles.clear();
+    }
+    let conflict = Conflict::parse(&link.style_conflicts)?;
+    // A mapping to a style the document no longer has is dropped: that style is imported again.
+    let map: std::collections::HashMap<String, String> = link
+        .style_map
+        .iter()
+        .filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some())
+        .map(|(from, to)| (from.clone(), to.clone()))
+        .collect();
+    let map = map_styles(d, &mut imp, &map, conflict);
+    add_styles(d, &imp, conflict);
+    Ok((imp, map, conflict))
 }
 
 /// Update Link of a linked text file: `bytes` (read from `path`) imported again into the story
@@ -175,26 +210,302 @@ pub(crate) fn reimport(
     path: &str,
     bytes: &[u8],
     before: Option<designcraft_doc::Fingerprint>,
-) -> Result<Vec<String>> {
-    let link =
-        d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))?;
-    let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
-    let mut imp = designcraft_textimport::import(&name, bytes).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
-    if link.remove_styles {
-        strip(&mut imp.story);
-        imp.para_styles.clear();
-        imp.char_styles.clear();
-    }
-    let conflict = Conflict::parse(&link.style_conflicts)?;
-    // A mapping to a style the document no longer has is dropped: that style is imported again.
-    let map: std::collections::HashMap<String, String> =
-        link.style_map.into_iter().filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some()).collect();
-    let map = map_styles(d, &mut imp, &map, conflict);
-    add_styles(d, &imp, conflict);
+    allow_errors: bool,
+) -> Result<(Vec<String>, Vec<designcraft_textimport::Problem>)> {
+    let link = linked(d, sid)?;
+    let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    allowed(&imp, path, allow_errors)?;
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &imp.story);
     story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
-    Ok(imp.warnings)
+    mark(story, &Value::Null, &imp.problems);
+    Ok((imp.warnings, imp.problems))
+}
+
+/// Errors the file shows stop an update unless allowed: the app asks first, scripts pass
+/// `allowErrors`. Values from other workbooks are only reported.
+fn allowed(imp: &designcraft_textimport::Imported, path: &str, allow: bool) -> Result<()> {
+    let blocking: Vec<String> = imp.problems.iter().filter(|p| p.kind.blocks()).map(designcraft_textimport::Problem::message).collect();
+    if allow || blocking.is_empty() {
+        return Ok(());
+    }
+    let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
+    let list = blocking.join("; ");
+    let n = blocking.len();
+    Err(bad("links.update", format!("{name} shows {n} error{}: {list}. Fix the file, or update with allowErrors", if n == 1 { "" } else { "s" })))
+}
+
+/// Update Link by merging (see [`designcraft_flow::merge_story`]): the file's changes come into the
+/// story, the layout's own edits survive and are reported, and where both changed a sentence the
+/// file's text wins and a Flow note keeps the layout's. Refused, with nothing changed, for text with
+/// tracked changes or a merge the 0% check can't verify. Returns the warnings and the report.
+pub(crate) fn remerge(
+    d: &mut Document,
+    sid: StoryId,
+    path: &str,
+    bytes: &[u8],
+    before: Option<designcraft_doc::Fingerprint>,
+    allow_errors: bool,
+) -> Result<(Vec<String>, Value, Vec<designcraft_textimport::Problem>)> {
+    let link = linked(d, sid)?;
+    let base = link.base.clone().ok_or_else(|| bad("links.update", format!("story {} has nothing to merge with", sid.0)))?;
+    // The last update's highlights are the panel's, not the layout's formatting: off for the merge,
+    // and this update's marks go on afterwards.
+    let mut mine = d.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.clone();
+    unmark(&mut mine, false);
+    if mine.runs().any(|(_, f)| matches!(f.over.change, Some(designcraft_doc::ChangeMark::Inserted | designcraft_doc::ChangeMark::Deleted))) {
+        return Err(bad("links.update", format!("story {}: accept or reject its tracked changes before updating it", sid.0)));
+    }
+    let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    allowed(&imp, path, allow_errors)?;
+    // The file as a plain update would leave the story: what this merge and the next compare with.
+    let mut theirs = Story::new(sid);
+    fill(&mut theirs, &imp.story);
+    let m = designcraft_flow::merge_story(&base, &mine, &theirs)
+        .filter(|m| verified(&theirs, &mine, m))
+        .ok_or_else(|| bad("links.update", format!("story {}: the merge couldn't be verified, so nothing was changed", sid.0)))?;
+    let mut report = report(sid, &theirs, &mine, &m);
+    let mut warnings = imp.warnings;
+    warnings.extend(m.warnings.iter().cloned());
+    let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    *story = m.story;
+    // The story counts as edited while it differs from the file as applied.
+    let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
+    let story_hash = super::links::story_hash(&theirs);
+    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, ..applied });
+    mark(story, &report, &imp.problems);
+    place_report(d, sid, &mut report);
+    Ok((warnings, report, imp.problems))
+}
+
+/// Take Flow's highlight marks off a story and its table cells; errors keep theirs with
+/// `keep_errors` (Clear Highlights: they stay until fixed).
+pub(crate) fn unmark(st: &mut Story, keep_errors: bool) {
+    let clear = |f: &mut designcraft_doc::CharFormat| {
+        if !(keep_errors && f.over.flow == Some(designcraft_doc::FlowMark::Error)) {
+            f.over.flow = None;
+        }
+    };
+    if st.runs().any(|(_, f)| f.over.flow.is_some()) {
+        let n = st.len();
+        st.format_chars(0..n, clear);
+    }
+    for t in st.tables.values_mut().filter(|t| t.cells.iter().any(|c| c.text.runs().any(|(_, f)| f.over.flow.is_some()))) {
+        for c in std::sync::Arc::make_mut(t).cells.iter_mut() {
+            let n = c.text.len();
+            c.text.format_chars(0..n, clear);
+        }
+    }
+}
+
+/// Mark what an update brought in, for the page's highlights: each reported change, kept edit and
+/// conflict (the file's text) on its stretch of the story or cell, and what shows an error — a
+/// cell, or a Word field error's text.
+fn mark(st: &mut Story, report: &Value, problems: &[designcraft_textimport::Problem]) {
+    use designcraft_doc::FlowMark;
+    let range = |e: &Value| -> Option<std::ops::Range<usize>> {
+        let a = usize::try_from(e["at"]["start"].as_u64()?).ok()?;
+        let b = usize::try_from(e["at"]["end"].as_u64()?).ok()?;
+        Some(a..b)
+    };
+    for (key, flow) in [("changes", FlowMark::File), ("deviations", FlowMark::Kept), ("conflicts", FlowMark::Conflict)] {
+        for e in report[key].as_array().into_iter().flatten() {
+            let Some(r) = range(e) else { continue };
+            let set = |f: &mut designcraft_doc::CharFormat| f.over.flow = Some(flow);
+            match e.get("cell").filter(|c| c.is_object()) {
+                Some(c) => {
+                    let (row, col) =
+                        (c["row"].as_u64().and_then(|v| usize::try_from(v).ok()), c["col"].as_u64().and_then(|v| usize::try_from(v).ok()));
+                    if let (Some(t), Some(row), Some(col)) =
+                        (c["table"].as_u64().and_then(|t| st.tables.get_mut(&t)).map(std::sync::Arc::make_mut), row, col)
+                        && let Some(cell) = t.cell_mut(row, col)
+                    {
+                        cell.text.format_chars(r, set);
+                    }
+                }
+                None => st.format_chars(r, set),
+            }
+        }
+    }
+    for p in problems {
+        let flow = if p.kind.blocks() { FlowMark::Error } else { FlowMark::Notice };
+        let set = |f: &mut designcraft_doc::CharFormat| f.over.flow = Some(flow);
+        match p.cell {
+            Some((row, col)) => {
+                if let Some(cell) = st.tables.values_mut().next().map(std::sync::Arc::make_mut).and_then(|t| t.cell_mut(row, col)) {
+                    let n = cell.text.len();
+                    cell.text.format_chars(0..n, set);
+                }
+            }
+            None if !p.shows.is_empty() => {
+                let found: Vec<usize> = st.text.match_indices(p.shows.as_str()).map(|(i, _)| i).collect();
+                for at in found {
+                    st.format_chars(at..at + p.shows.len(), set);
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// The 0% check run before a merge changes the document: the merged text differs from the file's
+/// only by the reported deviations, and the reported changes turn the layout's text into it.
+pub(crate) fn verified(theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> bool {
+    designcraft_flow::verified(theirs, mine, m)
+}
+
+/// What a merge did to a story, in whole sentences: the changes to its text, the layout's edits
+/// that differ from the file, the conflicts (the file's text kept, the layout's in a Flow note) and
+/// its warnings; table cells merged cell by cell add theirs, each with its `cell` (table, row,
+/// column). Markers show as labels; a difference that is only conflict marks is in conflicts.
+fn report(sid: StoryId, theirs: &Story, mine: &Story, m: &designcraft_flow::StoryMerge) -> Value {
+    let mut entries: [Vec<Value>; 3] = Default::default();
+    report_text(&mine.text, &theirs.text, &m.story.text, &m.text, None, &mut entries);
+    for c in &m.cells {
+        let cell = json!({"table": c.table, "row": c.row, "col": c.col});
+        report_text(&c.layout, &c.file, &c.text.text, &c.text, Some(cell), &mut entries);
+    }
+    let [changes, deviations, conflicts] = entries;
+    json!({"story": sid.0, "changes": changes, "deviations": deviations, "conflicts": conflicts, "warnings": m.warnings})
+}
+
+/// Report entries for one merged text (`mine` → `out`, against the file's `theirs`): its changes,
+/// deviations and conflicts, in whole sentences, each with where it is in `out` (`at`, for Go To)
+/// and how it changed word by word (`words`: changes from before to after, deviations from the
+/// file to the layout, conflicts from the layout to the file).
+fn report_text(mine: &str, theirs: &str, out: &str, m: &designcraft_flow::MergeOut, cell: Option<Value>, into: &mut [Vec<Value>; 3]) {
+    let raw = |s: &'_ str, r: &std::ops::Range<usize>| s.get(r.clone()).unwrap_or_default().to_string();
+    let text = |s: &str, r: &std::ops::Range<usize>| designcraft_flow::shown(&raw(s, r)).trim().to_string();
+    let notes_only = |a: String, b: String| a.replace(designcraft_doc::NOTE_MARK, "") == b.replace(designcraft_doc::NOTE_MARK, "");
+    let entry = |mut v: Value, at: std::ops::Range<usize>, was: Option<std::ops::Range<usize>>, from: &str, to: &str| {
+        if let Some(o) = v.as_object_mut() {
+            if let Some(c) = &cell {
+                o.insert("cell".into(), c.clone());
+            }
+            o.insert("at".into(), json!({"start": at.start, "end": at.end}));
+            if let Some(w) = was {
+                o.insert("was".into(), json!({"start": w.start, "end": w.end}));
+            }
+            let words = designcraft_flow::words(from, to).into_iter().map(|(k, t)| json!({"kind": k.name(), "text": t}));
+            o.insert("words".into(), Value::Array(words.collect()));
+        }
+        v
+    };
+    let [changes, deviations, conflicts] = into;
+    // Where each conflict is in `out`: its mark, then the file's version. A change there is the
+    // conflict, listed once, under conflicts.
+    let marked: Vec<std::ops::Range<usize>> =
+        m.conflicts.iter().map(|c| c.at..c.at.saturating_add(designcraft_doc::NOTE_MARK.len_utf8()).saturating_add(c.theirs.len())).collect();
+    for h in designcraft_flow::sentences(mine, out, &designcraft_flow::diff_text(mine, out)) {
+        if marked.iter().any(|c| c.start <= h.new.start && h.new.end <= c.end) {
+            continue;
+        }
+        let (before, after) = (text(mine, &h.old), text(out, &h.new));
+        changes.push(entry(json!({"before": before, "after": after}), h.new.clone(), Some(h.old.clone()), &before, &after));
+    }
+    for h in designcraft_flow::sentences(theirs, out, &m.deviations) {
+        if !notes_only(raw(theirs, &h.old), raw(out, &h.new)) {
+            let (file, layout) = (text(theirs, &h.old), text(out, &h.new));
+            deviations.push(entry(json!({"file": file, "layout": layout}), h.new.clone(), kept_from(m, &h.new), &file, &layout));
+        }
+    }
+    for c in &m.conflicts {
+        // The merged text has the conflict mark at `at`, then the file's version.
+        let (file, layout) = (text(theirs, &c.theirs), text(mine, &c.mine));
+        let start = c.at.saturating_add(designcraft_doc::NOTE_MARK.len_utf8());
+        conflicts.push(entry(
+            json!({"file": file, "layout": layout}),
+            start..start.saturating_add(c.theirs.len()),
+            Some(c.mine.clone()),
+            &layout,
+            &file,
+        ));
+    }
+}
+
+/// Where the merged text's range `r` is in the layout's text before the update (`mine`): the span
+/// of the layout's side of the segments it covers. `None` when none of it came from the layout.
+fn kept_from(m: &designcraft_flow::MergeOut, r: &std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+    let mut span: Option<std::ops::Range<usize>> = None;
+    for seg in m.segments.iter().filter(|s| s.out.start < r.end && r.start < s.out.end) {
+        let Some(mine) = &seg.mine else { continue };
+        // A segment from the layout holds its text unchanged, so offsets carry over one for one.
+        let start = mine.start.saturating_add(r.start.saturating_sub(seg.out.start));
+        let end = mine.end.saturating_sub(seg.out.end.saturating_sub(r.end));
+        span = Some(span.map_or(start..end, |s| s.start.min(start)..s.end.max(end)));
+    }
+    span
+}
+
+/// Where a report's differences land once the updated story is laid out: the pages its frames are
+/// on (`pages`), each entry's page, page name and height on the page from the top (`y`, 0–1; a
+/// table cell's is its table's), `overset` for one in text that doesn't fit, and whether the story
+/// still fits (`fit`: overset, and how many lines don't fit).
+fn place_report(d: &Document, sid: StoryId, report: &mut Value) {
+    let Some(story) = d.story(sid) else { return };
+    let specs = designcraft_compose::frame_specs(d, sid);
+    let cs = designcraft_compose::compose(d, story, &specs, &Default::default());
+    // Frames come back in the order of their specs.
+    let frames: Vec<_> = specs.iter().zip(&cs.frames).collect();
+    fn name(sp: &designcraft_compose::FrameSpec) -> String {
+        sp.page_name.clone().unwrap_or_default()
+    }
+    let mut pages: Vec<Value> = Vec::new();
+    for (sp, _) in &frames {
+        if let Some(p) = sp.page
+            && !pages.iter().any(|v| v["index"] == p)
+        {
+            pages.push(json!({"index": p, "name": name(sp)}));
+        }
+    }
+    let locate = |at: usize| -> Option<Value> {
+        if cs.overset_at.is_some_and(|o| at >= o) {
+            let (sp, _) = frames.last()?;
+            return Some(json!({"page": sp.page, "pageName": name(sp), "y": 1.0, "overset": true}));
+        }
+        let (sp, f) = frames.iter().find(|(_, f)| f.range.contains(&at)).or_else(|| frames.iter().rev().find(|(_, f)| f.range.start <= at))?;
+        let line = f.lines.iter().find(|l| l.range.contains(&at)).or_else(|| f.lines.iter().rev().find(|l| l.range.start <= at));
+        let y = match (line, sp.page_rect) {
+            (Some(l), Some((page, _))) if page.height() > 0.0 => ((l.baseline - page.y0) / page.height()).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        Some(json!({"page": sp.page, "pageName": name(sp), "y": (y * 1000.0).round() / 1000.0}))
+    };
+    // A table cell is placed where its table is anchored.
+    let paras = story.para_ranges();
+    let table_at = |t: u64| story.paras.iter().position(|p| p.table == Some(t)).and_then(|i| paras.get(i)).map(|r| r.start);
+    for key in ["changes", "deviations", "conflicts"] {
+        let Some(list) = report.get_mut(key).and_then(Value::as_array_mut) else { continue };
+        for e in list.iter_mut() {
+            let at = match e.get("cell").and_then(|c| c["table"].as_u64()) {
+                Some(t) => table_at(t),
+                None => e["at"]["start"].as_u64().and_then(|v| usize::try_from(v).ok()),
+            };
+            let place = at.and_then(locate);
+            if let (Some(Value::Object(place)), Some(o)) = (place, e.as_object_mut()) {
+                o.extend(place);
+            }
+        }
+    }
+    let lines = if cs.overset_at.is_some() { overset_lines(d, story, &specs) } else { 0 };
+    if let Some(o) = report.as_object_mut() {
+        o.insert("pages".into(), Value::Array(pages));
+        o.insert("fit".into(), json!({"overset": cs.overset_at.is_some(), "lines": lines}));
+    }
+}
+
+/// How many lines of the story don't fit: its overset text composed in one more frame, as wide as
+/// the last frame's last column and tall enough to hold it.
+fn overset_lines(d: &Document, story: &Story, specs: &[designcraft_compose::FrameSpec]) -> usize {
+    let Some(last) = specs.last() else { return 0 };
+    let col = last.columns().last().copied().unwrap_or(last.area);
+    let mut more = specs.to_vec();
+    let mut extra = last.clone();
+    extra.area = designcraft_geom::Rect::new(col.x0, col.y0, col.x1, col.y0 + 1.0e6);
+    extra.opts.columns = 1;
+    extra.exclusions.clear();
+    more.push(extra);
+    designcraft_compose::compose(d, story, &more, &Default::default()).frames.get(specs.len()).map_or(0, |f| f.lines.len())
 }
 
 /// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?
@@ -356,6 +667,7 @@ pub(super) fn place_text(
     let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1));
     let rect = super::rect_param(p, "rect");
     let mut warnings = imp.warnings.clone();
+    warnings.extend(imp.problems.iter().map(designcraft_textimport::Problem::message));
     if too_large {
         warnings.push("not linked: the file is too large to keep linked".into());
     }

@@ -239,6 +239,8 @@ pub struct Prefs {
     /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
     /// linked (Links panel) unless `file.place` says otherwise.
     pub link_text_files: bool,
+    /// Flow: highlight on screen what the last update of a linked text file brought in.
+    pub flow_highlights: bool,
     /// File › Open Recent: documents opened or saved, most recent first.
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
@@ -315,6 +317,7 @@ impl Default for Prefs {
             show_note_anchors: true,
             recovery_minutes: 0.5,
             link_text_files: false,
+            flow_highlights: true,
             recent_files: Vec::new(),
             recent_files_max: 20,
         }

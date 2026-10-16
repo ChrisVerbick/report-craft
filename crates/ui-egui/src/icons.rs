@@ -382,6 +382,14 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.rect(8.0, 6.0, 12.0, 16.0);
             pen.line(&[(13.0, 6.5), (17.0, 5.0), (17.5, 15.5), (13.5, 16.5)]);
         }
+        "panel-flow" => {
+            // Lines of text, a change bar beside the first two: what an update brings in.
+            pen.line(&[(3.5, 3.5), (3.5, 10.5)]);
+            pen.line(&[(7.0, 4.0), (17.0, 4.0)]);
+            pen.line(&[(7.0, 8.0), (17.0, 8.0)]);
+            pen.line(&[(7.0, 12.0), (17.0, 12.0)]);
+            pen.line(&[(7.0, 16.0), (13.0, 16.0)]);
+        }
         "panel-notes" => {
             // A note with a folded corner.
             pen.closed(&[(4.0, 3.0), (16.0, 3.0), (16.0, 13.0), (12.0, 17.0), (4.0, 17.0)]);

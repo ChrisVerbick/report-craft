@@ -20,6 +20,7 @@ designcraft-doc = { path = "crates/doc" }
 designcraft-fonts = { path = "crates/fonts" }
 designcraft-compose = { path = "crates/compose" }
 designcraft-images = { path = "crates/images" }
+designcraft-flow = { path = "crates/flow" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
@@ -45,6 +46,8 @@ unicode-bidi = "0.3"
 unicode-script = "0.5"
 unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
+# Text diff for Flow (linked text merge and compare); Apache-2.0.
+similar = { version = "3", features = ["unicode"] }
 caseless = "0.2"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
 fancy-regex = "0.19.2"

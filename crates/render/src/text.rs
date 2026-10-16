@@ -375,6 +375,35 @@ impl Renderer {
                 }
             }
         }
+        if f.opts.flow_highlights && cs.styles.iter().any(|s| s.flow != designcraft_doc::FlowMark::None) {
+            // Behind the glyphs: a tint for what the file changed (blue) or the layout kept (amber);
+            // the file's text that won a conflict is blue with the amber of the note's text under
+            // it; an error is red, a value from another workbook a grey rule.
+            use designcraft_doc::FlowMark;
+            ctx.set_transform(m);
+            let px = 1.0 / m.determinant().abs().sqrt().max(1e-9);
+            for l in &ft.lines {
+                for g in l.glyphs.iter().filter(|g| g.adv > 0.0) {
+                    let (tint, rule): (Option<[u8; 4]>, Option<[u8; 3]>) = match cs.styles.get(g.style as usize).map(|s| s.flow) {
+                        Some(FlowMark::File) => (Some([31, 111, 235, 40]), None),
+                        Some(FlowMark::Kept) => (Some([232, 160, 32, 56]), None),
+                        Some(FlowMark::Conflict) => (Some([31, 111, 235, 40]), Some([232, 160, 32])),
+                        Some(FlowMark::Error) => (Some([217, 48, 37, 46]), Some([217, 48, 37])),
+                        Some(FlowMark::Notice) => (None, Some([107, 107, 107])),
+                        _ => (None, None),
+                    };
+                    if let Some([r, gr, b, a]) = tint {
+                        ctx.set_paint(screen_color([r, gr, b], a));
+                        ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
+                    }
+                    if let Some(c) = rule {
+                        ctx.set_paint(screen_color(c, 255));
+                        let y = l.baseline + l.descent * 0.6;
+                        ctx.fill_rect(&kurbo::Rect::new(g.x, y, g.x + g.adv, y + 2.0 * px));
+                    }
+                }
+            }
+        }
         let scale = m.determinant().abs().sqrt();
         let greek_px = f.opts.greek_below_px;
         let mut greek = BezPath::new();

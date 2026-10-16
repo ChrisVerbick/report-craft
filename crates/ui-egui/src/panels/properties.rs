@@ -2415,7 +2415,8 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", target.clone());
         }
-        let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
+        // A story that merges keeps its layout edits: no warning then.
+        let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true) && r["merges"] != true);
         let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
         let update = if edited {
             update.on_hover_ui(|ui| {
@@ -2455,29 +2456,60 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
 /// first when a linked text story edited in the layout would lose those edits, as InDesign's
-/// Links panel does. The `links.update` command itself doesn't ask (as in InDesign scripting).
+/// Links panel does (a story that merges keeps them). The `links.update` command itself doesn't ask (as in InDesign scripting).
+/// Update Link: graphics reload at once; a linked text file opens its review in Flow, which shows
+/// what the update would change before anything does (Update there applies it).
 pub fn update_links(app: &mut DesignApp, target: Value) {
-    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    let one = target.get("story").and_then(Value::as_u64);
-    let all = one.is_none() && target.get("asset").is_none();
-    let edited: Vec<&str> = rows
-        .iter()
-        .filter(|r| (all || (one.is_some() && r["story"].as_u64() == one)) && r["edited"] == true && r["status"] == "modified")
-        .filter_map(|r| r["name"].as_str())
-        .collect();
-    if edited.is_empty() {
+    let (story, asset) = (target.get("story").and_then(Value::as_u64), target.get("asset").and_then(Value::as_u64));
+    if asset.is_some() {
         let _ = run_update_links(app, target);
-    } else {
-        let files = edited.join(", ");
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLink", json!({"target": target, "files": files})));
+        return;
+    }
+    let all = story.is_none();
+    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let modified = |r: &&Value| r["status"] == "modified";
+    if all && rows.iter().filter(modified).any(|r| r.get("asset").is_some()) {
+        let _ = run_update_links(app, json!({"text": false}));
+    }
+    let review = story.or_else(|| rows.iter().filter(modified).find_map(|r| r["story"].as_u64()));
+    if let Some(sid) = review {
+        app.ui.flow_request = Some(sid);
+        app.ui.open_panel = Some("flow".into());
     }
 }
 
-/// Run `links.update`; its first warning goes to the status bar.
+/// Run `links.update`. The status bar sums up what merged (sentences changed, layout edits kept,
+/// conflicts) and shows the first warning.
 pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Value, String> {
     let r = app.run("links.update", target)?;
-    if let Some(w) = r["warnings"].as_array().and_then(|w| w.first()).and_then(Value::as_str) {
-        app.status(w.to_string());
+    let warning = r["warnings"].as_array().and_then(|w| w.first()).and_then(Value::as_str);
+    let reports = r["reports"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let lang = app.ui.language.clone();
+    let mut status: Vec<String> = Vec::new();
+    if !reports.is_empty() {
+        let count = |key: &str| reports.iter().map(|x| x[key].as_array().map_or(0, Vec::len)).sum::<usize>();
+        let some = |n: usize, one: &str, many: &str| format!("{n} {}", crate::i18n::tr(&lang, if n == 1 { one } else { many }));
+        status.push(format!(
+            "{}: {}, {}, {}",
+            crate::i18n::tr(&lang, "Updated"),
+            some(count("changes"), "change", "changes"),
+            some(count("deviations"), "layout edit kept", "layout edits kept"),
+            some(count("conflicts"), "conflict (see Notes)", "conflicts (see Notes)"),
+        ));
+    }
+    let found = r["errors"].as_array().cloned().unwrap_or_default();
+    let other_books = found.iter().filter(|e| e["blocks"].as_bool() == Some(false)).count();
+    for (n, one, many) in [
+        (found.len() - other_books, "error in the linked files", "errors in the linked files"),
+        (other_books, "value from another workbook (may be out of date)", "values from other workbooks (may be out of date)"),
+    ] {
+        if n > 0 {
+            status.push(format!("{n} {}", crate::i18n::tr(&lang, if n == 1 { one } else { many })));
+        }
+    }
+    status.extend(warning.map(str::to_string));
+    if !status.is_empty() {
+        app.status(status.join(" · "));
     }
     Ok(r)
 }

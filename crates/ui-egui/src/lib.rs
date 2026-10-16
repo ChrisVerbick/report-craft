@@ -333,6 +333,13 @@ pub struct UiState {
     pub status: String,
     #[serde(skip)]
     pub dialog: Option<dialogs::Dialog>,
+    /// Flow: the linked text story whose review the panel shows next (Update from the Links
+    /// panel or a menu).
+    #[serde(skip)]
+    pub flow_request: Option<u64>,
+    /// Flow: the line hovered in the panel, outlined on the page this frame.
+    #[serde(skip)]
+    pub flow_hover: Option<panels::flow::Hover>,
     #[serde(skip)]
     pub palette: Option<String>,
     #[serde(skip)]
@@ -434,6 +441,8 @@ impl Default for UiState {
             pending_urls: Vec::new(),
             status: String::new(),
             dialog: None,
+            flow_request: None,
+            flow_hover: None,
             palette: None,
             flyout: None,
             tabs_panel: Default::default(),
