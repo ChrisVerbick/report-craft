@@ -11,6 +11,7 @@
 mod docx;
 mod docx_numbering;
 pub mod export;
+mod numfmt;
 mod rtf;
 pub mod tagged;
 mod xlsx;

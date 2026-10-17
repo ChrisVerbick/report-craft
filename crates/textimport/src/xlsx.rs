@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
 use crate::docx::{El, parse, part};
+use crate::numfmt;
 use crate::{ImportError, Imported, Problem, ProblemKind, XlsxOptions};
 
 /// "B12" → (row 11, column 1).
@@ -41,6 +42,50 @@ fn names(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Result<Vec<String
 
 pub fn sheet_names(bytes: &[u8]) -> Result<Vec<String>, ImportError> {
     names(&mut zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?)
+}
+
+/// Each cell style's number format (`cellXfs`, by the cells' `s`): its id, and its code from the
+/// workbook's own formats or the built-in ones (none for a built-in this doesn't know).
+fn number_formats(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Result<Vec<(u32, Option<String>)>, ImportError> {
+    let Some(x) = part(zip, "xl/styles.xml")? else { return Ok(Vec::new()) };
+    let st = parse(&x)?;
+    let own: BTreeMap<u32, String> = st
+        .child("numFmts")
+        .map(|n| {
+            n.els()
+                .filter(|e| e.name == "numFmt")
+                .filter_map(|e| Some((e.attr("numFmtId")?.trim().parse().ok()?, e.attr("formatCode")?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let id = |xf: &El| xf.attr("numFmtId").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+    Ok(st
+        .child("cellXfs")
+        .map(|x| {
+            x.els()
+                .filter(|e| e.name == "xf")
+                .map(|xf| (id(xf), own.get(&id(xf)).cloned().or_else(|| numfmt::builtin(id(xf)).map(str::to_string))))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Whether the workbook counts dates from 1904 (`workbookPr date1904`).
+fn date1904(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Result<bool, ImportError> {
+    let Some(wb) = part(zip, "xl/workbook.xml")? else { return Ok(false) };
+    let wb = parse(&wb)?;
+    Ok(wb.child("workbookPr").and_then(|p| p.attr("date1904")).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")))
+}
+
+/// "A1", "A1 and B2", "A1, B2, C3 and 4 more".
+fn cell_list(at: &[String]) -> String {
+    match at {
+        [] => String::new(),
+        [one] => one.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [a, b, c] => format!("{a}, {b} and {c}"),
+        [a, b, c, rest @ ..] => format!("{a}, {b}, {c} and {} more", rest.len()),
+    }
 }
 
 /// The worksheet part of the first sheet (workbook order), via the workbook relationships.
@@ -96,29 +141,9 @@ fn value(c: &El, shared: &[String]) -> String {
         _ => {
             let raw = v();
             match raw.trim().parse::<f64>() {
-                Ok(f) if f.is_finite() => general(f),
+                Ok(f) if f.is_finite() => numfmt::general(f),
                 _ => raw,
             }
-        }
-    }
-}
-
-/// A number as Excel's General format shows it: at most 15 significant digits (Excel stores
-/// doubles with 17, so `=0.1+0.2` is cached as 0.30000000000000004 and shown as 0.3), whole
-/// numbers without ".0", and an exponent for very large or very small values.
-fn general(f: f64) -> String {
-    let r = format!("{f:.14e}").parse::<f64>().unwrap_or(f);
-    let a = r.abs();
-    if r == 0.0 {
-        "0".into()
-    } else if (1e-9..1e15).contains(&a) {
-        // Shortest text that reads back as the rounded value; whole numbers drop the ".0".
-        r.to_string()
-    } else {
-        let s = format!("{r:E}");
-        match s.split_once('E') {
-            Some((m, e)) if !e.starts_with('-') => format!("{m}E+{e}"),
-            _ => s,
         }
     }
 }
@@ -252,6 +277,11 @@ pub fn import_with(bytes: &[u8], opts: &XlsxOptions) -> Result<Imported, ImportE
         Some(r) => Some(parse_range(r).ok_or_else(|| ImportError::Options(format!("“{r}” isn't a cell range like B3:F40")))?),
     };
     let inside = |(r, c): (usize, usize)| range.is_none_or(|((r0, c0), (r1, c1))| (r0..=r1).contains(&r) && (c0..=c1).contains(&c));
+    let formats = number_formats(&mut zip)?;
+    let date1904 = date1904(&mut zip)?;
+    // Number formats that can't be shown exactly, and ones that fill the cell's width: their cells.
+    let mut unshown: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut filled: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let sheet = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
     let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
         .map(|x| parse(&x))
@@ -268,9 +298,27 @@ pub fn import_with(bytes: &[u8], opts: &XlsxOptions) -> Result<Imported, ImportE
                 if !inside(at) {
                     continue;
                 }
-                let v = value(c, &shared);
+                let mut v = value(c, &shared);
                 let formula = c.child("f").map(El::text).filter(|f| !f.trim().is_empty());
                 let address = c.attr("r").map_or_else(|| a1(at), str::to_string);
+                // A number as its format shows it.
+                let format = c.attr("s").and_then(|s| s.trim().parse::<usize>().ok()).and_then(|i| formats.get(i));
+                let number = c.child("v").and_then(|x| x.text().trim().parse::<f64>().ok());
+                if let (None | Some("n"), Some((id, code)), Some(n)) = (c.attr("t"), format, number) {
+                    match code.as_deref() {
+                        Some(code) if code.eq_ignore_ascii_case("general") || code == "@" => {}
+                        Some(code) => match numfmt::format(n, code, date1904) {
+                            Some(shown) => {
+                                if shown.padded {
+                                    filled.entry(format!("number format “{code}”")).or_default().push(address.clone());
+                                }
+                                v = shown.text;
+                            }
+                            None => unshown.entry(format!("number format “{code}”")).or_default().push(address.clone()),
+                        },
+                        None => unshown.entry(format!("built-in number format {id}")).or_default().push(address.clone()),
+                    }
+                }
                 let problem =
                     |kind, shows: &str| Problem { kind, at: address.clone(), cell: None, shows: shows.to_string(), formula: formula.clone() };
                 if c.attr("t") == Some("e") {
@@ -289,7 +337,11 @@ pub fn import_with(bytes: &[u8], opts: &XlsxOptions) -> Result<Imported, ImportE
             }
         }
     }
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = unshown
+        .iter()
+        .map(|(what, at)| format!("{}: Excel's {what} can't be shown exactly here, so the number comes in unformatted", cell_list(at)))
+        .chain(filled.iter().map(|(what, at)| format!("{}: Excel's {what} fills the cell's width; placed without the fill", cell_list(at))))
+        .collect();
     if cells.is_empty() {
         warnings.push(match opts.range.as_deref() {
             Some(r) => format!("the range {r} is empty"),
@@ -508,6 +560,40 @@ mod tests {
         assert_eq!(sheet_names(&two_sheets()).unwrap(), ["Summary", "Prices"]);
         // Without options: the first sheet's used range, as before.
         assert_eq!(import(&two_sheets()).unwrap().story.tables.values().next().unwrap().cell(0, 0).unwrap().text.text, "Summary");
+    }
+
+    /// Cells import as Excel shows them, in their number formats (built-in and the workbook's
+    /// own), dates counted from 1904 when the workbook says so; a format that can't be shown
+    /// exactly is a warning naming its cells.
+    #[test]
+    fn numbers_import_in_their_number_formats() {
+        let styles = r##"<styleSheet><numFmts><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/><numFmt numFmtId="165" formatCode="# ?/?"/><numFmt numFmtId="166" formatCode="_(* #,##0_)"/></numFmts><cellXfs><xf numFmtId="0"/><xf numFmtId="4"/><xf numFmtId="10"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/><xf numFmtId="166"/></cellXfs></styleSheet>"##;
+        let book = |workbook_pr: &str, date: &str| {
+            let cells = format!(
+                r#"<c r="A1" s="1"><v>1234.5</v></c><c r="B1" s="2"><v>0.0425</v></c><c r="C1" s="3"><v>{date}</v></c><c r="D1" s="4"><v>-12</v></c><c r="E1" s="5"><v>1.5</v></c><c r="F1" s="6"><v>1234</v></c><c r="G1"><v>12.0</v></c><c r="H1" s="1" t="inlineStr"><is><t>note</t></is></c>"#
+            );
+            sheets(&[
+                (
+                    "xl/workbook.xml",
+                    &format!(
+                        r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">{workbook_pr}<sheets><sheet name="Prices" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+                    ),
+                ),
+                ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#),
+                ("xl/styles.xml", styles),
+                ("xl/worksheets/sheet1.xml", &format!("<worksheet><sheetData><row r=\"1\">{cells}</row></sheetData></worksheet>")),
+            ])
+        };
+        let shown = |imp: &Imported| {
+            let t = imp.story.tables.values().next().unwrap();
+            (0..t.ncols()).map(|c| t.cell(0, c).unwrap().text.text.clone()).collect::<Vec<_>>()
+        };
+        let imp = import(&book("", "44927")).unwrap();
+        assert_eq!(shown(&imp), ["1,234.50", "4.25%", "1/1/2023", "-$12.00", "1.5", " 1,234 ", "12", "note"]);
+        assert!(imp.warnings.iter().any(|w| w.contains("E1") && w.contains("# ?/?")), "{:?}", imp.warnings);
+        assert!(imp.warnings.iter().any(|w| w.contains("F1") && w.contains("width")), "{:?}", imp.warnings);
+        let imp = import(&book(r#"<workbookPr date1904="1"/>"#, "43465")).unwrap();
+        assert_eq!(shown(&imp)[2], "1/1/2023", "1904 dates");
     }
 
     #[test]
