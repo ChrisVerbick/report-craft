@@ -2565,6 +2565,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             });
                         }
                         if d.id == "placeWithFlow" {
+                            if d.b("workbook") {
+                                crate::panels::flow::workbook_options(app, ui, &mut d);
+                            }
                             crate::panels::flow::place_check(ui, &app.ui.language, &mut d);
                         }
                     }
@@ -2824,7 +2827,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             _ => "Cancel",
         };
         // Place with Flow waits for "Place with N errors" when the file shows errors.
-        let ok_enabled = !(d.id == "placeWithFlow" && d.n("blocking").unwrap_or(0.0) > 0.0 && !d.b("allow"));
+        let ok_enabled = !(d.id == "placeWithFlow" && ((d.n("blocking").unwrap_or(0.0) > 0.0 && !d.b("allow")) || d.fields.contains_key("error")));
         ui.horizontal(|ui| {
             if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && !d.b("new") {
                 check(ui, &mut d, "preview", crate::i18n::tr(&app.ui.language, "Preview"));
@@ -3499,17 +3502,27 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
         "placeWithFlow" => {
+            // A sheet or range the workbook can't give.
+            if d.fields.contains_key("error") {
+                let message = d.s("error");
+                app.ui.dialog = Some(d);
+                return Err(message);
+            }
             let blocking = d.n("blocking").unwrap_or(0.0) as usize;
             if blocking > 0 && !d.b("allow") {
                 let message = format!("Tick “Place with {blocking} {}” to place it with them.", if blocking == 1 { "error" } else { "errors" });
                 app.ui.dialog = Some(d);
                 return Err(message);
             }
-            app.open_file(
-                "file.place",
-                json!({"path": d.s("path"), "link": true, "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"),
-                    "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
-            )
+            let mut p = json!({"path": d.s("path"), "link": true, "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"),
+                "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))});
+            if d.b("workbook") {
+                for k in ["sheet", "range", "tableStyle"] {
+                    p[k] = json!(d.s(k));
+                }
+                p["headerRows"] = json!(d.n("headerRows").unwrap_or(0.0) as u64);
+            }
+            app.open_file("file.place", p)
         }
         "fittingOptions" => {
             let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);

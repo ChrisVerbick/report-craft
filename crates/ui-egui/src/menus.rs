@@ -1070,10 +1070,15 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             let blocking = info["problems"].as_array().map_or(0, |p| p.iter().filter(|x| x["blocks"] != false).count());
             let l = path.to_lowercase();
             let word = l.ends_with(".docx") || l.ends_with(".rtf");
+            // A workbook starts on its first sheet with one header row; the dialog checks the
+            // file again with them.
+            let workbook = l.ends_with(".xlsx");
+            let first = info["sheets"].get(0).cloned().unwrap_or(json!(""));
             app.ui.dialog = Some(crate::dialogs::Dialog::new(
                 "placeWithFlow",
                 json!({"path": path, "word": word, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {},
-                    "problems": info["problems"], "preview": info["preview"], "blocking": blocking, "allow": false}),
+                    "problems": info["problems"], "warnings": info["warnings"], "preview": info["preview"], "blocking": blocking, "allow": false,
+                    "workbook": workbook, "sheets": info["sheets"], "sheet": first, "range": "", "headerRows": u64::from(workbook), "tableStyle": ""}),
             ));
             Ok(Value::Null)
         }

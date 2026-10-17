@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             check
         ),
-        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, uses: [{id, page}]}]", has_doc, |s, _| {
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, sheet, range (a workbook's part; empty: the first sheet, the used range), uses: [{id, page}]}]", has_doc, |s, _| {
             // Taken out for the call so the document needn't be cloned on every poll.
             let mut checks = std::mem::take(&mut s.text_link_checks);
             let links = s.doc().map(|d| list(&d.doc, &mut checks));
@@ -290,7 +290,7 @@ fn list(d: &Document, checks: &mut TextChecks) -> Vec<Value> {
     let texts = d.stories.values().filter_map(|st| {
         let l = st.file_link.as_ref()?;
         let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "lastUpdate": l.last_update, "uses": uses}))
+        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "lastUpdate": l.last_update, "sheet": l.workbook.sheet, "range": l.workbook.range, "uses": uses}))
     });
     let used = d.used_assets();
     d.assets

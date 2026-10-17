@@ -118,6 +118,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let sid = row["story"].as_u64().unwrap_or(0);
     let name = row["name"].as_str().unwrap_or_default().to_string();
     crate::rtl::label(ui, RichText::new(&name).font(semibold(12.0)));
+    if let Some(part) = workbook_part(&row) {
+        crate::rtl::label(ui, RichText::new(part).color(t.text_dim));
+    }
     match row["status"].as_str().unwrap_or_default() {
         "missing" => {
             crate::rtl::label(ui, tr("Can't find this file. Its story keeps the text from the last update."));
@@ -235,7 +238,9 @@ pub(crate) fn place_check(ui: &mut egui::Ui, lang: &str, d: &mut crate::dialogs:
     let problems = d.fields.get("problems").and_then(Value::as_array).cloned().unwrap_or_default();
     ui.add_space(8.0);
     crate::rtl::label(ui, RichText::new(tr("Found in the file")).font(semibold(12.0)));
-    if problems.is_empty() {
+    let warnings: Vec<String> =
+        d.fields.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    if problems.is_empty() && warnings.is_empty() {
         crate::rtl::label(ui, RichText::new(tr("Nothing that needs your attention.")).color(t.text_dim));
     }
     let width = ui.available_width();
@@ -244,17 +249,23 @@ pub(crate) fn place_check(ui: &mut egui::Ui, lang: &str, d: &mut crate::dialogs:
             line_row(ui, &t, lang, l, ui.id().with(("place_check", kind as u8, i)));
         }
     }
+    // What the import couldn't bring in exactly, such as a number format.
+    for w in &warnings {
+        ui.add(egui::Label::new(RichText::new(w).color(t.text_dim).size(10.5)).wrap());
+    }
     ui.add_space(8.0);
     crate::rtl::label(ui, RichText::new(tr("Preview")).font(semibold(12.0)));
     let preview = d.fields.get("preview").cloned().unwrap_or(Value::Null);
+    let header = d.fields.get("headerRows").and_then(Value::as_u64).unwrap_or(0) as usize;
     egui::Frame::NONE.fill(Color32::WHITE).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
         ui.set_width(width - 16.0);
         let ink = Color32::from_gray(26);
         if let Some(rows) = preview["rows"].as_array() {
             egui::Grid::new("place_preview").spacing([12.0, 3.0]).show(ui, |ui| {
-                for r in rows {
+                for (i, r) in rows.iter().enumerate() {
                     for c in r.as_array().into_iter().flatten() {
-                        ui.label(RichText::new(c.as_str().unwrap_or_default()).color(ink).size(11.0));
+                        let text = RichText::new(c.as_str().unwrap_or_default()).color(ink);
+                        ui.label(if i < header { text.font(semibold(11.0)) } else { text.size(11.0) });
                     }
                     ui.end_row();
                 }
@@ -288,6 +299,111 @@ pub(crate) fn place_check(ui: &mut egui::Ui, lang: &str, d: &mut crate::dialogs:
         if ui.checkbox(&mut allow, label).changed() {
             d.fields.insert("allow".into(), json!(allow));
         }
+    }
+}
+
+/// Place with Flow's workbook options, above its check: the sheet, the cells (empty: the ones
+/// the sheet uses), header rows and a table style. The check and preview follow them.
+pub(crate) fn workbook_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut crate::dialogs::Dialog) {
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &'static str| crate::i18n::tr(&lang, s).to_string();
+    let sheets: Vec<String> =
+        d.fields.get("sheets").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    let styles: Vec<String> = app.session.active().map(|s| s.doc.styles.table.iter().map(|t| t.name.clone()).collect()).unwrap_or_default();
+    ui.add_space(8.0);
+    crate::rtl::label(ui, RichText::new(tr("Workbook")).font(semibold(12.0)));
+    egui::Grid::new("place_workbook").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        if !sheets.is_empty() {
+            ui.label(tr("Sheet"));
+            let cur = d.s("sheet");
+            egui::ComboBox::from_id_salt("place_sheet").selected_text(&cur).width(180.0).show_ui(ui, |ui| {
+                for s in &sheets {
+                    if ui.selectable_label(*s == cur, s).clicked() {
+                        d.fields.insert("sheet".into(), json!(s));
+                    }
+                }
+            });
+            ui.end_row();
+        }
+        // Checked when the field is left (or Enter), not on every keystroke.
+        ui.label(tr("Cells"));
+        let mut range = d.fields.get("rangeText").and_then(Value::as_str).map_or_else(|| d.s("range"), str::to_string);
+        let r = ui.add(egui::TextEdit::singleline(&mut range).hint_text(tr("All it uses, or e.g. B3:F40")).desired_width(180.0));
+        if r.changed() {
+            d.fields.insert("rangeText".into(), json!(range));
+        }
+        if r.lost_focus() {
+            d.fields.insert("range".into(), json!(range.trim()));
+        }
+        ui.end_row();
+        ui.label(tr("Header rows"));
+        let mut rows = d.fields.get("headerRows").and_then(Value::as_u64).unwrap_or(0);
+        if ui.add(egui::DragValue::new(&mut rows).range(0..=20)).changed() {
+            d.fields.insert("headerRows".into(), json!(rows));
+        }
+        ui.end_row();
+        ui.label(tr("Table style"));
+        let cur = d.s("tableStyle");
+        let none = tr("None");
+        egui::ComboBox::from_id_salt("place_table_style")
+            .selected_text(if cur.is_empty() { none.as_str() } else { cur.as_str() })
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(cur.is_empty(), &none).clicked() {
+                    d.fields.insert("tableStyle".into(), json!(""));
+                }
+                for s in &styles {
+                    if ui.selectable_label(*s == cur, s).clicked() {
+                        d.fields.insert("tableStyle".into(), json!(s));
+                    }
+                }
+            });
+        ui.end_row();
+    });
+    recheck(app, d);
+    if let Some(e) = d.fields.get("error").and_then(Value::as_str) {
+        ui.add(egui::Label::new(RichText::new(e).color(t.flow_error)).wrap());
+    }
+    crate::rtl::label(ui, RichText::new(tr("Numbers and dates come in as Excel shows them with US settings.")).color(t.text_dim).size(10.5));
+}
+
+/// `place.check` again when the dialog's workbook options aren't the ones it last checked.
+fn recheck(app: &mut DesignApp, d: &mut crate::dialogs::Dialog) {
+    let want = json!({"sheet": d.s("sheet"), "range": d.s("range"), "headerRows": d.n("headerRows").unwrap_or(0.0) as u64});
+    if d.fields.get("checked") == Some(&want) {
+        return;
+    }
+    let mut p = want.clone();
+    p["path"] = json!(d.s("path"));
+    match app.run("place.check", p) {
+        Ok(info) => {
+            for k in ["problems", "warnings", "preview"] {
+                d.fields.insert(k.into(), info[k].clone());
+            }
+            let blocking = info["problems"].as_array().map_or(0, |p| p.iter().filter(|x| x["blocks"] != false).count());
+            d.fields.insert("blocking".into(), json!(blocking));
+            d.fields.remove("error");
+        }
+        // The message alone: the dialog says which file and command.
+        Err(e) => {
+            let msg = e.strip_prefix("invalid parameters for `place.check`: ").unwrap_or(&e);
+            d.fields.insert("error".into(), json!(msg));
+        }
+    }
+    d.fields.insert("checked".into(), want);
+}
+
+/// The part of a workbook a link reads, as Excel writes it: `Prices!B2:C4`, `'Q3 prices'`.
+fn workbook_part(row: &Value) -> Option<String> {
+    let sheet = row["sheet"].as_str().unwrap_or_default();
+    let range = row["range"].as_str().unwrap_or_default();
+    let sheet = if sheet.chars().all(|c| c.is_alphanumeric() || c == '_') { sheet.to_string() } else { format!("'{}'", sheet.replace('\'', "''")) };
+    match (sheet.is_empty(), range.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(sheet),
+        (true, false) => Some(range.to_string()),
+        (false, false) => Some(format!("{sheet}!{range}")),
     }
 }
 
@@ -983,6 +1099,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A two-sheet workbook: "Totals" alone on Summary; Prices with a title row over B2:C4.
+    fn price_book(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::io::Write;
+        let path = dir.join("prices.xlsx");
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        let cell = |r: &str, v: &str| format!(r#"<c r="{r}" t="inlineStr"><is><t>{v}</t></is></c>"#);
+        let sheet = |cells: &[(&str, &str)]| {
+            format!("<worksheet><sheetData><row>{}</row></sheetData></worksheet>", cells.iter().map(|(r, v)| cell(r, v)).collect::<String>())
+        };
+        for (name, body) in [
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Prices" sheetId="2" r:id="rId2"/></sheets></workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x" Target="worksheets/sheet2.xml"/></Relationships>"#.to_string(),
+            ),
+            ("xl/worksheets/sheet1.xml", sheet(&[("A1", "Totals")])),
+            ("xl/worksheets/sheet2.xml", sheet(&[("A1", "Price list"), ("B2", "Item"), ("C2", "Price"), ("B3", "Tea"), ("C3", "3.50"), ("B4", "Cake"), ("C4", "3.10")])),
+        ] {
+            w.start_file(name, o).unwrap();
+            w.write_all(body.as_bytes()).unwrap();
+        }
+        std::fs::write(&path, w.finish().unwrap().into_inner()).unwrap();
+        path
+    }
+
+    /// Place with Flow for a workbook: its sheet, cells, header rows and table style. The preview
+    /// follows them, a range that isn't one is shown and stops Place, and the table is placed and
+    /// linked with them; the Flow panel names the part a link reads.
+    #[test]
+    fn place_with_flow_places_a_workbooks_chosen_cells() {
+        let dir = std::env::temp_dir().join(format!("dc-flow-place-wb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = price_book(&dir);
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.session.execute("style.table.create", &json!({"name": "Price table"})).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
+        app.run("app.placeWithFlow", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(
+            [&d.fields["workbook"], &d.fields["sheets"], &d.fields["sheet"]],
+            [&json!(true), &json!(["Summary", "Prices"]), &json!("Summary")]
+        );
+        let set = |app: &mut DesignApp, k: &str, v: serde_json::Value| {
+            app.ui.dialog.as_mut().unwrap().fields.insert(k.into(), v);
+        };
+        set(&mut app, "sheet", json!("Prices"));
+        set(&mut app, "range", json!("B2-C3"));
+        let mut h = harness(app);
+        h.run_steps(2);
+        let error = h.state().ui.dialog.as_ref().unwrap().fields.get("error").cloned();
+        assert!(error.as_ref().and_then(serde_json::Value::as_str).is_some_and(|e| e.contains("B2-C3")), "{error:?}");
+        assert!(crate::dialogs::confirm(h.state_mut()).is_err(), "not with a range that isn't one");
+        set(h.state_mut(), "range", json!("B2:C3"));
+        set(h.state_mut(), "tableStyle", json!("Price table"));
+        h.run_steps(2);
+        let d = h.state().ui.dialog.as_ref().unwrap();
+        assert_eq!(d.fields["preview"]["rows"], json!([["Item", "Price"], ["Tea", "3.50"]]));
+        assert!(d.fields.get("error").is_none());
+        crate::dialogs::confirm(h.state_mut()).unwrap();
+        let doc = &h.state().session.doc().unwrap().doc;
+        let st = doc.stories.values().next().unwrap();
+        let t = st.tables.values().next().unwrap();
+        assert_eq!((t.nrows(), t.header_rows(), t.style.as_str()), (2, 1, "Price table"), "one header row by default");
+        let l = st.file_link.as_ref().unwrap();
+        assert_eq!((l.workbook.sheet.as_str(), l.workbook.range.as_str(), l.workbook.header_rows), ("Prices", "B2:C3", 1));
+        assert_eq!(super::workbook_part(&json!({"sheet": "Prices", "range": "B2:C3"})).as_deref(), Some("Prices!B2:C3"));
+        assert_eq!(super::workbook_part(&json!({"sheet": "Q3 prices", "range": ""})).as_deref(), Some("'Q3 prices'"));
+        assert_eq!(super::workbook_part(&json!({"sheet": "", "range": ""})), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Not a check: renders Place with Flow for a workbook that shows an error, into `plan/shots/`
     /// (`cargo test -p designcraft-ui-egui --lib -- --ignored render_place_with_flow`).
     #[test]
@@ -1023,6 +1217,43 @@ mod tests {
         let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
         std::fs::create_dir_all(&shots).unwrap();
         h.render().unwrap().save(shots.join("f2.13-place.png")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Not a check: renders Place with Flow for a workbook, its Prices sheet chosen with a range,
+    /// into `plan/shots/` (`cargo test -p designcraft-ui-egui --lib -- --ignored render_place_workbook`).
+    #[test]
+    #[ignore]
+    fn render_place_workbook() {
+        let dir = std::env::temp_dir().join(format!("dc-flow-render-wb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = price_book(&dir);
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.session.execute("style.table.create", &json!({"name": "Price table"})).unwrap();
+        app.run("window.brightness", json!({"brightness": "mediumDark"})).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
+        app.run("app.placeWithFlow", json!({})).unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("sheet".into(), json!("Prices"));
+            d.fields.insert("range".into(), json!("B2:C4"));
+            d.fields.insert("rangeText".into(), json!("B2:C4"));
+            d.fields.insert("tableStyle".into(), json!("Price table"));
+        }
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        h.render().unwrap().save(shots.join("f3.1-place-workbook.png")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
