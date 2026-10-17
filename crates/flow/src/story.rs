@@ -147,12 +147,16 @@ pub fn verified(theirs: &Story, mine: &Story, m: &StoryMerge) -> bool {
         && crate::apply(&mine.text, out, &crate::diff_text(&mine.text, out)).as_deref() == Some(out)
 }
 
+/// A table's rows, columns and merged cells: tables of the same shape compare and merge cell by cell.
+pub(crate) fn shape(t: &Table) -> (usize, usize, Vec<(u32, u32)>) {
+    (t.nrows(), t.ncols(), t.cells.iter().map(|c| (c.row_span, c.col_span)).collect())
+}
+
 /// The layout's table with each cell's text merged with the file's by Flow's rules, keeping the
 /// layout's table formatting (style, widths, heights, fills, strokes); a graphic cell keeps the
 /// layout's. `None` when the three tables don't have the same rows, columns and merged cells, or
 /// a cell's merge can't be accounted for.
 fn merge_cells(base: &Table, mine: &Table, theirs: &Table, id: u64, depth: usize) -> Option<(Table, Vec<CellMerge>)> {
-    let shape = |t: &Table| (t.nrows(), t.ncols(), t.cells.iter().map(|c| (c.row_span, c.col_span)).collect::<Vec<_>>());
     if depth >= MAX_DEPTH || shape(base) != shape(mine) || shape(mine) != shape(theirs) {
         return None;
     }
