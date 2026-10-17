@@ -156,6 +156,23 @@ fn cluster_chars(members: &[PlacedGlyph], cluster: &str) -> Option<Vec<(usize, c
     own.into_iter().map(|k| chars.get(k?).copied()).collect()
 }
 
+/// The visible glyphs of `ft` whose style `which` picks (tracked changes), with their lines.
+fn marked<'a>(
+    cs: &ComposedStory,
+    ft: &'a FrameText,
+    which: impl Fn(&designcraft_compose::RunStyle) -> bool,
+) -> Vec<(&'a designcraft_compose::Line, &'a PlacedGlyph)> {
+    let mut out = Vec::new();
+    for l in &ft.lines {
+        for g in &l.glyphs {
+            if g.visible && g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(&which) {
+                out.push((l, g));
+            }
+        }
+    }
+    out
+}
+
 /// Merge bars of one paint layer; underlines and strikes must never be merged together.
 fn text_rules(cs: &ComposedStory, ft: &FrameText, underline: bool) -> Vec<(designcraft_compose::Rule, Rect)> {
     let mut bars: Vec<(designcraft_compose::Rule, Rect)> = Vec::new();
@@ -248,6 +265,18 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
+        // Compare's PDF: added text highlighted under its glyphs.
+        if self.opts.change_markup {
+            self.as_artifact(s, |me, s| {
+                for (l, g) in marked(cs, ft, |st| st.inserted) {
+                    me.fill_rect(
+                        s,
+                        Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent),
+                        krilla::color::rgb::Color::new(198, 226, 255).into(),
+                    );
+                }
+            });
+        }
         // All underlines precede all glyph runs, including ink overlapping from another run.
         let underlines = text_rules(cs, ft, true);
         if !underlines.is_empty() {
@@ -289,6 +318,13 @@ impl Exporter<'_> {
             for (rule, r) in text_rules(cs, ft, false) {
                 if let Some(c) = me.swatch_color(&rule.color, rule.tint) {
                     me.fill_rect(s, r, c);
+                }
+            }
+            // Compare's PDF: deleted text struck through in red.
+            if me.opts.change_markup {
+                for (l, g) in marked(cs, ft, |st| st.deleted) {
+                    let (y, t) = (l.baseline - l.ascent * 0.32, (l.ascent * 0.06).max(0.5));
+                    me.fill_rect(s, Rect::new(g.x, y - t / 2.0, g.x + g.adv, y + t / 2.0), krilla::color::rgb::Color::new(200, 40, 40).into());
                 }
             }
             for n in &ft.notes {

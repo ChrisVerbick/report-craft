@@ -195,6 +195,8 @@ pub struct SubstCtx {
     pub auto_tcy_roman: bool,
     /// Half-width characters stand upright in vertical text (Rotate Roman Characters).
     pub rotate_roman: bool,
+    /// Deleted text is laid out (the "show deleted text" view).
+    pub show_deleted: bool,
 }
 
 impl SubstCtx {
@@ -281,6 +283,7 @@ impl StyleTable<'_> {
             custom_tracking: p.tracking.abs() > 1e-9 || matches!(p.kerning, designcraft_doc::Kerning::Manual(_)),
             condition: p.conditions.first().cloned(),
             inserted: p.change == designcraft_doc::ChangeMark::Inserted,
+            deleted: p.change == designcraft_doc::ChangeMark::Deleted,
             flow: p.flow,
             xml_tag: (!p.xml_tag.is_empty()).then(|| p.xml_tag.clone()),
             ruby: (!p.ruby.is_empty()).then(|| crate::ruby::capped(&p.ruby).to_string()),
@@ -426,7 +429,7 @@ pub(crate) fn shape_para(
         let style = table.intern(db, &props);
         // A missing font's substitute stands in for the whole font: fallback fonts help it.
         let auto_leading = table.env_for(auto_leading, style);
-        let deleted = props.change == designcraft_doc::ChangeMark::Deleted;
+        let deleted = props.change == designcraft_doc::ChangeMark::Deleted && !sub.show_deleted;
         if deleted || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c))) {
             pieces.push(Piece { range: a..b, props, style, env: auto_leading, hidden: true, composite_note: false });
             continue;

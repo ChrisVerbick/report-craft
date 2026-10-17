@@ -716,7 +716,18 @@ pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
     );
 }
 
-/// Track Changes panel: tracking on/off and each change with Accept / Reject.
+/// "B2" for row 1, column 1 (both from 0).
+fn cell_name(row: u64, col: u64) -> String {
+    let (mut n, mut letters) = (col + 1, Vec::new());
+    while n > 0 {
+        letters.push(char::from(b'A' + ((n - 1) % 26) as u8));
+        n = (n - 1) / 26;
+    }
+    letters.iter().rev().collect::<String>() + &(row + 1).to_string()
+}
+
+/// Track Changes panel: tracking on/off and each change with Accept / Reject; a change in a table
+/// cell or a footnote is named by it.
 pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(on) = app.session.active().map(|d| d.doc.settings.track_changes) else { return };
@@ -730,14 +741,40 @@ pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No changes.")).size(11.0).color(t.text_dim));
         return;
     }
+    // How many, and Previous / Next Change, which bring each into view.
+    let stories = list.iter().filter_map(|c| c["story"].as_u64()).collect::<std::collections::BTreeSet<_>>().len();
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, egui::RichText::new(crate::menus::changes_summary(&app.ui.language, list.len() as u64, stories as u64)).size(11.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            for (id, label) in [("changes.next", "Next"), ("changes.previous", "Previous")] {
+                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked()
+                    && let Ok(r) = app.run(id, json!({}))
+                    && let Some(page) = r["page"].as_u64()
+                {
+                    crate::canvas::go_to_page(app, page as usize);
+                }
+            }
+        });
+    });
     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
         for c in &list {
             let (story, start) = (c["story"].clone(), c["start"].clone());
+            // Where the change is: the story's text, a cell or a footnote.
+            let at = |mut v: serde_json::Value| {
+                v["cell"] = c["cell"].clone();
+                v["footnote"] = c["footnote"].clone();
+                v
+            };
             let kind = c["kind"].as_str().unwrap_or("");
             let text: String = c["text"].as_str().unwrap_or("").chars().take(40).collect();
+            let place = match (c["cell"].as_object(), c["footnote"].as_u64()) {
+                (Some(cell), _) => format!("{}: ", cell_name(cell["row"].as_u64().unwrap_or(0), cell["col"].as_u64().unwrap_or(0))),
+                (None, Some(_)) => format!("{}: ", crate::i18n::tr(&app.ui.language, "Footnote")),
+                _ => String::new(),
+            };
             ui.horizontal(|ui| {
                 let label = egui::RichText::new(format!(
-                    "{} “{}”",
+                    "{place}{} “{}”",
                     crate::i18n::tr(&app.ui.language, if kind == "inserted" { "Added" } else { "Deleted" }),
                     text.replace('\n', "¶")
                 ))
@@ -751,14 +788,14 @@ pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .clicked()
                 {
                     let end = c["end"].clone();
-                    let _ = app.run("text.select", json!({"story": story, "anchor": start, "focus": end}));
+                    let _ = app.run("text.select", at(json!({"story": story, "anchor": start, "focus": end})));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Reject"))).clicked() {
-                        let _ = app.run("changes.reject", json!({"story": story, "start": start}));
+                        let _ = app.run("changes.reject", at(json!({"story": story, "start": start})));
                     }
                     if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Accept"))).clicked() {
-                        let _ = app.run("changes.accept", json!({"story": story, "start": start}));
+                        let _ = app.run("changes.accept", at(json!({"story": story, "start": start})));
                     }
                 });
             });
@@ -773,6 +810,97 @@ pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("changes.rejectAll", json!({}));
         }
     });
+}
+
+#[cfg(test)]
+mod track_changes_panel_tests {
+    use designcraft_doc::{CellAddr, ChangeMark, StoryId};
+    use egui_kittest::{Harness, kittest::Queryable};
+    use serde_json::json;
+
+    use super::*;
+
+    /// File › Compare with Earlier Version…: the version picked is compared with the document, the
+    /// redline opens, and the status line says what it holds.
+    #[test]
+    fn compare_with_an_earlier_version_opens_the_redline() {
+        let dir = std::env::temp_dir().join(format!("dc-compare-menu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Costs were flat."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let earlier = dir.join("sent.designcraft");
+        app.run("file.saveACopy", json!({"path": earlier.to_string_lossy()})).unwrap();
+        app.session
+            .edit(|d, _| {
+                d.story_mut(sid).unwrap().replace(6..15, "fell");
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        let picked = earlier.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
+        app.run("app.compareWithFile", json!({})).unwrap();
+        let st = app.session.active().unwrap();
+        assert!(st.doc.title.contains("compared with sent.designcraft"), "{}", st.doc.title);
+        assert!(st.path.is_none());
+        assert!(app.session.cache.shows_deleted());
+        assert!(app.ui.status.contains("2 changes in 1 story"), "{}", app.ui.status);
+        // File › Export Changes as PDF…
+        let pdf = dir.join("changes.pdf");
+        let to = pdf.to_string_lossy().to_string();
+        app.services.pick_save = Some(Box::new(move |_| Some(to.clone())));
+        app.run("app.exportChangesPdf", json!({})).unwrap();
+        assert_eq!(designcraft_render::pdf_page_count(&std::fs::read(&pdf).unwrap()), Some(2), "the summary and page 1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A change in a table cell is listed by its cell, and Accept acts on that cell's text.
+    #[test]
+    fn a_cells_change_is_named_and_accepted_in_its_cell() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Prices"})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story": sid.0, "anchor": 6, "focus": 6})).unwrap();
+        app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+        let table = *app.session.doc().unwrap().doc.story(sid).unwrap().tables.keys().next().unwrap();
+        let cell = CellAddr { table, row: 1, col: 1 };
+        app.session
+            .edit(|d, _| {
+                let st = d.text_story_mut(sid, Some(cell)).unwrap();
+                st.replace(0..0, "3.50 3.75");
+                st.format_chars(0..5, |f| f.over.change = Some(ChangeMark::Deleted));
+                st.format_chars(5..9, |f| f.over.change = Some(ChangeMark::Inserted));
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(320.0, 420.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                track_changes(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label_contains("B2: Deleted");
+        h.get_by_label("2 changes in 1 story");
+        // Next Change selects the first one, in its cell.
+        h.get_by_label("Next").click();
+        h.run_steps(2);
+        let t = h.state().session.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.cell, t.range()), (Some(cell), 0..5));
+        h.get_all_by_label("Accept").next().unwrap().click();
+        h.run_steps(3);
+        let text = h.state().session.doc().unwrap().doc.text_story(sid, Some(cell)).unwrap().text.clone();
+        assert_eq!(text, "3.75", "the cell's deletion accepted");
+    }
 }
 
 #[cfg(test)]

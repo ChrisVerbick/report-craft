@@ -178,6 +178,7 @@ impl Notes {
             running: opts.running.clone(),
             label: Some(label),
             xrefs: opts.xrefs.clone(),
+            show_deleted: opts.show_deleted,
         };
         let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();

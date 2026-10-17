@@ -7,6 +7,8 @@
 //! - `meta.json`: format version and generator
 //! - `preview.png` (optional): a small picture of the first page, for the start screen's recent files
 //!
+//! - `history/` (optional): earlier versions of the document (see [`History`])
+//!
 //! Older single-file JSON documents (assets as base64 in `assetData`) still open. Documents
 //! from older format versions are upgraded on load so they lay out as they did.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -19,6 +21,9 @@ use std::sync::Arc;
 
 use designcraft_doc::{AssetId, Document, ParaAttrs, Story};
 use serde_json::{Value, json};
+
+mod history;
+pub use history::{History, NewVersion, VersionInfo, VersionKind};
 
 pub const MIME: &str = "application/vnd.designcraft+zip";
 pub const VERSION: u32 = 2;
@@ -34,6 +39,9 @@ pub enum FormatError {
     /// The document holds something the file can't represent; nothing is written.
     #[error("{0}")]
     Unsaveable(String),
+    /// The file's history (or a version in it) can't be read; the document itself can.
+    #[error("history: {0}")]
+    History(String),
 }
 
 fn ext_for(mime: &str) -> &'static str {
@@ -55,22 +63,42 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     save_with_preview(doc, None)
 }
 
+/// [`save_with_preview`], with the document's earlier versions.
+pub fn save_with_history(doc: &Document, history: &History, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    save_with_large_entries_from(doc, history, preview, LARGE_ENTRY)
+}
+
+/// [`load`], with the file's earlier versions: an empty history for a file without them, and
+/// an error of its own for a history that can't be read (the document can).
+pub fn load_with_history(bytes: &[u8]) -> Result<(Document, Result<History, FormatError>), FormatError> {
+    if bytes.starts_with(b"PK") {
+        return load_zip(bytes, true);
+    }
+    Ok((load_legacy_json(bytes)?, Ok(History::default())))
+}
+
 /// [`save`], plus `preview` (PNG bytes) as `preview.png`.
 pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
-    save_with_large_entries_from(doc, preview, LARGE_ENTRY)
+    save_with_large_entries_from(doc, &History::default(), preview, LARGE_ENTRY)
 }
 
 /// Asset entries this size or larger are written with zip64 sizes. Zip rejects an entry over
 /// 4 GiB written without them; the margin covers deflate output that is larger than its input.
 const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 
-fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+/// `doc` as a file holds it: duplicate assets merged and unused ones left out.
+fn saveable(doc: &Document) -> Result<Document, FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
     }
     let mut compact = doc.clone();
     compact.compact_assets();
+    Ok(compact)
+}
+
+fn save_with_large_entries_from(doc: &Document, history: &History, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    let compact = saveable(doc)?;
     let doc = &compact;
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
     let mut buf = Cursor::new(Vec::new());
@@ -81,7 +109,10 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.start_file("mimetype", stored).map_err(io)?;
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
-        let meta = json!({"format": "designcraft", "version": VERSION, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
+        let mut meta = json!({"format": "designcraft", "version": VERSION, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
+        if let (false, Some(m)) = (history.is_empty(), meta.as_object_mut()) {
+            m.insert("history".into(), Value::Bool(true));
+        }
         z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         if let Some(png) = preview {
             z.start_file(PREVIEW, stored).map_err(io)?;
@@ -99,6 +130,9 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
             let opts = opts.large_file(a.data.len() >= large_entry);
             z.start_file(format!("assets/{}.{}", id.0, ext_for(&a.mime)), opts).map_err(io)?;
             z.write_all(&a.data).map_err(|e| FormatError::Io(e.to_string()))?;
+        }
+        if !history.is_empty() {
+            history.write(&mut z, doc, large_entry)?;
         }
         z.finish().map_err(io)?;
     }
@@ -148,7 +182,7 @@ const MAX_PREVIEW_BYTES: u64 = 4 << 20;
 /// Read `.designcraft` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     if bytes.starts_with(b"PK") {
-        return load_zip(bytes);
+        return Ok(load_zip(bytes, false)?.0);
     }
     load_legacy_json(bytes)
 }
@@ -184,16 +218,16 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
     Ok(Some(v))
 }
 
-fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
+/// The document, and its history when `with_history` (and the file has one).
+fn load_zip(bytes: &[u8], with_history: bool) -> Result<(Document, Result<History, FormatError>), FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if z.len() > MAX_ENTRIES {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
     }
     let mut left = MAX_TOTAL_BYTES;
-    let version = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?
-        .and_then(|meta| serde_json::from_slice::<Value>(&meta).ok())
-        .and_then(|m| m.get("version").and_then(Value::as_u64))
-        .map_or(1, |v| u32::try_from(v).unwrap_or(u32::MAX));
+    let meta = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?.and_then(|meta| serde_json::from_slice::<Value>(&meta).ok());
+    let version = meta.as_ref().and_then(|m| m.get("version").and_then(Value::as_u64)).map_or(1, |v| u32::try_from(v).unwrap_or(u32::MAX));
+    let has_history = meta.as_ref().and_then(|m| m.get("history")) == Some(&Value::Bool(true));
     if version > VERSION {
         return Err(FormatError::TooNew(version));
     }
@@ -226,11 +260,19 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
             Arc::make_mut(a).data = data;
         }
     }
-    upgrade(&mut doc, version);
+    // Before `finish` merges any duplicate assets: versions name the entries they read.
+    let history = if with_history && has_history { History::read(&mut z, &doc, &mut left) } else { Ok(History::default()) };
+    finish(&mut doc, version).map_err(FormatError::NotOurs)?;
+    Ok((doc, history))
+}
+
+/// What every load does to a document read in format `version`: upgrade it, merge duplicate
+/// assets, mark local margins, and check it.
+fn finish(doc: &mut Document, version: u32) -> Result<(), String> {
+    upgrade(doc, version);
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
-    doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
-    Ok(doc)
+    doc.check().map_err(|e| e.to_string())
 }
 
 /// Bring a document saved in format `from` up to [`VERSION`].
@@ -293,10 +335,7 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
             }
         }
     }
-    upgrade(&mut doc, 1);
-    doc.merge_duplicate_assets();
-    doc.mark_differing_margins_local();
-    doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
+    finish(&mut doc, 1).map_err(FormatError::NotOurs)?;
     Ok(doc)
 }
 
@@ -572,8 +611,8 @@ mod tests {
         let aid = png_asset(&mut d, &[5; 64]);
         place(&mut d, aid, 0.0);
         let normal = save(&d).unwrap();
-        assert_eq!(normal, save_with_large_entries_from(&d, None, 65).unwrap(), "an asset under the threshold is unchanged");
-        let large = save_with_large_entries_from(&d, None, 64).unwrap();
+        assert_eq!(normal, save_with_large_entries_from(&d, &History::default(), None, 65).unwrap(), "an asset under the threshold is unchanged");
+        let large = save_with_large_entries_from(&d, &History::default(), None, 64).unwrap();
         assert!(large.len() > normal.len(), "the asset entry carries zip64 sizes");
         assert_eq!(*load(&large).unwrap().assets[&aid].data, vec![5; 64]);
     }

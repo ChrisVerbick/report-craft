@@ -60,13 +60,14 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "text.selectStory", "Select Story", [], None, "{frame, point} — all the text of the story under the point, threaded frames included", has_doc, |s, p| {
             select_around(s, p, "text.selectStory", |t, _| (0, t.len()))
         }),
-        cmd!(noundo "text.select", "Select Text", [], None, "{story, anchor, focus} (UTF-8 byte offsets into the story text, as find.find reports them: á or — counts 2 or 3)", has_doc, |s, p| {
+        cmd!(noundo "text.select", "Select Text", [], None, "{story, anchor, focus, cell?: {table, row, col}, footnote?: id} (UTF-8 byte offsets into the story text, or the cell's or footnote's when given, as find.find and changes.list report them: á or — counts 2 or 3)", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).unwrap_or(0));
+            let at = super::changes::address(p, "text.select")?;
             let st = s.doc_mut()?;
-            let text = &st.doc.story(sid).ok_or_else(|| bad("text.select", "no such story"))?.text;
+            let text = &st.doc.text_story(sid, at).ok_or_else(|| bad("text.select", "no such story, cell or footnote"))?.text;
             let a = floor_char_boundary(text, p.get("anchor").and_then(Value::as_u64).unwrap_or(0) as usize);
             let f = floor_char_boundary(text, p.get("focus").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(a));
-            st.selection = Selection::text(TextSel { story: sid, anchor: a, focus: f, frame: None, cell: None });
+            st.selection = Selection::text(TextSel { story: sid, anchor: a, focus: f, frame: None, cell: at });
             st.bump_revision();
             s.typing_format = None;
             ok()
