@@ -65,6 +65,9 @@ struct Line {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(st) = app.session.active() else { return };
+    // The dock's scroll bar floats over the panel's right edge (egui's floating bars take no
+    // width): what's aligned right stays clear of it.
+    ui.set_max_width(ui.available_width() - ui.spacing().scroll.bar_width);
     let rev = (st.uid, st.revision);
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
@@ -809,6 +812,35 @@ mod tests {
             },
             app,
         )
+    }
+
+    /// The dock's scroll bar floats over a panel's right edge (egui's floating bars take no
+    /// width): what the panel aligns right stays clear of it.
+    #[test]
+    fn what_is_aligned_right_stays_clear_of_the_scroll_bar() {
+        let (path, app, _) = linked("scrollbar.txt", "One.");
+        // The app's fonts take effect from the frame after they're installed.
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(320.0, 400.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !fonts {
+                    fonts = true;
+                    crate::theme::install_fonts(ui.ctx(), "en");
+                    return;
+                }
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| super::show(app, ui));
+            },
+            app,
+        );
+        h.run_steps(3);
+        // The scroll area spans the window less the same margin on each side.
+        let margin = h.get_by_label("Linked files").rect().min.x;
+        let bar = egui::style::ScrollStyle::default().bar_width;
+        for label in ["Up to date", "Check all"] {
+            let right = h.get_by_label(label).rect().max.x;
+            assert!(right <= 320.0 - margin - bar, "{label} ends at {right}, under the bar");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// Update on a linked text file (the Links panel, Update Link) opens its review in Flow:
