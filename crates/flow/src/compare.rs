@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use designcraft_doc::{Document, FOOTNOTE_REF, Story, StoryId, TABLE_ANCHOR, Table};
 
 use crate::story::shape;
-use crate::{Hunk, apply, diff_text, sentences};
+use crate::{Hunk, Mark, apply, diff_text, sentences, words};
 
 /// Where a text is: a story's own, a cell of one of its tables (row and column from 0), or one of
 /// its footnotes.
@@ -23,13 +23,24 @@ pub enum Place {
 }
 
 /// One text's changes in whole sentences, with both texts: applying `hunks` to `a` gives `b`
-/// exactly (checked as the change set is made).
+/// exactly (checked as the change set is made). `runs` are the same changes word by word, for
+/// marking them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextChanges {
     pub place: Place,
     pub a: String,
     pub b: String,
     pub hunks: Vec<Hunk>,
+    pub runs: Vec<Run>,
+}
+
+/// Words only `a` has (deleted) or only `b` has (inserted): where they are in `a` (`old`) and in
+/// `b` (`new`); the other range is empty, where they would be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub mark: Mark,
+    pub old: std::ops::Range<usize>,
+    pub new: std::ops::Range<usize>,
 }
 
 /// A story in both documents, or in one only.
@@ -100,7 +111,7 @@ fn story_changes(id: StoryId, a: Option<&Story>, b: Option<&Story>) -> Option<St
     let empty = Story::new(id);
     let (a, b) = (a.unwrap_or(&empty), b.unwrap_or(&empty));
     let (ka, kb) = keyed(a, b);
-    let mut texts: Vec<TextChanges> = changes(Place::Text, &a.text, &b.text, &diff_text(&ka, &kb)).into_iter().collect();
+    let mut texts: Vec<TextChanges> = changes(Place::Text, (&a.text, &b.text), (&ka, &kb)).into_iter().collect();
     let mut tables = Vec::new();
     for t in a.tables.keys().chain(b.tables.keys()).copied().collect::<BTreeSet<u64>>() {
         let status = match (a.tables.get(&t), b.tables.get(&t)) {
@@ -161,18 +172,46 @@ fn keyed(a: &Story, b: &Story) -> (String, String) {
 
 /// The changes from text `a` to `b` in whole sentences.
 fn text_changes(place: Place, a: &str, b: &str) -> Option<TextChanges> {
-    if a == b { None } else { changes(place, a, b, &diff_text(a, b)) }
+    changes(place, (a, b), (a, b))
 }
 
-/// [`text_changes`] from the diff `raw`; one change from all of `a` to all of `b` should the
-/// sentences ever fail to rebuild `b`.
-fn changes(place: Place, a: &str, b: &str, raw: &[Hunk]) -> Option<TextChanges> {
-    if a == b && raw.is_empty() {
+/// [`text_changes`] of texts `a` and `b`, diffed as `keyed` (see [`keyed`]); one change from all
+/// of `a` to all of `b` should the sentences ever fail to rebuild `b`.
+fn changes(place: Place, (a, b): (&str, &str), (ka, kb): (&str, &str)) -> Option<TextChanges> {
+    let raw = diff_text(ka, kb);
+    if raw.is_empty() {
         return None;
     }
-    let hunks = sentences(a, b, raw);
+    let hunks = sentences(a, b, &raw);
     let hunks = if apply(a, b, &hunks).as_deref() == Some(b) { hunks } else { vec![Hunk { old: 0..a.len(), new: 0..b.len() }] };
-    Some(TextChanges { place, a: a.to_string(), b: b.to_string(), hunks })
+    let runs = word_runs(ka, kb, &hunks);
+    Some(TextChanges { place, a: a.to_string(), b: b.to_string(), hunks, runs })
+}
+
+/// The words each hunk deletes and inserts, from the texts as diffed.
+fn word_runs(a: &str, b: &str, hunks: &[Hunk]) -> Vec<Run> {
+    let mut out = Vec::new();
+    for h in hunks {
+        let (mut at_a, mut at_b) = (h.old.start, h.new.start);
+        for (mark, t) in words(a.get(h.old.clone()).unwrap_or_default(), b.get(h.new.clone()).unwrap_or_default()) {
+            let n = t.len();
+            match mark {
+                Mark::Same => {
+                    at_a += n;
+                    at_b += n;
+                }
+                Mark::Deleted => {
+                    out.push(Run { mark, old: at_a..at_a + n, new: at_b..at_b });
+                    at_a += n;
+                }
+                Mark::Inserted => {
+                    out.push(Run { mark, old: at_a..at_a, new: at_b..at_b + n });
+                    at_b += n;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The cells of two tables of the same shape that differ.
@@ -195,7 +234,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::apply;
+    use crate::{Mark, apply};
 
     /// A document holding `stories` (id, text).
     fn doc(stories: &[(u64, &str)]) -> Document {
@@ -314,6 +353,31 @@ mod tests {
         let changed: String = text.hunks.iter().map(|h| &text.a[h.old.clone()]).collect();
         assert!(changed.contains(designcraft_doc::FOOTNOTE_REF) && changed.contains(designcraft_doc::TABLE_ANCHOR), "{:?}", pairs(text));
         assert_eq!(apply(&text.a, &text.b, &text.hunks).as_deref(), Some(text.b.as_str()));
+    }
+
+    /// A text's changes word by word too, for marking them in a redline: the words only `a` has,
+    /// and only `b` has, with where they are in each; a footnote put in another's place shows as
+    /// its reference deleted and a reference inserted.
+    #[test]
+    fn changes_come_word_by_word_too() {
+        let c = compare(&doc(&[(1, "Revenue grew. Costs were flat. Staff held.")]), &doc(&[(1, "Revenue grew. Costs fell. Staff held.")]));
+        let t = &c.stories[0].texts[0];
+        let runs: Vec<(Mark, &str, &str)> = t.runs.iter().map(|r| (r.mark, &t.a[r.old.clone()], &t.b[r.new.clone()])).collect();
+        assert_eq!(runs, [(Mark::Deleted, "were flat", ""), (Mark::Inserted, "", "fell")]);
+        let mut a = doc(&[(1, "Revenue grew.")]);
+        let st = story_mut(&mut a);
+        let old = st.insert_note(13, "Old.", ParaFormat::default()).unwrap();
+        st.insert_note(0, "Kept.", ParaFormat::default()).unwrap();
+        let mut b = a.clone();
+        let st = story_mut(&mut b);
+        let at = st.note_anchor(old).unwrap();
+        st.delete(at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
+        st.insert_note(at, "New.", ParaFormat::default()).unwrap();
+        let s = &compare(&a, &b).stories[0];
+        let t = s.texts.iter().find(|t| t.place == Place::Text).unwrap();
+        let runs: Vec<(Mark, &str, &str)> = t.runs.iter().map(|r| (r.mark, &t.a[r.old.clone()], &t.b[r.new.clone()])).collect();
+        let marker = designcraft_doc::FOOTNOTE_REF.to_string();
+        assert_eq!(runs, [(Mark::Deleted, marker.as_str(), ""), (Mark::Inserted, "", marker.as_str())]);
     }
 
     /// Pieces that stress the diff: accents (composed and combining), emoji, CJK, paragraph and

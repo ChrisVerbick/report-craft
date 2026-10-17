@@ -13,7 +13,7 @@ mod story;
 
 use std::ops::Range;
 
-pub use compare::{ChangeSet, Place, Status, StoryChanges, TableChange, TableStatus, TextChanges, compare};
+pub use compare::{ChangeSet, Place, Run, Status, StoryChanges, TableChange, TableStatus, TextChanges, compare};
 pub use merge::{Conflict, MergeOut, Segment, is_anchor, merge_text};
 use similar::{Algorithm, ChangeTag, DiffTag, TextDiff};
 pub use story::{CellMerge, StoryMerge, merge_story, verified};
