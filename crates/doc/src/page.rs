@@ -66,6 +66,9 @@ pub struct Guide {
     /// Liquid guide: objects it crosses stretch when a guide-based page changes size.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub liquid: bool,
+    /// Its own colour, as InDesign's ruler guides have (`None`: the standard guide colour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
 }
 
 impl Guide {

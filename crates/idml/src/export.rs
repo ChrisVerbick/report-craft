@@ -75,6 +75,21 @@ pub(crate) fn uid(n: u64) -> String {
     format!("u{n:x}")
 }
 
+/// Property `prop` holding colour `c` as InDesign's UI colours are written (layers, guides): the
+/// name when it is one of the layer colours, else RGB.
+fn ui_color(prop: &str, c: [u8; 3]) -> El {
+    match names::layer_color_out(c) {
+        Some(n) => p(prop, "enumeration", n),
+        None => {
+            let mut e = El::new(prop).attr("type", "list");
+            for v in c {
+                e.push(p("ListItem", "double", num(v as f64)));
+            }
+            e
+        }
+    }
+}
+
 fn p(name: &str, ty: &str, val: impl Into<String>) -> El {
     El::new(name).attr("type", ty).text(val)
 }
@@ -364,16 +379,7 @@ impl<'a> Ex<'a> {
         }
         // IDML lists layers back to front.
         for l in d.layers.iter().rev() {
-            let color = match names::layer_color_out(l.color) {
-                Some(n) => p("LayerColor", "enumeration", n),
-                None => {
-                    let mut e = El::new("LayerColor").attr("type", "list");
-                    for c in l.color {
-                        e.push(p("ListItem", "double", num(c as f64)));
-                    }
-                    e
-                }
-            };
+            let color = ui_color("LayerColor", l.color);
             let el = El::new("Layer")
                 .attr("Self", uid(l.id.0))
                 .attr("Name", &l.name)
@@ -1847,7 +1853,10 @@ impl<'a> Ex<'a> {
                 if let Some(l) = g.layer {
                     ge.set("ItemLayer", uid(l.0));
                 }
-                pe.push(ge);
+                pe.push(match g.color {
+                    Some(c) => with_props(ge, vec![ui_color("GuideColor", c)]),
+                    None => ge,
+                });
             }
             el.push(pe);
         }
