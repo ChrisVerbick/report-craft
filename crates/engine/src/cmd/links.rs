@@ -122,7 +122,7 @@ pub(crate) fn fnv_hex(bytes: &[u8]) -> String {
     format!("{h:016x}")
 }
 
-/// Fingerprint of a story's text, formatting and tables' cells (edits made in the layout change it).
+/// Fingerprint of a story's text, formatting and tables (edits made in the layout change it).
 /// Tables count only when the story has some, so stories without tables keep the fingerprint
 /// earlier builds recorded.
 pub(crate) fn story_hash(st: &Story) -> String {
@@ -131,10 +131,20 @@ pub(crate) fn story_hash(st: &Story) -> String {
     let json = if st.tables.is_empty() {
         serde_json::to_string(&(&st.text, &st.paras, &chars))
     } else {
-        // A table counts by its cells' text and formatting, not by revision counters, which
-        // change without an edit (a merge, a highlight).
-        let tables: Vec<Vec<(&str, &Vec<designcraft_doc::ParaFormat>, Vec<designcraft_doc::CharRun>)>> =
-            st.tables.values().map(|t| t.cells.iter().map(|c| (c.text.text.as_str(), &c.text.paras, unflowed(&c.text.chars))).collect()).collect();
+        // Whole tables (fills, styles, widths…), less Flow's marks and the cells' revision
+        // counters, which change without an edit (a merge, a highlight).
+        let tables: Vec<designcraft_doc::Table> = st
+            .tables
+            .values()
+            .map(|t| {
+                let mut t = (**t).clone();
+                for c in &mut t.cells {
+                    c.text.rev = 0;
+                    c.text.chars = unflowed(&c.text.chars);
+                }
+                t
+            })
+            .collect();
         serde_json::to_string(&(&st.text, &st.paras, &chars, &tables))
     };
     fnv_hex(json.unwrap_or_default().as_bytes())
@@ -1681,6 +1691,28 @@ mod text_link_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A cell's fill changed in the layout is an edit too, so replacing the table warns.
+    #[test]
+    fn fills_changed_in_linked_tables_are_layout_edits() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-cell-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let table = *story(&s, sid).tables.keys().next().unwrap();
+        s.execute("table.select", &json!({"story": sid.0, "table": table, "rows": [1, 1], "cols": [1, 1]})).unwrap();
+        s.execute("table.setCell", &json!({"fill": "[Black]"})).unwrap();
+        assert_eq!(text_rows(&mut s)[0]["edited"], true, "a fill changed in the layout");
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.75"]])).unwrap();
+        let r = s.execute("links.update", &json!({"story": sid.0, "mode": "replace"})).unwrap();
+        assert!(r["warnings"][0].as_str().unwrap_or_default().contains("replaced"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `text: false` updates graphics only: the app reviews linked text files in Flow first.
     #[test]
     fn update_can_leave_linked_text_for_review() {
@@ -1746,19 +1778,6 @@ mod text_link_tests {
         assert!(!super::super::place_text::verified(&theirs, &mine, &m));
     }
 
-    /// A workbook whose first sheet holds `rows` as inline strings.
-    fn xlsx(rows: &[&[&str]]) -> Vec<u8> {
-        use std::io::Write;
-        let rows: String = rows
-            .iter()
-            .map(|row| format!("<row>{}</row>", row.iter().map(|v| format!(r#"<c t="inlineStr"><is><t>{v}</t></is></c>"#)).collect::<String>()))
-            .collect();
-        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        w.start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default()).unwrap();
-        w.write_all(format!("<worksheet><sheetData>{rows}</sheetData></worksheet>").as_bytes()).unwrap();
-        w.finish().unwrap().into_inner()
-    }
-
     /// A cell edited in a linked spreadsheet is an edit made in the layout: the Links panel shows
     /// it, and Update warns that it replaces it (it used to be replaced silently).
     #[test]
@@ -1767,7 +1786,7 @@ mod text_link_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("prices.xlsx");
-        std::fs::write(&path, xlsx(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"]])).unwrap();
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true})).unwrap();
@@ -1779,7 +1798,7 @@ mod text_link_tests {
         s.execute("table.setCell", &json!({"text": "3.75"})).unwrap();
         assert_eq!(text_rows(&mut s)[0]["edited"], true, "a cell edited in the layout");
 
-        std::fs::write(&path, xlsx(&[&["Item", "Price"], &["Tea", "3.50"], &["Cake", "12.00"]])).unwrap();
+        std::fs::write(&path, workbook(&[&["Item", "Price"], &["Tea", "3.50"], &["Cake", "12.00"]])).unwrap();
         // Replacing warns that the layout's edits go (merging, Flow's default, keeps them).
         let r = s.execute("links.update", &json!({"story": sid.0, "mode": "replace"})).unwrap();
         assert_eq!(r["updated"], 1);
