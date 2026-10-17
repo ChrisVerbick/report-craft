@@ -46,6 +46,29 @@ fn all_lines(cs: &ComposedStory) -> Vec<&Line> {
     cs.frames.iter().flat_map(|f| f.lines.iter()).collect()
 }
 
+/// "Show deleted text" (Compare's redline view): text tracked changes delete takes room and is
+/// drawn (its style says so), where normally it takes none; the cache keeps both layouts apart.
+#[test]
+fn deleted_text_takes_room_only_when_shown() {
+    let (mut d, sid, _) = doc_with("The cat dog sat", Rect::new(36.0, 36.0, 300.0, 200.0), ParaAttrs::default());
+    let st = std::sync::Arc::make_mut(d.stories.get_mut(&sid).unwrap());
+    st.format_chars(4..8, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+    let shows = |cs: &ComposedStory| {
+        let glyphs: Vec<_> = all_lines(cs).into_iter().flat_map(|l| l.glyphs.iter()).filter(|g| g.byte >= 4 && g.byte < 7).cloned().collect();
+        (glyphs.iter().all(|g| g.visible && g.adv > 0.0), glyphs.iter().all(|g| cs.styles.get(g.style as usize).is_some_and(|s| s.deleted)))
+    };
+    let hidden = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!shows(&hidden).0, "takes no room");
+    let shown = compose_story(&d, sid, &ComposeOptions { show_deleted: true, ..Default::default() });
+    assert_eq!(shows(&shown), (true, true));
+    let cache = crate::Cache::new();
+    assert!(!shows(&cache.get(&d, sid, None)).0);
+    cache.set_show_deleted(true);
+    assert!(shows(&cache.get(&d, sid, None)).0, "the cache composes it again");
+    cache.set_show_deleted(false);
+    assert!(!shows(&cache.get(&d, sid, None)).0);
+}
+
 #[test]
 fn composes_simple_paragraph() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(36.0, 36.0, 300.0, 700.0), ParaAttrs::default());
