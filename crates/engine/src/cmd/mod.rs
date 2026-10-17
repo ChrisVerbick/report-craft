@@ -9,6 +9,7 @@ pub(crate) mod captions;
 mod changes;
 mod color_theme;
 mod colorsettings;
+mod compare;
 mod conditions;
 mod datamerge;
 mod edit;
@@ -185,6 +186,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(colorsettings::specs());
         v.extend(color_theme::specs());
         v.extend(changes::specs());
+        v.extend(compare::specs());
         v.extend(conditions::specs());
         v.extend(library::specs());
         v.extend(lists::specs());

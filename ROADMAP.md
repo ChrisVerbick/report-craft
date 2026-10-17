@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-17** · Ruler guides keep their colour from IDML (InDesign's named colours or a custom RGB; Cyan, the default, stays the standard guide colour), are drawn in it, saved with the document and written back on IDML export; `guide.color` sets one. No readiness percentage change.
 - **2026-10-17** · Placed workbooks: choose the sheet, cell range, header rows and table style (`file.place`, File ▸ Place with Flow), kept on a linked workbook for Update; cells come in as Excel shows them in their number formats (decimals, thousands, percent, currency, dates and times), and a format that can't be shown exactly is a warning naming its cells. No readiness percentage change.
 - **2026-10-16** · Threading: the loaded text cursor threads into a text frame inside a group (it hit the group and showed it could not thread); a plain click still selects the group (#1075). Gap 27 closed. No readiness percentage change.
 - **2026-10-16** · Greek text hyphenates. The patterns were never compiled in, so Greek set unhyphenated however narrow the column; `"Greek"`, `"Greek: Greece"`, `el` and `el-GR` all resolve now and ανθρωπος breaks αν-θρω-πος. They are the monotonic patterns (hyph-el-monoton, Dimitrios Filippou, under MIT), which is what polytonic text hyphenates by too. Five of InDesign's ~40 hyphenation languages. No readiness percentage change.

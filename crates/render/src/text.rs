@@ -343,6 +343,19 @@ impl Renderer {
                 }
             }
         }
+        // Deleted text, laid out only for "show deleted text" (never for output): muted, struck through.
+        if cs.styles.iter().any(|s| s.deleted) {
+            ctx.set_transform(m);
+            for l in &ft.lines {
+                for g in l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.deleted)) {
+                    ctx.set_paint(screen_color([255, 255, 255], 140));
+                    ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
+                    let (y, t) = (l.baseline - l.ascent * 0.32, (l.ascent * 0.06).max(0.5));
+                    ctx.set_paint(screen_color([200, 40, 40], 230));
+                    ctx.fill_rect(&kurbo::Rect::new(g.x, y - t / 2.0, g.x + g.adv, y + t / 2.0));
+                }
+            }
+        }
         if f.opts.note_indicators
             && let Some(st) = f.doc.story(cs.story).filter(|st| !st.editorial.is_empty())
         {
