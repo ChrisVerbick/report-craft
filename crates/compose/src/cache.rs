@@ -7,6 +7,7 @@
 //! can't be reused by other allocations while the entry lives.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{Document, Item, Story, StoryId, Styles};
@@ -55,6 +56,8 @@ pub struct Cache {
     /// The composition each story (page-independent key) had before its latest recomposition,
     /// with the story revision it was composed from (repaint only the frames an edit changed).
     previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
+    /// Compose text tracked changes delete into the layout ("show deleted text", screen only).
+    show_deleted: AtomicBool,
 }
 
 /// Identity of everything a running header can depend on (stories, spreads, styles, variables).
@@ -87,6 +90,16 @@ fn sections_hash(doc: &Document) -> u64 {
 impl Cache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Lay out text tracked changes delete, for the "show deleted text" view: it takes room and
+    /// is drawn struck through. Off by default; output composes with a cache that leaves it out.
+    pub fn set_show_deleted(&self, on: bool) {
+        self.show_deleted.store(on, Ordering::Relaxed);
+    }
+
+    pub fn shows_deleted(&self) -> bool {
+        self.show_deleted.load(Ordering::Relaxed)
     }
 
     /// The composed story, from cache or freshly composed. `page` is the absolute page a
@@ -189,6 +202,9 @@ impl Cache {
         sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].map(|v| v.to_bits() as usize));
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
+        // Deleted text in the layout or not.
+        let show_deleted = self.shows_deleted();
+        sig.push(usize::from(show_deleted));
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -213,7 +229,7 @@ impl Cache {
         let out = Arc::new(crate::wrap::compose_among(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)) },
+            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)), show_deleted },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
         ));
         let mut g = self.map.lock().unwrap_or_else(|e| e.into_inner());
