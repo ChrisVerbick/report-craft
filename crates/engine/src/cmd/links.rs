@@ -1713,6 +1713,27 @@ mod text_link_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Compare and Flow agree: comparing the document before and after an update lists that
+    /// update's changes, sentence for sentence.
+    #[test]
+    fn comparing_before_and_after_an_update_lists_its_changes() {
+        let (dir, path, mut s, sid) = placed("compare-update", "Revenue grew. Costs were flat. Staff held.");
+        revise(&path, "Revenue grew strongly. Costs were flat. Staff rose.");
+        let before = s.doc().unwrap().doc.clone();
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let after = s.doc().unwrap().doc.clone();
+        let pair = |c: &Value| (c["before"].as_str().unwrap().to_string(), c["after"].as_str().unwrap().to_string());
+        let reported: Vec<(String, String)> = r["reports"][0]["changes"].as_array().unwrap().iter().map(pair).collect();
+        let changes = designcraft_flow::compare(&before, &after);
+        let story = changes.stories.iter().find(|c| c.story == sid).unwrap();
+        let text = story.texts.iter().find(|t| t.place == designcraft_flow::Place::Text).unwrap();
+        let shown = |x: &str| designcraft_flow::shown(x).trim().to_string();
+        let compared: Vec<(String, String)> = text.hunks.iter().map(|h| (shown(&text.a[h.old.clone()]), shown(&text.b[h.new.clone()]))).collect();
+        assert_eq!(reported.len(), 2, "{r}");
+        assert_eq!(compared, reported);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `text: false` updates graphics only: the app reviews linked text files in Flow first.
     #[test]
     fn update_can_leave_linked_text_for_review() {
