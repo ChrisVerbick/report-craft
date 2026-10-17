@@ -3065,6 +3065,8 @@ mod tests {
         h.run_steps(6);
         h.render().unwrap().save(shots.join("f4.4.png")).unwrap();
         h.state_mut().session.execute("file.exportPdf", &serde_json::json!({"path": shots.join("f4.3-export.pdf").to_string_lossy()})).unwrap();
+        // F4.5: Compare's own PDF of the redline.
+        h.state_mut().session.execute("compare.exportPdf", &serde_json::json!({"path": shots.join("f4.5-changes.pdf").to_string_lossy()})).unwrap();
         let _ = std::fs::remove_file(&earlier);
     }
 

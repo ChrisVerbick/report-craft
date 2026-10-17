@@ -105,6 +105,25 @@ pub(super) fn listed(d: &designcraft_doc::Document) -> Vec<((u64, (u8, u64, usiz
     out
 }
 
+/// The page of a change at `start` in story `sid`'s text (`at`: in a cell, the page of its table's
+/// anchor; in a footnote, of its reference). `None` when it's overset.
+pub(super) fn change_page(s: &Session, d: &designcraft_doc::Document, sid: StoryId, at: Option<CellAddr>, start: usize) -> Option<usize> {
+    let st = d.story(sid)?;
+    let pos = match at {
+        None => Some(start),
+        Some(a) => match a.footnote_id() {
+            Some(n) => st.note_anchor(n),
+            None => st
+                .text
+                .match_indices(designcraft_doc::TABLE_ANCHOR)
+                .map(|(i, _)| i)
+                .find(|i| st.paras.get(st.para_at(*i)).and_then(|p| p.table) == Some(a.table)),
+        },
+    }?;
+    let cs = s.cache.get(d, sid, None);
+    cs.frames.iter().find(|f| f.range.start <= pos && pos <= f.range.end).and_then(|f| d.page_of_item(f.frame))
+}
+
 /// Next (or previous) Change: select the change after (before) the selection in the list's order,
 /// round to the first (last) past the end, and say its page.
 fn step(s: &mut Session, next: bool) -> Result<Value> {
@@ -122,21 +141,7 @@ fn step(s: &mut Session, next: bool) -> Result<Value> {
         found.or(if next { all.first() } else { all.last() }).ok_or_else(|| super::bad(id, "there are no tracked changes"))?.clone();
     let (start, end) = (entry["start"].as_u64().unwrap_or(0) as usize, entry["end"].as_u64().unwrap_or(0) as usize);
     let sid = StoryId(sid);
-    // The page: of the change, or of the cell's table or the footnote's reference.
-    let pos = match at {
-        None => Some(start),
-        Some(a) => match a.footnote_id() {
-            Some(n) => d.story(sid).and_then(|st| st.note_anchor(n)),
-            None => d.story(sid).and_then(|st| {
-                st.text
-                    .match_indices(designcraft_doc::TABLE_ANCHOR)
-                    .map(|(i, _)| i)
-                    .find(|i| st.paras.get(st.para_at(*i)).and_then(|p| p.table) == Some(a.table))
-            }),
-        },
-    };
-    let cs = s.cache.get(&d, sid, None);
-    let page = pos.and_then(|p| cs.frames.iter().find(|f| f.range.start <= p && p <= f.range.end)).and_then(|f| d.page_of_item(f.frame));
+    let page = change_page(s, &d, sid, at, start);
     let st = s.doc_mut()?;
     st.selection = designcraft_doc::Selection::text(designcraft_doc::TextSel { story: sid, anchor: start, focus: end, frame: None, cell: at });
     st.bump_revision();
