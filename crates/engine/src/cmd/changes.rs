@@ -78,7 +78,7 @@ pub(crate) fn tracked(d: &designcraft_doc::Document) -> bool {
 }
 
 /// The text a command names in its story: `cell: {table, row, col}`, `footnote: id`, or neither.
-fn address(p: &Value, id: &str) -> Result<Option<CellAddr>> {
+pub(super) fn address(p: &Value, id: &str) -> Result<Option<CellAddr>> {
     let given = |k: &str| p.get(k).filter(|v| !v.is_null());
     match (given("cell"), given("footnote")) {
         (Some(_), Some(_)) => Err(super::bad(id, "give `cell` or `footnote`, not both")),
@@ -287,6 +287,22 @@ mod tests {
         marked(&mut s, cell, "old new", "old ", "new");
         s.execute("changes.rejectAll", &json!({})).unwrap();
         assert_eq!(text(&s, cell), "old ");
+    }
+
+    /// `text.select` reaches a cell's or footnote's text, as the changes there are addressed.
+    #[test]
+    fn text_selects_in_a_cell_or_footnote() {
+        use designcraft_doc::{CellAddr, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Body."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 5, "focus": 5})).unwrap();
+        let note = s.execute("footnote.insert", &json!({"text": "Source: 2025."})).unwrap()["id"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "footnote": note, "anchor": 8, "focus": 12})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.cell, t.range()), (Some(CellAddr::footnote(note)), 8..12));
+        assert!(s.execute("text.select", &json!({"story": sid.0, "cell": {"table": 99, "row": 0, "col": 0}, "anchor": 0, "focus": 0})).is_err());
     }
 
     #[test]
