@@ -696,6 +696,7 @@ pub struct DisplayKey {
     highlight_hj: bool,
     show_note_anchors: bool,
     show_added_text: bool,
+    show_deleted_text: bool,
     highlight_keeps: bool,
     highlight_custom_tracking: bool,
 }
@@ -714,6 +715,7 @@ fn display_key(app: &DesignApp) -> DisplayKey {
         highlight_hj: prefs.highlight_hj,
         show_note_anchors: prefs.show_note_anchors,
         show_added_text: prefs.show_added_text,
+        show_deleted_text: app.session.cache.shows_deleted(),
         highlight_keeps: prefs.highlight_keeps,
         highlight_custom_tracking: prefs.highlight_custom_tracking,
     }
@@ -3009,6 +3011,57 @@ mod parent_canvas_tests;
 
 #[cfg(test)]
 mod tests {
+    /// Not a check: renders Compare's redline with Show Deleted Text, and exports its PDF, into
+    /// `plan/shots/` (`cargo test -p designcraft-ui-egui --lib -- --ignored render_show_deleted_text`).
+    #[test]
+    #[ignore]
+    fn render_show_deleted_text() {
+        use designcraft_doc::StoryId;
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &serde_json::json!({})).unwrap();
+        let v1 = "Quarterly report\nRevenue grew in every region. The board approved the new plan. Costs were flat.";
+        let r = app.session.execute("frame.create", &serde_json::json!({"rect": [36, 36, 576, 400], "content": "text", "text": v1})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        app.session
+            .edit(|d, _| {
+                let st = d.story_mut(sid).unwrap();
+                let n = st.len();
+                st.format_chars(0..n, |f| f.over.size = Some(22.0));
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        let earlier = std::env::temp_dir().join(format!("dc-f43-{}.designcraft", std::process::id()));
+        app.session.execute("file.saveACopy", &serde_json::json!({"path": earlier.to_string_lossy()})).unwrap();
+        app.session
+            .edit(|d, _| {
+                let st = d.story_mut(sid).unwrap();
+                for (from, to) in
+                    [("every region", "every region except the north"), ("the new plan", "the plan in June"), ("were flat", "fell by two percent")]
+                {
+                    let i = st.text.find(from).unwrap();
+                    st.replace(i..i + from.len(), to);
+                }
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        app.session.execute("compare.file", &serde_json::json!({"path": earlier.to_string_lossy()})).unwrap();
+        app.run("view.zoom", serde_json::json!({"zoom": 1.0})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        h.render().unwrap().save(shots.join("f4.3.png")).unwrap();
+        h.state_mut().session.execute("file.exportPdf", &serde_json::json!({"path": shots.join("f4.3-export.pdf").to_string_lossy()})).unwrap();
+        let _ = std::fs::remove_file(&earlier);
+    }
+
     use designcraft_geom::Unit;
     use egui_kittest::{Harness, kittest::Queryable};
 

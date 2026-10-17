@@ -154,6 +154,19 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(out))
         }),
         cmd!(
+            noundo "view.showDeletedText",
+            "Show Deleted Text",
+            ["Type", "Track Changes"],
+            None,
+            "{on?: bool (default: toggle)} — lay out text tracked changes delete, struck through, on screen (Compare's redline turns it on); exports, printing and saved previews never have it → {on}",
+            super::always,
+            |s, p| {
+                let on = p.get("on").and_then(Value::as_bool).unwrap_or(!s.cache.shows_deleted());
+                s.cache.set_show_deleted(on);
+                Ok(json!({"on": on}))
+            }
+        ),
+        cmd!(
             "changes.accept",
             "Accept Change",
             [],
