@@ -3058,6 +3058,12 @@ mod tests {
         );
         h.run_steps(8);
         h.render().unwrap().save(shots.join("f4.3.png")).unwrap();
+        // F4.4: the Track Changes panel beside it, stepped to the first change.
+        h.state_mut().run("window.panel", serde_json::json!({"panel": "trackChanges"})).unwrap();
+        h.run_steps(4);
+        h.get_by_label("Next").click();
+        h.run_steps(6);
+        h.render().unwrap().save(shots.join("f4.4.png")).unwrap();
         h.state_mut().session.execute("file.exportPdf", &serde_json::json!({"path": shots.join("f4.3-export.pdf").to_string_lossy()})).unwrap();
         let _ = std::fs::remove_file(&earlier);
     }

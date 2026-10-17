@@ -679,6 +679,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Place and Link", "განთავსება და დაკავშირება"),
     ("Place with Import Options…", "განთავსება იმპორტის პარამეტრებით…"),
     ("Place with Flow…", "განთავსება ნაკადით…"),
+    ("Compare with Earlier Version…", "შედარება ადრინდელ ვერსიასთან…"),
     ("Polygon Settings…", "მრავალკუთხედის პარამეტრები…"),
     ("Preflight Document", "დოკუმენტის წინასწარი შემოწმება"),
     ("Previous Cell", "წინა უჯრა"),

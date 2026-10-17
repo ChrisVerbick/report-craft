@@ -77,6 +77,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{} — Word/RTF style mapping before placing"),
     (
+        "app.compareWithFile",
+        "Compare with Earlier Version…",
+        None,
+        "{} — pick an earlier version of the document (a .designcraft): compare.file opens the redline",
+    ),
+    (
         "app.placeWithFlow",
         "Place with Flow…",
         None,
@@ -330,6 +336,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.saveDialog",
             "ui:app.saveCopyDialog",
             "cmd:file.revert",
+            "ui:app.compareWithFile",
             "-",
             "ui:app.placeDialog",
             "ui:app.placeWithOptions",
@@ -1042,6 +1049,26 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
         "app.placeDialog" => app.pick_and_open("place"),
+        "app.compareWithFile" => {
+            let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("open")) else { return Some(Ok(Value::Null)) };
+            let r = match app.run("compare.file", json!({"path": path})) {
+                Ok(r) => r,
+                Err(e) => return Some(Err(e)),
+            };
+            // What the redline holds, and what it can't show.
+            let lang = app.ui.language.clone();
+            let mut status = changes_summary(&lang, r["changes"].as_u64().unwrap_or(0), r["stories"].as_u64().unwrap_or(0));
+            let deleted = r["deletedStories"].as_array().map_or(0, Vec::len);
+            if deleted > 0 {
+                status += &crate::i18n::tr(&lang, "; {n} deleted text frame(s) aren't shown").replace("{n}", &deleted.to_string());
+            }
+            let reshaped = r["tables"].as_array().map_or(0, |t| t.iter().filter(|x| x["status"] == "reshaped").count());
+            if reshaped > 0 {
+                status += &crate::i18n::tr(&lang, "; {n} table(s) changed shape and aren't marked").replace("{n}", &reshaped.to_string());
+            }
+            app.status(status);
+            Ok(r)
+        }
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
@@ -3272,6 +3299,19 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
         out.push(QuickItem { label: shown.to_string(), id: id.to_string(), params: Value::Null, shortcut: shortcut_of(app, id), kind: "" });
     }
     out
+}
+
+/// "4 changes in 2 stories": the Track Changes panel's summary and Compare's status.
+pub(crate) fn changes_summary(lang: &str, changes: u64, stories: u64) -> String {
+    let changes = match changes {
+        1 => crate::i18n::tr(lang, "1 change").to_string(),
+        n => crate::i18n::tr(lang, "{n} changes").replace("{n}", &n.to_string()),
+    };
+    let stories = match stories {
+        1 => crate::i18n::tr(lang, "1 story").to_string(),
+        n => crate::i18n::tr(lang, "{n} stories").replace("{n}", &n.to_string()),
+    };
+    crate::i18n::tr(lang, "{changes} in {stories}").replace("{changes}", &changes).replace("{stories}", &stories)
 }
 
 #[cfg(test)]
