@@ -1401,7 +1401,15 @@ mod tests {
         let moving_id = make(&mut doc, moving);
         let other_id = make(&mut doc, other);
         let page = &mut Arc::make_mut(&mut doc.spreads[0]).pages[0];
-        page.guides.push(Guide { orientation: Orientation::Vertical, position: guide_x, spread: false, locked: false, layer: None, liquid: false });
+        page.guides.push(Guide {
+            orientation: Orientation::Vertical,
+            position: guide_x,
+            spread: false,
+            locked: false,
+            layer: None,
+            liquid: false,
+            color: None,
+        });
         (doc, moving_id, other_id)
     }
 
@@ -1692,6 +1700,7 @@ mod tests {
             locked: false,
             layer: None,
             liquid: false,
+            color: None,
         });
         let cache = Cache::new();
         let layout = CanvasLayout::new(&doc, false);
@@ -1720,6 +1729,7 @@ mod tests {
             locked: false,
             layer: None,
             liquid: false,
+            color: None,
         });
         let cache = Cache::new();
         let layout = CanvasLayout::new(&doc, false);

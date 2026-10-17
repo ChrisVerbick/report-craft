@@ -26,6 +26,15 @@ pub fn specs() -> Vec<CommandSpec> {
             add
         ),
         cmd!("guide.move", "Move Guide", [], None, "{spread?, page, index, position}", has_doc, move_guide),
+        cmd!(
+            "guide.color",
+            "Guide Color",
+            [],
+            None,
+            "{spread?, page, index, color: a layer colour's name (\"Red\", \"Light Blue\"…) | [r, g, b] (each 0–255) | null (the standard guide colour)}",
+            has_doc,
+            set_color
+        ),
         cmd!("guide.delete", "Delete Guide", [], None, "{spread?, page, index}", has_doc, delete),
         cmd!("guide.deleteAll", "Delete All Guides on Spread", ["View", "Grids & Guides"], None, "{spread?}", has_doc, |s, p| {
             let r = super::spread_param(p, "guide.deleteAll")?;
@@ -39,13 +48,13 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"deleted": n}))
             })
         }),
-        cmd!(query "guide.list", "Guides", [], None, "{spread?} → [{page, index, orientation, position, spread}]", has_doc, |s, p| {
+        cmd!(query "guide.list", "Guides", [], None, "{spread?} → [{page, index, orientation, position, spread, color: [r, g, b] | null (the standard colour)}]", has_doc, |s, p| {
             let d = &s.doc()?.doc;
             let sp = d.spread(super::spread_param(p, "guide.list")?).ok_or_else(|| bad("guide.list", "no such spread"))?;
             let mut out = Vec::new();
             for (pi, pg) in sp.pages.iter().enumerate() {
                 for (i, g) in pg.guides.iter().enumerate() {
-                    out.push(json!({"page": pi, "index": i, "orientation": g.orientation, "position": g.position, "spread": g.spread}));
+                    out.push(json!({"page": pi, "index": i, "orientation": g.orientation, "position": g.position, "spread": g.spread, "color": g.color}));
                 }
             }
             Ok(Value::Array(out))
@@ -140,6 +149,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                 locked: false,
                 layer: Some(layer),
                 liquid: liquid && !spread_guide,
+                color: None,
             });
             out.push(json!({"page": pi, "index": pg.guides.len() - 1}));
         }
@@ -176,6 +186,40 @@ fn move_guide(s: &mut Session, p: &Value) -> Result<Value> {
             .and_then(|pg| pg.guides.get_mut(i))
             .ok_or_else(|| bad("guide.move", "no such guide"))?;
         g.position = pos;
+        Ok(Value::Null)
+    })
+}
+
+/// A guide's own colour, as InDesign's ruler guides have; `null` gives it the standard colour.
+fn set_color(s: &mut Session, p: &Value) -> Result<Value> {
+    let (r, pi, i) = guide_ref(p, "guide.color")?;
+    let color = match p.get("color") {
+        None => return Err(bad("guide.color", "missing color: a name, [r, g, b] or null")),
+        Some(Value::Null) => None,
+        Some(Value::String(name)) => {
+            let key = |n: &str| n.replace(' ', "").to_ascii_lowercase();
+            let c = designcraft_doc::LAYER_COLORS.iter().find(|(n, _)| key(n) == key(name)).map(|(_, c)| *c);
+            Some(c.ok_or_else(|| {
+                bad("guide.color", format!("no colour named `{name}`: use a layer colour's name (Light Blue, Red, …) or [r, g, b]"))
+            })?)
+        }
+        Some(Value::Array(v)) => {
+            let c: Vec<u8> = v.iter().filter_map(|x| x.as_u64().and_then(|n| u8::try_from(n).ok())).collect();
+            match c.as_slice() {
+                [r, g, b] if v.len() == 3 => Some([*r, *g, *b]),
+                _ => return Err(bad("guide.color", "color: [r, g, b], each 0–255")),
+            }
+        }
+        Some(_) => return Err(bad("guide.color", "color: a name, [r, g, b] or null")),
+    };
+    s.edit(|d, _| {
+        check_editable(d, r, pi, i, "guide.color")?;
+        let g = d
+            .spread_mut(r)
+            .and_then(|sp| sp.pages.get_mut(pi))
+            .and_then(|pg| pg.guides.get_mut(i))
+            .ok_or_else(|| bad("guide.color", "no such guide"))?;
+        g.color = color;
         Ok(Value::Null)
     })
 }
@@ -292,6 +336,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
                     locked: false,
                     layer: Some(layer),
                     liquid: false,
+                    color: None,
                 });
                 n += 1;
             }
@@ -303,6 +348,7 @@ fn create_guides(s: &mut Session, p: &Value) -> Result<Value> {
                     locked: false,
                     layer: Some(layer),
                     liquid: false,
+                    color: None,
                 });
                 n += 1;
             }
@@ -343,6 +389,28 @@ mod tests {
         assert!(s.doc().unwrap().doc.spreads[0].pages[0].guides.is_empty());
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.spreads[0].pages[0].guides.len(), 5);
+    }
+
+    /// A guide's colour: one of the layer colours by name, RGB, or `null` for the standard guide
+    /// colour. `guide.list` reports it, and it's saved with the document.
+    #[test]
+    fn a_guide_keeps_the_colour_it_is_given() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 100.0})).unwrap();
+        let colour = |s: &mut Session| s.execute("guide.list", &json!({})).unwrap()[0]["color"].clone();
+        assert_eq!(colour(&mut s), Value::Null, "the standard colour");
+        s.execute("guide.color", &json!({"page": 0, "index": 0, "color": "Light Blue"})).unwrap();
+        assert_eq!(colour(&mut s), json!([43, 155, 255]));
+        s.execute("guide.color", &json!({"page": 0, "index": 0, "color": [10, 20, 30]})).unwrap();
+        assert_eq!(colour(&mut s), json!([10, 20, 30]));
+        let saved = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(saved.spreads[0].pages[0].guides[0].color, Some([10, 20, 30]));
+        for bad in [json!("Mauve"), json!([10, 20]), json!([10, 20, 300])] {
+            assert!(s.execute("guide.color", &json!({"page": 0, "index": 0, "color": bad})).is_err(), "{bad}");
+        }
+        s.execute("guide.color", &json!({"page": 0, "index": 0, "color": null})).unwrap();
+        assert_eq!(colour(&mut s), Value::Null);
     }
 
     #[test]

@@ -1005,7 +1005,9 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                         (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
                     }
                 };
-                let stroke = Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255));
+                // Its own colour, else the standard guide colour.
+                let color = g.color.map_or(Color32::from_rgb(74, 227, 255), |c| Color32::from_rgb(c[0], c[1], c[2]));
+                let stroke = Stroke::new(hair(painter), color);
                 if g.liquid {
                     // Liquid guides are dashed.
                     painter.extend(egui::Shape::dashed_line(&[pt(a), pt(bb)], stroke, 6.0, 3.0));

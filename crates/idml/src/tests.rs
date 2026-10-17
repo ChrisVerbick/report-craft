@@ -3821,6 +3821,39 @@ fn guides_package(origin: &str) -> Vec<u8> {
     ])
 }
 
+/// Ruler guides keep their colour: one of InDesign's named colours or a custom one (RGB). Cyan,
+/// InDesign's default, or none is the standard guide colour; a name this doesn't know is too, with a
+/// warning. They go out again as they came in: a name as a name, a custom colour as RGB.
+#[test]
+fn guide_colours_import_and_round_trip() {
+    let guide = |n: usize, colour: &str| format!(r#"<Guide Self="g{n}" Orientation="Vertical" Location="{}">{colour}</Guide>"#, 10 * n);
+    let named = |name: &str| format!(r#"<Properties><GuideColor type="enumeration">{name}</GuideColor></Properties>"#);
+    let custom = r#"<Properties><GuideColor type="list"><ListItem type="double">10</ListItem><ListItem type="double">20</ListItem><ListItem type="double">30</ListItem></GuideColor></Properties>"#;
+    let guides = [guide(1, &named("Red")), guide(2, custom), guide(3, &named("Cyan")), guide(4, ""), guide(5, &named("GridBlue"))].concat();
+    let spread = SPREAD.replace(
+        r#"<Page Self="p2" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 0 -350"/>"#,
+        &format!(r#"<Page Self="p2" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 0 -350">{guides}</Page>"#),
+    );
+    let package = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let colours = |d: &Document| d.spreads[0].pages[1].guides.iter().map(|g| g.color).collect::<Vec<_>>();
+    let r = import_idml_report(&package, &|_| None).unwrap();
+    assert_eq!(colours(&r.document), [Some([255, 0, 0]), Some([10, 20, 30]), None, None, None]);
+    assert!(r.warnings.iter().any(|w| w.contains("GridBlue")), "{:?}", r.warnings);
+    let out = export_idml(&r.document);
+    let spreads = zip_text(&out, "Spreads/");
+    assert!(spreads.contains(r#"<GuideColor type="enumeration">Red</GuideColor>"#), "{spreads}");
+    assert_eq!(spreads.matches("<GuideColor").count(), 2, "only the guides with a colour of their own");
+    assert_eq!(colours(&import_idml(&out).unwrap()), colours(&r.document));
+}
+
 /// Ruler guides come in from IDML (they were dropped): on their page, measured from the ruler
 /// origin, with Fit to Page, Locked and their layer; parent pages' too. They go out again.
 #[test]

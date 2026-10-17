@@ -2442,8 +2442,10 @@ impl<'r> Importer<'r> {
     /// Ruler guides of a `<Page>` (its `<Guide>` children), `page` its rectangle in our spread
     /// coordinates. A guide's Location is measured from the ruler origin: the spread's top left, the
     /// page's, or the spine. Fit to Page off: the guide crosses the spread.
-    fn guides_of(&self, p: &El, page: Rect, spine: f64) -> Vec<Guide> {
-        p.find_all("Guide")
+    fn guides_of(&mut self, p: &El, page: Rect, spine: f64) -> Vec<Guide> {
+        let mut unknown = Vec::new();
+        let guides = p
+            .find_all("Guide")
             .filter_map(|g| {
                 let at = g.num("Location").filter(|v| v.is_finite() && v.abs() < 1e7)?;
                 let orientation = if g.get("Orientation") == Some("Horizontal") { Orientation::Horizontal } else { Orientation::Vertical };
@@ -2461,9 +2463,17 @@ impl<'r> Importer<'r> {
                     locked: g.get("Locked") == Some("true"),
                     layer: g.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied(),
                     liquid: g.get("GuideType") == Some("Liquid"),
+                    color: guide_color(g, &mut unknown),
                 })
             })
-            .collect()
+            .collect();
+        for name in unknown {
+            let w = format!("guide colour “{name}”: not one DesignCraft knows, so the guide shows in the standard guide colour");
+            if !self.warnings.contains(&w) {
+                self.warnings.push(w);
+            }
+        }
+        guides
     }
 
     fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
@@ -4019,4 +4029,26 @@ mod frame_preference_scalar_tests {
         let exact = El::new("TextFramePreference").child(El::new("Properties").child(El::new("ColumnRuleStrokeColor").text(" Color/Named ")));
         assert_eq!(Prefs(&[&exact]).prop("ColumnRuleStrokeColor").as_deref(), Some(" Color/Named "));
     }
+}
+
+/// A guide's own colour (`GuideColor`): RGB, or a name from the layer colours. Cyan, InDesign's
+/// default, is the standard guide colour (`None`); a name this doesn't know goes to `unknown`.
+fn guide_color(g: &El, unknown: &mut Vec<String>) -> Option<[u8; 3]> {
+    let c = g.prop_el("GuideColor")?;
+    if c.get("type") == Some("list") {
+        let v: Vec<f64> = c.find_all("ListItem").filter_map(|i| i.text_content().trim().parse().ok()).collect();
+        return match v.as_slice() {
+            [r, g, b] => Some([*r as u8, *g as u8, *b as u8]),
+            _ => None,
+        };
+    }
+    let name = c.text_content().trim().to_string();
+    if name == "Cyan" || name.is_empty() {
+        return None;
+    }
+    let rgb = names::layer_color_in(&name);
+    if rgb.is_none() {
+        unknown.push(name);
+    }
+    rgb
 }
