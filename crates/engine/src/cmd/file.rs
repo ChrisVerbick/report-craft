@@ -104,16 +104,21 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(import_styles(&s.doc()?.doc, &imp))
         }),
         cmd!(query "place.check", "Place with Flow: Check", [], None,
-        "{path | base64, name} → {paragraph, character, conflicts (as place.styles), problems: [{at, cell?, shows, formula?, kind, blocks, message}], warnings, preview: {paragraphs: [text]} | {rows: [[text]], more}} — what a text file or workbook would bring in, before it is placed (Place with Flow)",
+        "{path | base64, name, sheet?, range?, headerRows? (a workbook's part, as file.place)} → {paragraph, character, conflicts (as place.styles), problems: [{at, cell?, shows, formula?, kind, blocks, message}], warnings, preview: {paragraphs: [text]} | {rows: [[text]], more}, sheets?: [name] (workbooks)} — what a text file or workbook would bring in, before it is placed (Place with Flow)",
         has_doc, |s, p| {
             let (bytes, name, _) = read_source(p)?;
-            let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.check", e.to_string()))?;
+            let workbook = super::place_text::workbook_param(p, "place.check")?;
+            let imp = super::place_text::import_part(&name, &bytes, &workbook).map_err(|e| bad("place.check", e))?;
             let mut out = import_styles(&s.doc()?.doc, &imp);
             if let Some(o) = out.as_object_mut() {
                 let path = p.get("path").and_then(Value::as_str).unwrap_or(&name);
                 o.insert("problems".into(), Value::Array(imp.problems.iter().map(|x| super::links::problem_json(None, path, x)).collect()));
                 o.insert("warnings".into(), json!(imp.warnings));
                 o.insert("preview".into(), preview(&imp.story));
+                if name.to_ascii_lowercase().ends_with(".xlsx") {
+                    let sheets = designcraft_textimport::xlsx_sheet_names(&bytes).map_err(|e| bad("place.check", e.to_string()))?;
+                    o.insert("sheets".into(), json!(sheets));
+                }
             }
             Ok(out)
         }),
@@ -141,7 +146,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, sheet?, range?, headerRows?, tableStyle? (a workbook's sheet (default: the first), cells in A1 notation such as B3:F40 (default: the used range), header rows and table style; a linked workbook keeps them for Update), link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
             has_doc,
             file_place
         ),

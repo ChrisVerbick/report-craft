@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             check
         ),
-        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, uses: [{id, page}]}]", has_doc, |s, _| {
+        cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), merges (Update merges the file's changes in rather than replacing the story), lastUpdate?: {at (seconds since 1970; 0 unknown), report (as links.update returned it, or {story, replaced: true}), errors}, sheet, range (a workbook's part; empty: the first sheet, the used range), uses: [{id, page}]}]", has_doc, |s, _| {
             // Taken out for the call so the document needn't be cloned on every poll.
             let mut checks = std::mem::take(&mut s.text_link_checks);
             let links = s.doc().map(|d| list(&d.doc, &mut checks));
@@ -300,7 +300,7 @@ fn list(d: &Document, checks: &mut TextChecks) -> Vec<Value> {
     let texts = d.stories.values().filter_map(|st| {
         let l = st.file_link.as_ref()?;
         let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "lastUpdate": l.last_update, "uses": uses}))
+        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks), "edited": story_hash(st) != l.story_hash, "merges": l.base.is_some(), "lastUpdate": l.last_update, "sheet": l.workbook.sheet, "range": l.workbook.range, "uses": uses}))
     });
     let used = d.used_assets();
     d.assets
@@ -404,7 +404,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(l) = st.file_link.as_ref().filter(|l| text_status(l, checks) == "modified") else { continue };
         let (bytes, _) = read_text(&l.path)?;
         let name = file_name(&l.path);
-        let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("links.check", format!("{name}: {e}")))?;
+        let imp = super::place_text::import_part(&name, &bytes, &l.workbook).map_err(|e| bad("links.check", format!("{name}: {e}")))?;
         out.extend(imp.problems.iter().map(|pr| problem_json(Some(st.id), &l.path, pr)));
     }
     Ok(Value::Array(out))
@@ -1813,6 +1813,118 @@ mod text_link_tests {
     fn story_hash_of_a_story_without_tables_is_unchanged() {
         let st = designcraft_doc::Story::with_text(StoryId(1), "Head\nBody", designcraft_doc::ParaFormat::default());
         assert_eq!(super::story_hash(&st), "5ffd958c8ee493e4");
+    }
+
+    /// A workbook with named sheets, each a list of (cell, text): inline strings, or error values
+    /// for text starting with `#`.
+    fn book(sheets: &[(&str, &[(&str, &str)])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        let names: String =
+            sheets.iter().enumerate().map(|(i, (n, _))| format!(r#"<sheet name="{n}" sheetId="{}" r:id="rId{}"/>"#, i + 1, i + 1)).collect();
+        w.start_file("xl/workbook.xml", o).unwrap();
+        w.write_all(
+            format!(r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{names}</sheets></workbook>"#)
+                .as_bytes(),
+        )
+        .unwrap();
+        let rels: String = (1..=sheets.len()).map(|i| format!(r#"<Relationship Id="rId{i}" Type="x" Target="worksheets/sheet{i}.xml"/>"#)).collect();
+        w.start_file("xl/_rels/workbook.xml.rels", o).unwrap();
+        w.write_all(format!("<Relationships>{rels}</Relationships>").as_bytes()).unwrap();
+        for (i, (_, cells)) in sheets.iter().enumerate() {
+            let cells: String = cells
+                .iter()
+                .map(|(r, t)| match t.starts_with('#') {
+                    true => format!(r#"<c r="{r}" t="e"><v>{t}</v></c>"#),
+                    false => format!(r#"<c r="{r}" t="inlineStr"><is><t>{t}</t></is></c>"#),
+                })
+                .collect();
+            w.start_file(format!("xl/worksheets/sheet{}.xml", i + 1), o).unwrap();
+            w.write_all(format!("<worksheet><sheetData><row>{cells}</row></sheetData></worksheet>").as_bytes()).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    /// The text of a story's first table, row by row, its header rows and its table style.
+    fn table_of(s: &Session, sid: StoryId) -> (Vec<Vec<String>>, usize, String) {
+        let st = story(s, sid);
+        let t = st.tables.values().next().unwrap();
+        let rows = (0..t.nrows()).map(|r| (0..t.ncols()).map(|c| t.cell(r, c).unwrap().text.text.clone()).collect()).collect();
+        (rows, t.header_rows(), t.style.clone())
+    }
+
+    /// Place with Flow's workbook options: a workbook placed with a sheet, range, header rows and
+    /// table style keeps them on its link, saved with the document; Update and the error check
+    /// read the same cells again, so changes and errors outside the range stay out.
+    #[test]
+    fn a_workbook_keeps_its_sheet_range_and_header_rows_through_updates() {
+        let dir = std::env::temp_dir().join(format!("dc-text-link-wb-options-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prices.xlsx");
+        let v1: &[(&str, &str)] =
+            &[("A1", "Price list"), ("B2", "Item"), ("C2", "Price"), ("B3", "Tea"), ("C3", "3.50"), ("B4", "Cake"), ("C4", "3.10")];
+        std::fs::write(&path, book(&[("Summary", &[("A1", "Totals")]), ("Prices", v1)])).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Price table"})).unwrap();
+        let place = json!({"path": path.to_string_lossy(), "rect": [72, 72, 300, 200], "link": true, "sheet": "Prices", "range": "B2:C4", "headerRows": 1, "tableStyle": "Price table"});
+        let sid = StoryId(s.execute("file.place", &place).unwrap()["story"].as_u64().unwrap());
+        let placed = (vec![vec!["Item", "Price"], vec!["Tea", "3.50"], vec!["Cake", "3.10"]], 1, "Price table".to_string());
+        let as_strings = |(rows, h, st): (Vec<Vec<&str>>, usize, String)| {
+            (rows.into_iter().map(|r| r.into_iter().map(String::from).collect()).collect::<Vec<Vec<String>>>(), h, st)
+        };
+        assert_eq!(table_of(&s, sid), as_strings(placed));
+        let link = story(&s, sid).file_link.unwrap();
+        let w = &link.workbook;
+        assert_eq!((w.sheet.as_str(), w.range.as_str(), w.header_rows, w.table_style.as_str()), ("Prices", "B2:C4", 1, "Price table"));
+        let saved = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(saved.story(sid).unwrap().file_link.as_ref().unwrap().workbook, link.workbook);
+
+        let v2: &[(&str, &str)] = &[
+            ("A1", "Price list 2026"),
+            ("B2", "Item"),
+            ("C2", "Price"),
+            ("B3", "Tea"),
+            ("C3", "3.75"),
+            ("B4", "Cake"),
+            ("C4", "3.10"),
+            ("B5", "Jam"),
+            ("E9", "#REF!"),
+        ];
+        std::fs::write(&path, book(&[("Summary", &[("A1", "Totals")]), ("Prices", v2)])).unwrap();
+        assert_eq!(s.execute("links.check", &json!({})).unwrap(), json!([]), "E9 is outside the range");
+        s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(
+            table_of(&s, sid),
+            as_strings((vec![vec!["Item", "Price"], vec!["Tea", "3.75"], vec!["Cake", "3.10"]], 1, "Price table".to_string()))
+        );
+        assert_eq!(story(&s, sid).file_link.unwrap().workbook, link.workbook, "kept for the next update");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Workbook options are for workbooks; a table style must exist. `place.check` previews the
+    /// chosen cells and lists the workbook's sheets for the dialog.
+    #[test]
+    fn workbook_options_are_checked_and_previewed() {
+        let (dir, docx_path, mut s, _) = placed("wb-options-check", "Plain.");
+        let e = s.execute("file.place", &json!({"path": docx_path.to_string_lossy(), "sheet": "Prices"})).unwrap_err().to_string();
+        assert!(e.contains("isn't a workbook"), "{e}");
+        let path = dir.join("prices.xlsx");
+        std::fs::write(
+            &path,
+            book(&[("Summary", &[("A1", "Totals")]), ("Prices", &[("B2", "Item"), ("C2", "Price"), ("B3", "Tea"), ("C3", "3.50")])]),
+        )
+        .unwrap();
+        let e = s.execute("file.place", &json!({"path": path.to_string_lossy(), "tableStyle": "Nope"})).unwrap_err().to_string();
+        assert!(e.contains("Nope"), "{e}");
+        let e = s.execute("file.place", &json!({"path": path.to_string_lossy(), "sheet": "Nope"})).unwrap_err().to_string();
+        assert!(e.contains("Nope") && e.contains("Summary, Prices"), "{e}");
+        let r = s.execute("place.check", &json!({"path": path.to_string_lossy(), "sheet": "Prices", "range": "B2:C3", "headerRows": 1})).unwrap();
+        assert_eq!(r["preview"]["rows"], json!([["Item", "Price"], ["Tea", "3.50"]]));
+        assert_eq!(r["sheets"], json!(["Summary", "Prices"]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

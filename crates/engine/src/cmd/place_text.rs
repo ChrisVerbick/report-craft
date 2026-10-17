@@ -3,7 +3,7 @@
 //! until the whole story fits (InDesign's Shift-click with a loaded text cursor).
 
 use designcraft_doc::{
-    CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, Story, StoryId, TextDirection, TextFileLink, TextSel,
+    CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, Story, StoryId, TextDirection, TextFileLink, TextSel, WorkbookPart,
 };
 use designcraft_geom::Rect;
 use serde_json::{Value, json};
@@ -143,6 +143,42 @@ fn fill(story: &mut Story, from: &Story) {
     }
 }
 
+/// A workbook's options from `file.place` or `place.check`: `sheet`, `range`, `headerRows`,
+/// `tableStyle`.
+pub(super) fn workbook_param(p: &Value, cmd: &str) -> Result<WorkbookPart> {
+    let text = |k: &str| p.get(k).and_then(Value::as_str).map_or_else(String::new, |v| v.trim().to_string());
+    let header_rows = match p.get("headerRows") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad(cmd, "headerRows: a number of rows, 0 or more"))?,
+    };
+    Ok(WorkbookPart { sheet: text("sheet"), range: text("range"), header_rows, table_style: text("tableStyle") })
+}
+
+/// File `name` imported with a workbook's options, which other files can't take.
+pub(super) fn import_part(name: &str, bytes: &[u8], w: &WorkbookPart) -> std::result::Result<designcraft_textimport::Imported, String> {
+    if *w != WorkbookPart::default() && !name.to_ascii_lowercase().ends_with(".xlsx") {
+        return Err(format!("{name} isn't a workbook: sheet, range, headerRows and tableStyle are for .xlsx files"));
+    }
+    let opts = designcraft_textimport::XlsxOptions {
+        sheet: Some(w.sheet.clone()).filter(|s| !s.is_empty()),
+        range: Some(w.range.clone()).filter(|r| !r.is_empty()),
+        header_rows: w.header_rows as usize,
+    };
+    designcraft_textimport::import_with(name, bytes, &opts).map_err(|e| e.to_string())
+}
+
+/// The import's tables in table style `name` (none when empty), after the header rows are set
+/// so the style's header cells land on them.
+fn style_tables(d: &Document, imp: &mut designcraft_textimport::Imported, name: &str) {
+    if name.is_empty() {
+        return;
+    }
+    let ts = d.styles.resolve_table_style(name);
+    for t in imp.story.tables.values_mut() {
+        ts.apply_to(std::sync::Arc::make_mut(t), &d.styles.cell);
+    }
+}
+
 /// The link a story placed from `path` keeps (Create Links When Placing Text Files).
 /// `before`: the file's size and time before `bytes` were read (its time is kept only when the
 /// size matches what was read and it can be trusted, see [`super::links::settled`]).
@@ -166,6 +202,7 @@ fn text_link(
         story_hash: super::links::story_hash(story),
         base: Some(std::sync::Arc::new(Story { frames: Vec::new(), file_link: None, ..story.clone() })),
         last_update: None,
+        workbook: WorkbookPart::default(),
     }
 }
 
@@ -174,16 +211,18 @@ fn linked(d: &Document, sid: StoryId) -> Result<TextFileLink> {
     d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))
 }
 
+/// What a linked file's import options leave to record on its link again.
+struct Again {
+    map: std::collections::HashMap<String, String>,
+    conflict: Conflict,
+    workbook: WorkbookPart,
+}
+
 /// The linked file imported again with the import options it was placed with, and its styles
-/// added to the document as on placing: the import, and the style map and policy to record.
-fn import_again(
-    d: &mut Document,
-    link: &TextFileLink,
-    path: &str,
-    bytes: &[u8],
-) -> Result<(designcraft_textimport::Imported, std::collections::HashMap<String, String>, Conflict)> {
+/// added to the document as on placing: the import, and the options to record.
+fn import_again(d: &mut Document, link: &TextFileLink, path: &str, bytes: &[u8]) -> Result<(designcraft_textimport::Imported, Again)> {
     let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
-    let mut imp = designcraft_textimport::import(&name, bytes).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
+    let mut imp = import_part(&name, bytes, &link.workbook).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
     if link.remove_styles {
         strip(&mut imp.story);
         imp.para_styles.clear();
@@ -199,7 +238,13 @@ fn import_again(
         .collect();
     let map = map_styles(d, &mut imp, &map, conflict);
     add_styles(d, &imp, conflict);
-    Ok((imp, map, conflict))
+    let mut workbook = link.workbook.clone();
+    if !workbook.table_style.is_empty() && !d.styles.table.iter().any(|t| t.name == workbook.table_style) {
+        imp.warnings.push(format!("the table style “{}” no longer exists, so the table comes in without it", workbook.table_style));
+        workbook.table_style.clear();
+    }
+    style_tables(d, &mut imp, &workbook.table_style);
+    Ok((imp, Again { map, conflict, workbook }))
 }
 
 /// Update Link of a linked text file: `bytes` (read from `path`) imported again into the story
@@ -213,11 +258,12 @@ pub(crate) fn reimport(
     allow_errors: bool,
 ) -> Result<(Vec<String>, Vec<designcraft_textimport::Problem>)> {
     let link = linked(d, sid)?;
-    let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    let (imp, again) = import_again(d, &link, path, bytes)?;
     allowed(&imp, path, allow_errors)?;
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &imp.story);
-    story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
+    let applied = text_link(path, bytes, before, again.map, again.conflict, link.remove_styles, story);
+    story.file_link = Some(TextFileLink { workbook: again.workbook, ..applied });
     mark(story, &Value::Null, &imp.problems);
     Ok((imp.warnings, imp.problems))
 }
@@ -256,7 +302,7 @@ pub(crate) fn remerge(
     if mine.runs().any(|(_, f)| matches!(f.over.change, Some(designcraft_doc::ChangeMark::Inserted | designcraft_doc::ChangeMark::Deleted))) {
         return Err(bad("links.update", format!("story {}: accept or reject its tracked changes before updating it", sid.0)));
     }
-    let (imp, map, conflict) = import_again(d, &link, path, bytes)?;
+    let (imp, again) = import_again(d, &link, path, bytes)?;
     allowed(&imp, path, allow_errors)?;
     // The file as a plain update would leave the story: what this merge and the next compare with.
     let mut theirs = Story::new(sid);
@@ -270,9 +316,9 @@ pub(crate) fn remerge(
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     *story = m.story;
     // The story counts as edited while it differs from the file as applied.
-    let applied = text_link(path, bytes, before, map, conflict, link.remove_styles, story);
+    let applied = text_link(path, bytes, before, again.map, again.conflict, link.remove_styles, story);
     let story_hash = super::links::story_hash(&theirs);
-    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, ..applied });
+    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, workbook: again.workbook, ..applied });
     mark(story, &report, &imp.problems);
     place_report(d, sid, &mut report);
     Ok((warnings, report, imp.problems))
@@ -637,7 +683,12 @@ pub(super) fn place_text(
     path: Option<String>,
     before: Option<designcraft_doc::Fingerprint>,
 ) -> Result<Value> {
-    let mut imp = designcraft_textimport::import(name, bytes).map_err(|e| bad("file.place", e.to_string()))?;
+    let workbook = workbook_param(p, "file.place")?;
+    let mut imp = import_part(name, bytes, &workbook).map_err(|e| bad("file.place", e))?;
+    if !workbook.table_style.is_empty() && !s.doc()?.doc.styles.table.iter().any(|t| t.name == workbook.table_style) {
+        return Err(bad("file.place", format!("no table style `{}`", workbook.table_style)));
+    }
+    style_tables(&s.doc()?.doc, &mut imp, &workbook.table_style);
     let remove = p.get("removeStyles").and_then(Value::as_bool).unwrap_or(false);
     if remove {
         strip(&mut imp.story);
@@ -715,7 +766,9 @@ pub(super) fn place_text(
             };
             let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             fill(story, &imp.story);
-            story.file_link = link.as_deref().map(|path| text_link(path, bytes, before, map.clone(), conflict, remove, story));
+            story.file_link = link
+                .as_deref()
+                .map(|path| TextFileLink { workbook: workbook.clone(), ..text_link(path, bytes, before, map.clone(), conflict, remove, story) });
             *sel = designcraft_doc::Selection::items(vec![fid]);
             sid
         };

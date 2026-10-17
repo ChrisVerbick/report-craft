@@ -65,7 +65,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - File ▸ Print Booklet (`file.printBooklet`): saddle-stitch or 2-up consecutive printer spreads as PDF, padded with blanks, with a gap between pages.
 - Edit ▸ Transparency Blend Space (`edit.transparencyBlendSpace`; RGB for web/mobile documents; IDML TransparencyPreference) — exported PDFs give pages with transparency a DeviceCMYK or DeviceRGB page group, so viewers and RIPs blend in that space. On screen, spreads with transparency in a CMYK blend space are shown through the working CMYK profile (their colours keep to its gamut, as when composited in CMYK).
 - High Contrast interface theme (fifth Interface Color Theme: black chrome, white text, yellow selection).
-- Place Excel workbooks (.xlsx): the first worksheet's used range becomes a table (shared/inline strings, numbers, booleans).
+- Place Excel workbooks (.xlsx) as tables: a chosen sheet and cell range (default: the first sheet's used range), header rows and a table style, cells as Excel shows them in their number formats (US regional settings). A linked workbook keeps the options, so Update reads the same cells; File ▸ Place with Flow previews them first.
 - Object Library (`library.new/open/add/place/remove/list/json/close`, Library panel): `.dclib` files of snippets that keep stories, styles, swatches and images.
 - Ink Manager (`ink.list`, `ink.options`; Swatches panel menu): All Spots to Process, per-ink conversion and ink aliases in PDF output; IDML ConvertToProcess/AliasInkName.
 - Appearance of Black complete: Printing/Exporting rich black for RGB output (PNG), Overprint [Black] Swatch at 100% (document, IDML OverprintBlack).
@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-17** · Placed workbooks: choose the sheet, cell range, header rows and table style (`file.place`, File ▸ Place with Flow), kept on a linked workbook for Update; cells come in as Excel shows them in their number formats (decimals, thousands, percent, currency, dates and times), and a format that can't be shown exactly is a warning naming its cells. No readiness percentage change.
 - **2026-10-16** · Threading: the loaded text cursor threads into a text frame inside a group (it hit the group and showed it could not thread); a plain click still selects the group (#1075). Gap 27 closed. No readiness percentage change.
 - **2026-10-16** · Greek text hyphenates. The patterns were never compiled in, so Greek set unhyphenated however narrow the column; `"Greek"`, `"Greek: Greece"`, `el` and `el-GR` all resolve now and ανθρωπος breaks αν-θρω-πος. They are the monotonic patterns (hyph-el-monoton, Dimitrios Filippou, under MIT), which is what polytonic text hyphenates by too. Five of InDesign's ~40 hyphenation languages. No readiness percentage change.
 - **2026-10-16** · A swatch applied to a placed greyscale or bitmap image colours it, as in InDesign: IDML's `<Image FillColor>` is read and written, greyscale pixels become a tint of the swatch on opaque white and a bitmap's white lets the frame show through, on screen and in PDF (spot swatches print on their plate). Colour images keep their colours. Applying the swatch from the Swatches panel comes next. No readiness percentage change.
