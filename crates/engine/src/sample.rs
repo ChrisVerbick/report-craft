@@ -452,3 +452,44 @@ fn build() -> designcraft_doc::Result<Document> {
     debug_assert!(d.check().is_ok(), "{:?}", d.check());
     Ok(d)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use designcraft_format::{History, NewVersion, save, save_with_history};
+
+    /// How much saved versions add to the sample magazine's file (F5.1's measurement; the sizes
+    /// print with `--nocapture`). Its images are most of the file, and no version copies them.
+    #[test]
+    fn fifty_saved_versions_add_little_to_the_magazine() {
+        let mut d = super::magazine();
+        let mut h = History::default();
+        let plain = save(&d).unwrap().len();
+        println!("plain file: {plain} bytes");
+        for n in 1..=50u32 {
+            // A save's worth of work: a few words typed, and now and then a frame moved.
+            let sid = *d.stories.keys().nth(n as usize % d.stories.len()).unwrap();
+            let st = Arc::make_mut(d.stories.get_mut(&sid).unwrap());
+            st.insert(st.text.len() / 2, &format!(" and {n} more words"));
+            if n.is_multiple_of(3) {
+                let at = n as usize % d.spreads.len();
+                let sp = Arc::make_mut(&mut d.spreads[at]);
+                if let Some(it) = sp.items.first_mut() {
+                    Arc::make_mut(it).xf = designcraft_doc::geom::Affine::translate((1.0, 0.0)) * it.xf;
+                }
+            }
+            h.commit(&d, NewVersion { label: format!("save {n}"), ..Default::default() }).unwrap();
+            if [1, 10, 50].contains(&n) {
+                let with = save_with_history(&d, &h, None).unwrap().len();
+                let full: u64 = h.versions().filter(|v| v.full).map(|v| v.size).sum();
+                let deltas: u64 = h.versions().filter(|v| !v.full).map(|v| v.size).sum();
+                println!(
+                    "{n} saves: {with} bytes (+{} over the plain file); history JSON {full} whole + {deltas} changes",
+                    with.saturating_sub(plain)
+                );
+                assert!(with < plain + plain / 10, "{n} versions: {with} bytes, {plain} without");
+            }
+        }
+    }
+}

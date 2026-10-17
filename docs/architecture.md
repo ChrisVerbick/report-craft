@@ -26,7 +26,7 @@ lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default
 | L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes) | 8.0k |
 | L3 | `epub` | EPUB 3 reflowable and fixed-layout export | 0.9k |
 | L3 | `textimport` | Word (.docx), RTF, Excel (.xlsx), Tagged Text import; text export | 1.8k |
-| L3 | `format` | the native `.designcraft` zip (`document.json`, `assets/`, `meta.json`, optional `preview.png`), versioned | 0.3k |
+| L3 | `format` | the native `.designcraft` zip (`document.json`, `assets/`, `meta.json`, optional `preview.png` and `history/` of earlier versions), versioned | 0.3k |
 | L4 | `tools` | tool state machines: pointer events and modifiers to commands and overlays; snapping and smart guides | 5.9k |
 | L5 | `engine` | `Session`: documents, history, selection, the command registry (446 commands in `cmd/`), compose cache, preflight, find/change, scripts, recovery, links | 29.3k |
 | L6 | `ui-egui` | the InDesign-style egui frontend: menus, Control panel, Tools, dock and panels, dialogs, canvas, theme tokens, i18n, the control channel | 33.4k |
