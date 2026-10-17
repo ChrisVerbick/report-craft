@@ -27,6 +27,22 @@ pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>
     xlsx::records(bytes, sheet)
 }
 
+/// A workbook's sheet names in workbook order (none without a workbook part).
+pub fn xlsx_sheet_names(bytes: &[u8]) -> Result<Vec<String>, ImportError> {
+    xlsx::sheet_names(bytes)
+}
+
+/// What part of a workbook to place (Place with Flow's workbook options).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct XlsxOptions {
+    /// The worksheet by name; `None`: the first in workbook order.
+    pub sheet: Option<String>,
+    /// The cells in A1 notation (`B3:F40`, `$B$3:$F$40` or one cell); `None`: the used range.
+    pub range: Option<String>,
+    /// How many of the table's first rows become header rows.
+    pub header_rows: usize,
+}
+
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
 
 /// Joins UTF-16 code units that arrive one at a time (RTF `\uN`, Tagged Text `<0xNNNN>`) into
@@ -181,6 +197,8 @@ pub fn field_errors(story: &Story) -> Vec<Problem> {
 pub enum ImportError {
     Unsupported(String),
     Corrupt(String),
+    /// An import option the file can't meet (a sheet it doesn't have, a range that isn't one).
+    Options(String),
 }
 
 impl std::fmt::Display for ImportError {
@@ -188,6 +206,7 @@ impl std::fmt::Display for ImportError {
         match self {
             ImportError::Unsupported(s) => write!(f, "unsupported text file: {s}"),
             ImportError::Corrupt(s) => write!(f, "can't read the file: {s}"),
+            ImportError::Options(s) => f.write_str(s),
         }
     }
 }
@@ -200,16 +219,21 @@ pub fn is_text_file(name: &str) -> bool {
 
 /// Import `bytes` (format from the file name, else sniffed), with the errors the file shows.
 pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
-    let mut imp = import_format(name, bytes)?;
+    import_with(name, bytes, &XlsxOptions::default())
+}
+
+/// [`import`] with a workbook's sheet, range and header rows (other files have none).
+pub fn import_with(name: &str, bytes: &[u8], xlsx: &XlsxOptions) -> Result<Imported, ImportError> {
+    let mut imp = import_format(name, bytes, xlsx)?;
     let fields = field_errors(&imp.story);
     imp.problems.extend(fields);
     Ok(imp)
 }
 
-fn import_format(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
+fn import_format(name: &str, bytes: &[u8], xlsx: &XlsxOptions) -> Result<Imported, ImportError> {
     let l = name.to_ascii_lowercase();
     if l.ends_with(".xlsx") {
-        return xlsx::import(bytes);
+        return xlsx::import_with(bytes, xlsx);
     }
     if l.ends_with(".docx") || bytes.starts_with(b"PK\x03\x04") {
         return docx::import(bytes);

@@ -193,6 +193,26 @@ pub struct TextFileLink {
     /// What the last update did (the Flow panel shows it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_update: Option<UpdateRecord>,
+    /// A workbook's sheet, range, header rows and table style as placed (Place with Flow).
+    #[serde(flatten)]
+    pub workbook: WorkbookPart,
+}
+
+/// The part of a workbook a linked story shows, kept on its link so Update imports the same cells.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbookPart {
+    /// The worksheet's name (empty: the first).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sheet: String,
+    /// Its cells in A1 notation, `B3:F40` (empty: the used range).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub range: String,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub header_rows: u32,
+    /// The table style the placed table gets (empty: none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub table_style: String,
 }
 
 /// One update of a linked text file: when, and its report and errors as `links.update` returned
@@ -210,6 +230,10 @@ pub struct UpdateRecord {
 }
 
 fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 

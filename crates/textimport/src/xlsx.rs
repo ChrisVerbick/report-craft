@@ -1,13 +1,14 @@
-//! Excel workbooks (`.xlsx`) → a story holding one table: the first worksheet's used range, cell
-//! values as shown text (shared and inline strings, numbers, booleans). Data merge uses
-//! [`records`], which keeps empty cells and can name a sheet.
+//! Excel workbooks (`.xlsx`) → a story holding one table: the first worksheet's used range, or the
+//! sheet, cell range and header rows [`XlsxOptions`] name; cell values as shown text (shared and
+//! inline strings, numbers, booleans). Data merge uses [`records`], which keeps empty cells and can
+//! name a sheet.
 
 use std::collections::BTreeMap;
 
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
 use crate::docx::{El, parse, part};
-use crate::{ImportError, Imported, Problem, ProblemKind};
+use crate::{ImportError, Imported, Problem, ProblemKind, XlsxOptions};
 
 /// "B12" → (row 11, column 1).
 fn cell_ref(r: &str) -> Option<(usize, usize)> {
@@ -18,6 +19,28 @@ fn cell_ref(r: &str) -> Option<(usize, usize)> {
         acc.checked_mul(26)?.checked_add(digit)
     })?;
     Some((row.checked_sub(1)?, col.checked_sub(1)?))
+}
+
+/// "B3:F40", "$B$3:$F$40", "f40:b3" or one cell → its (top-left, bottom-right) cells, from 0.
+fn parse_range(r: &str) -> Option<((usize, usize), (usize, usize))> {
+    let r = r.trim().replace('$', "");
+    let (a, b) = r.split_once(':').unwrap_or((&r, &r));
+    let ((r0, c0), (r1, c1)) = (cell_ref(a.trim())?, cell_ref(b.trim())?);
+    Some(((r0.min(r1), c0.min(c1)), (r0.max(r1), c0.max(c1))))
+}
+
+/// The workbook's sheet names in workbook order (none without a workbook part).
+fn names(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Result<Vec<String>, ImportError> {
+    let Some(wb) = part(zip, "xl/workbook.xml")? else { return Ok(Vec::new()) };
+    let wb = parse(&wb)?;
+    Ok(wb
+        .child("sheets")
+        .map(|s| s.els().filter(|e| e.name == "sheet").filter_map(|e| e.attr("name").map(str::to_string)).collect())
+        .unwrap_or_default())
+}
+
+pub fn sheet_names(bytes: &[u8]) -> Result<Vec<String>, ImportError> {
+    names(&mut zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?)
 }
 
 /// The worksheet part of the first sheet (workbook order), via the workbook relationships.
@@ -212,9 +235,23 @@ fn sheet_target(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, wanted: Optio
     Ok(if target.starts_with("xl/") { target.to_string() } else { format!("xl/{target}") })
 }
 
-pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
+pub fn import_with(bytes: &[u8], opts: &XlsxOptions) -> Result<Imported, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
-    let sheet_part = first_sheet(&mut zip)?.unwrap_or_else(|| "xl/worksheets/sheet1.xml".into());
+    let sheet_part = match opts.sheet.as_deref() {
+        None => first_sheet(&mut zip)?.unwrap_or_else(|| "xl/worksheets/sheet1.xml".into()),
+        Some(name) => {
+            let names = names(&mut zip)?;
+            if !names.iter().any(|n| n == name) {
+                return Err(ImportError::Options(format!("the workbook has no sheet “{name}” (its sheets: {})", names.join(", "))));
+            }
+            sheet_target(&mut zip, Some(name))?
+        }
+    };
+    let range = match opts.range.as_deref() {
+        None => None,
+        Some(r) => Some(parse_range(r).ok_or_else(|| ImportError::Options(format!("“{r}” isn't a cell range like B3:F40")))?),
+    };
+    let inside = |(r, c): (usize, usize)| range.is_none_or(|((r0, c0), (r1, c1))| (r0..=r1).contains(&r) && (c0..=c1).contains(&c));
     let sheet = parse(&part(&mut zip, &sheet_part)?.ok_or_else(|| ImportError::Corrupt(format!("no {sheet_part} (not an Excel workbook)")))?)?;
     let shared: Vec<String> = part(&mut zip, "xl/sharedStrings.xml")?
         .map(|x| parse(&x))
@@ -228,6 +265,9 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
             for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
                 let at = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
+                if !inside(at) {
+                    continue;
+                }
                 let v = value(c, &shared);
                 let formula = c.child("f").map(El::text).filter(|f| !f.trim().is_empty());
                 let address = c.attr("r").map_or_else(|| a1(at), str::to_string);
@@ -251,15 +291,22 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     }
     let mut warnings = Vec::new();
     if cells.is_empty() {
-        warnings.push("the worksheet is empty".into());
+        warnings.push(match opts.range.as_deref() {
+            Some(r) => format!("the range {r} is empty"),
+            None => "the worksheet is empty".into(),
+        });
     }
     // The used range, from the first used row/column. Cell references come from the file: the
     // table is capped before anything is allocated for it.
     const MAX_CELLS: usize = 100_000;
     const MAX_COLS: usize = 1_000;
-    let (r0, c0) = cells.iter().fold((usize::MAX, usize::MAX), |(r, c), ((a, b), _)| (r.min(*a), c.min(*b)));
-    let (r1, c1) = cells.iter().fold((0, 0), |(r, c), ((a, b), _)| (r.max(*a), c.max(*b)));
-    let (nrows, ncols) = if cells.is_empty() { (1, 1) } else { ((r1 - r0).saturating_add(1), (c1 - c0).saturating_add(1)) };
+    // A range names its cells, empty ones too; otherwise the used range.
+    let ((r0, c0), (r1, c1)) = range.unwrap_or_else(|| {
+        let first = cells.iter().fold((usize::MAX, usize::MAX), |(r, c), ((a, b), _)| (r.min(*a), c.min(*b)));
+        let last = cells.iter().fold((0, 0), |(r, c), ((a, b), _)| (r.max(*a), c.max(*b)));
+        (first, last)
+    });
+    let (nrows, ncols) = if cells.is_empty() && range.is_none() { (1, 1) } else { ((r1 - r0).saturating_add(1), (c1 - c0).saturating_add(1)) };
     let ncols_kept = ncols.min(MAX_COLS);
     if ncols_kept < ncols {
         warnings.push(format!("only the first {ncols_kept} columns were placed"));
@@ -284,7 +331,13 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         .collect();
     let mut story = Story::new(StoryId(0));
     let width = 72.0 * ncols_kept as f64;
-    let t = Table::from_strings(1, &rows, width, &ParaFormat::default(), &CharFormat::default());
+    let mut t = Table::from_strings(1, &rows, width, &ParaFormat::default(), &CharFormat::default());
+    // At least one body row stays.
+    let header = opts.header_rows.min(t.nrows().saturating_sub(1));
+    if header < opts.header_rows {
+        warnings.push(format!("{} header rows asked for, {header} kept: a table needs a body row", opts.header_rows));
+    }
+    t.set_header_footer(header, 0);
     story.insert_table(0, t);
     Ok(Imported { story, para_styles: vec![], char_styles: vec![], warnings, problems })
 }
@@ -295,6 +348,10 @@ mod tests {
 
     use super::*;
     use crate::ProblemKind;
+
+    fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
+        import_with(bytes, &XlsxOptions::default())
+    }
 
     fn workbook() -> Vec<u8> {
         workbook_with(
@@ -394,6 +451,75 @@ mod tests {
             z.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    /// A summary sheet first, then a price list under a title row, with an error inside B2:D4 and
+    /// one outside it.
+    fn two_sheets() -> Vec<u8> {
+        let s = |r: &str, t: &str| format!(r#"<c r="{r}" t="inlineStr"><is><t>{t}</t></is></c>"#);
+        let prices = format!(
+            r#"<worksheet><sheetData><row r="1">{}</row><row r="2">{}{}{}</row><row r="3">{}<c r="C3"><v>3.5</v></c></row><row r="4">{}<c r="C4" t="e"><f>C9/0</f><v>#DIV/0!</v></c>{}</row><row r="5">{}<c r="E5" t="e"><v>#REF!</v></c></row></sheetData></worksheet>"#,
+            s("A1", "Price list"),
+            s("B2", "Item"),
+            s("C2", "Price"),
+            s("D2", "Note"),
+            s("B3", "Tea"),
+            s("B4", "Cake"),
+            s("D4", "new"),
+            s("B5", "Jam"),
+        );
+        sheets(&[
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Prices" sheetId="2" r:id="rId2"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x" Target="worksheets/sheet2.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Summary</t></is></c></row></sheetData></worksheet>"#,
+            ),
+            ("xl/worksheets/sheet2.xml", &prices),
+        ])
+    }
+
+    /// Place with Flow's workbook options: a named sheet and a cell range bring in exactly those
+    /// cells (empty ones too), header rows become the table's header rows, and only the range's
+    /// errors are reported.
+    #[test]
+    fn a_named_sheet_and_range_import_only_those_cells() {
+        let opts = |range: &str, header_rows| XlsxOptions { sheet: Some("Prices".into()), range: Some(range.into()), header_rows };
+        let imp = import_with(&two_sheets(), &opts("B2:D4", 1)).unwrap();
+        let t = imp.story.tables.values().next().unwrap();
+        let rows: Vec<Vec<String>> = (0..t.nrows()).map(|r| (0..t.ncols()).map(|c| t.cell(r, c).unwrap().text.text.clone()).collect()).collect();
+        assert_eq!(rows, [["Item", "Price", "Note"], ["Tea", "3.5", ""], ["Cake", "#DIV/0!", "new"]]);
+        assert_eq!(t.header_rows(), 1);
+        let found: Vec<(&str, Option<(usize, usize)>)> = imp.problems.iter().map(|p| (p.at.as_str(), p.cell)).collect();
+        assert_eq!(found, [("C4", Some((2, 1)))], "E5 is outside the range");
+        // Absolute references, lower case and reversed corners name the same cells.
+        let same = import_with(&two_sheets(), &opts("$d$4:$B$2", 1)).unwrap();
+        assert_eq!(same.story.tables.values().next().unwrap().cell(2, 2).unwrap().text.text, "new");
+        // At least one body row stays.
+        let all = import_with(&two_sheets(), &opts("B2:D4", 9)).unwrap();
+        assert_eq!(all.story.tables.values().next().unwrap().header_rows(), 2);
+        assert!(all.warnings.iter().any(|w| w.contains("header rows")), "{:?}", all.warnings);
+        assert_eq!(sheet_names(&two_sheets()).unwrap(), ["Summary", "Prices"]);
+        // Without options: the first sheet's used range, as before.
+        assert_eq!(import(&two_sheets()).unwrap().story.tables.values().next().unwrap().cell(0, 0).unwrap().text.text, "Summary");
+    }
+
+    #[test]
+    fn a_bad_range_or_a_missing_sheet_is_an_error() {
+        let with = |sheet: &str, range: &str| {
+            import_with(&two_sheets(), &XlsxOptions { sheet: Some(sheet.into()), range: Some(range.into()), header_rows: 0 })
+                .err()
+                .map(|e| e.to_string())
+        };
+        assert!(with("Prices", "B2-D4").is_some_and(|e| e.contains("B2-D4")));
+        assert!(with("Prices", "B0:D4").is_some());
+        assert!(with("Nope", "B2:D4").is_some_and(|e| e.contains("Nope")));
     }
 
     #[test]
