@@ -6,9 +6,9 @@
 //! Not compared yet: formatting, frames and graphics, endnotes, editorial notes, and tables inside
 //! table cells.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use designcraft_doc::{Document, Story, StoryId, Table};
+use designcraft_doc::{Document, FOOTNOTE_REF, Story, StoryId, TABLE_ANCHOR, Table};
 
 use crate::story::shape;
 use crate::{Hunk, apply, diff_text, sentences};
@@ -99,7 +99,8 @@ fn story_changes(id: StoryId, a: Option<&Story>, b: Option<&Story>) -> Option<St
     };
     let empty = Story::new(id);
     let (a, b) = (a.unwrap_or(&empty), b.unwrap_or(&empty));
-    let mut texts: Vec<TextChanges> = text_changes(Place::Text, &a.text, &b.text).into_iter().collect();
+    let (ka, kb) = keyed(a, b);
+    let mut texts: Vec<TextChanges> = changes(Place::Text, &a.text, &b.text, &diff_text(&ka, &kb)).into_iter().collect();
     let mut tables = Vec::new();
     for t in a.tables.keys().chain(b.tables.keys()).copied().collect::<BTreeSet<u64>>() {
         let status = match (a.tables.get(&t), b.tables.get(&t)) {
@@ -121,13 +122,55 @@ fn story_changes(id: StoryId, a: Option<&Story>, b: Option<&Story>) -> Option<St
     (status != Status::Changed || !texts.is_empty() || !tables.is_empty()).then_some(StoryChanges { story: id, status, texts, tables })
 }
 
-/// The changes from text `a` to `b` in whole sentences; one change from all of `a` to all of `b`
-/// should they ever fail to rebuild `b`.
+/// The two stories' texts with each footnote reference and table anchor made a character of its
+/// own, the same in both for the same footnote or table: the diff then keeps a reference only where
+/// its footnote stays, and shows one put in the place of another as replaced. Each stand-in is as
+/// long as its marker in bytes, so the diff's offsets hold for the texts themselves. Should the
+/// private-use characters run out, the texts are diffed as they are.
+fn keyed(a: &Story, b: &Story) -> (String, String) {
+    let used: BTreeSet<char> = a.text.chars().chain(b.text.chars()).collect();
+    let mut free = ('\u{E100}'..='\u{F8FF}').filter(|c| !used.contains(c));
+    let mut keys: BTreeMap<(char, u64), char> = BTreeMap::new();
+    let mut key = |st: &Story| -> Option<String> {
+        let mut note = 0;
+        let mut out = String::with_capacity(st.text.len());
+        for (at, c) in st.text.char_indices() {
+            let id = match c {
+                FOOTNOTE_REF => {
+                    note += 1;
+                    st.notes.get(note - 1).map(|n| n.id)
+                }
+                TABLE_ANCHOR => st.paras.get(st.para_at(at)).and_then(|p| p.table),
+                _ => None,
+            };
+            out.push(match id {
+                Some(id) => match keys.get(&(c, id)) {
+                    Some(k) => *k,
+                    None => *keys.entry((c, id)).or_insert(free.next()?),
+                },
+                None => c,
+            });
+        }
+        Some(out)
+    };
+    match (key(a), key(b)) {
+        (Some(x), Some(y)) => (x, y),
+        _ => (a.text.clone(), b.text.clone()),
+    }
+}
+
+/// The changes from text `a` to `b` in whole sentences.
 fn text_changes(place: Place, a: &str, b: &str) -> Option<TextChanges> {
-    if a == b {
+    if a == b { None } else { changes(place, a, b, &diff_text(a, b)) }
+}
+
+/// [`text_changes`] from the diff `raw`; one change from all of `a` to all of `b` should the
+/// sentences ever fail to rebuild `b`.
+fn changes(place: Place, a: &str, b: &str, raw: &[Hunk]) -> Option<TextChanges> {
+    if a == b && raw.is_empty() {
         return None;
     }
-    let hunks = sentences(a, b, &diff_text(a, b));
+    let hunks = sentences(a, b, raw);
     let hunks = if apply(a, b, &hunks).as_deref() == Some(b) { hunks } else { vec![Hunk { old: 0..a.len(), new: 0..b.len() }] };
     Some(TextChanges { place, a: a.to_string(), b: b.to_string(), hunks })
 }
@@ -233,6 +276,44 @@ mod tests {
                 (Place::Footnote { id: 3 }, vec![("", "New note.")]),
             ]
         );
+    }
+
+    fn story_mut(d: &mut Document) -> &mut Story {
+        Arc::make_mut(d.stories.get_mut(&StoryId(1)).unwrap())
+    }
+
+    /// A footnote or table put in the place of another (a new one, under a new id) is the old one
+    /// deleted and the new one inserted: the story's text change shows its reference or anchor
+    /// replaced, so a redline can give either version back. (A new footnote can get the id of one
+    /// deleted before it; then it is that footnote, its text changed.)
+    #[test]
+    fn a_footnote_or_table_replaced_in_place_is_one_deleted_and_one_inserted() {
+        let mut a = doc(&[(1, "Revenue grew. Prices:")]);
+        let st = story_mut(&mut a);
+        let old = st.insert_note(13, "Old note.", ParaFormat::default()).unwrap();
+        let end = st.len();
+        st.insert_note(end, "Kept.", ParaFormat::default()).unwrap();
+        let end = st.len();
+        st.insert_table(end, (*table(7, ["Tea", "3.50", "Cake", "3.10"])).clone());
+        let mut b = a.clone();
+        let st = story_mut(&mut b);
+        let at = st.note_anchor(old).unwrap();
+        st.delete(at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
+        let new = st.insert_note(at, "New note.", ParaFormat::default()).unwrap();
+        assert_ne!(new, old);
+        let t = st.text.find(designcraft_doc::TABLE_ANCHOR).unwrap();
+        st.delete(t..t + designcraft_doc::TABLE_ANCHOR.len_utf8());
+        st.insert_table(t, (*table(11, ["Tea", "3.50", "Cake", "3.10"])).clone());
+        let s = &compare(&a, &b).stories[0];
+        let notes: Vec<(Place, Vec<(&str, &str)>)> =
+            s.texts.iter().filter(|t| matches!(t.place, Place::Footnote { .. })).map(|t| (t.place, pairs(t))).collect();
+        assert_eq!(notes, [(Place::Footnote { id: old }, vec![("Old note.", "")]), (Place::Footnote { id: new }, vec![("", "New note.")])]);
+        let tables: Vec<(u64, TableStatus)> = s.tables.iter().map(|t| (t.table, t.status)).collect();
+        assert_eq!(tables, [(7, TableStatus::Deleted), (11, TableStatus::Inserted)]);
+        let text = s.texts.iter().find(|t| t.place == Place::Text).expect("the reference and the anchor changed");
+        let changed: String = text.hunks.iter().map(|h| &text.a[h.old.clone()]).collect();
+        assert!(changed.contains(designcraft_doc::FOOTNOTE_REF) && changed.contains(designcraft_doc::TABLE_ANCHOR), "{:?}", pairs(text));
+        assert_eq!(apply(&text.a, &text.b, &text.hunks).as_deref(), Some(text.b.as_str()));
     }
 
     /// Pieces that stress the diff: accents (composed and combining), emoji, CJK, paragraph and
