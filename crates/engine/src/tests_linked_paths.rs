@@ -105,3 +105,69 @@ fn a_relative_link_resolves_beside_the_document() {
     assert!(seen.iter().all(|p| p.starts_with(&dir)), "{seen:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Linked text stories (Flow) whose file is on another computer are missing too: listing,
+/// checking and updating them, as a dry run or not, never reach the file system.
+#[test]
+fn text_links_to_other_computers_never_reach_the_file_system() {
+    let dir = folder("remote-text");
+    let doc = dir.join("doc.designcraft");
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let mut stories = Vec::new();
+    for (i, link) in [UNC, FILE_URL].iter().enumerate() {
+        let r =
+            s.execute("frame.create", &json!({"rect": [72, 72 + 150 * i, 300, 200 + 150 * i], "content": "text", "text": "Revenue grew."})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let link = link.to_string();
+        s.edit(move |d, _| {
+            d.story_mut(sid).unwrap().file_link = Some(designcraft_doc::TextFileLink { path: link, ..Default::default() });
+            Ok(Value::Null)
+        })
+        .unwrap();
+        stories.push(sid.0);
+    }
+    s.doc_mut().unwrap().path = Some(doc.to_string_lossy().into_owned());
+    let (rows, seen) = crate::io::touched(|| {
+        let rows = s.execute("links.list", &json!({})).unwrap();
+        assert_eq!(s.execute("links.check", &json!({})).unwrap(), json!([]));
+        s.execute("links.update", &json!({"dryRun": true})).unwrap();
+        s.execute("links.update", &json!({})).unwrap();
+        rows
+    });
+    assert!(seen.is_empty(), "{seen:?}");
+    for sid in stories {
+        let row = rows.as_array().unwrap().iter().find(|r| r["story"] == sid).unwrap();
+        assert_eq!((row["status"].as_str(), row["refused"].as_str()), (Some("missing"), Some("the path is on another computer")), "{row}");
+    }
+}
+
+/// A linked text story's relative link (as a package stores it) resolves beside the document
+/// when it is listed, checked and updated.
+#[test]
+fn a_relative_text_link_resolves_beside_the_document() {
+    let dir = folder("relative-text");
+    let file = dir.join("report.txt");
+    std::fs::write(&file, "Revenue grew.").unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": file, "link": true, "rect": [72, 72, 300, 200]})).unwrap();
+    s.edit(|d, _| {
+        for st in d.stories.values_mut() {
+            if let Some(l) = std::sync::Arc::make_mut(st).file_link.as_mut() {
+                l.path = "report.txt".into();
+            }
+        }
+        Ok(Value::Null)
+    })
+    .unwrap();
+    s.doc_mut().unwrap().path = Some(dir.join("doc.designcraft").to_string_lossy().into_owned());
+    std::fs::write(&file, "Revenue grew strongly.").unwrap();
+    let rows = s.execute("links.list", &json!({})).unwrap();
+    let row = rows.as_array().unwrap().iter().find(|r| r["story"].is_u64()).unwrap();
+    assert_eq!(row["status"], "modified", "{row}");
+    assert_eq!(s.execute("links.check", &json!({})).unwrap(), json!([]));
+    assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
+    let text: Vec<String> = s.doc().unwrap().doc.stories.values().map(|st| st.text.clone()).collect();
+    assert!(text.iter().any(|t| t.contains("strongly")), "{text:?}");
+}
