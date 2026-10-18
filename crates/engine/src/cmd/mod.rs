@@ -63,6 +63,7 @@ mod thread;
 mod toc;
 mod transitions;
 mod variables;
+mod version;
 mod xml;
 mod xref;
 
@@ -187,6 +188,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(color_theme::specs());
         v.extend(changes::specs());
         v.extend(compare::specs());
+        v.extend(version::specs());
         v.extend(conditions::specs());
         v.extend(library::specs());
         v.extend(lists::specs());
@@ -341,10 +343,10 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
     file::from_bytes(b)
 }
 pub(crate) use datamerge::sync_placeholders;
-pub(crate) use file::load_document_fonts;
 pub use file::{
     DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
 };
+pub(crate) use file::{load_bytes, load_document_fonts};
 pub use layout::chapter_numbering;
 pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;

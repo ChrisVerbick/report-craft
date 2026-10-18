@@ -12,6 +12,15 @@ use crate::{DocState, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
+            noundo "compare.versions",
+            "Compare Versions",
+            [],
+            None,
+            "{a, b?} — version `a` of the document compared with version `b` (or with the document): the redline opens as with compare.file → {redline, changes, stories, deletedStories, tables}",
+            has_doc,
+            compare_versions
+        ),
+        cmd!(
             noundo "compare.exportPdf",
             "Export Changes as PDF…",
             [],
@@ -113,14 +122,34 @@ fn compare_file(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, name, _) = super::file::read_source(p)?;
     let a = designcraft_format::load(&bytes).map_err(|e| bad("compare.file", format!("{name}: {e}")))?;
     let b = s.doc()?.doc.clone();
-    for (d, which) in [(&a, name.as_str()), (&b, "This document")] {
+    let title = format!("{} compared with {name}", if b.title.is_empty() { "Untitled" } else { &b.title });
+    open_redline(s, "compare.file", (&a, &name), (&b, "This document"), title)
+}
+
+fn compare_versions(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = |k: &str| p.get(k).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
+    let a = id("a").ok_or_else(|| bad("compare.versions", "`a`: a version id"))?;
+    let st = s.doc()?;
+    let version = |n: u32| st.versions.document(n).map_err(|e| bad("compare.versions", e.to_string()));
+    let earlier = version(a)?;
+    let (later, title) = match id("b") {
+        Some(b) => (Arc::new(version(b)?), format!("{} (version {b}) compared with version {a}", st.title())),
+        None => (st.doc.clone(), format!("{} compared with version {a}", st.title())),
+    };
+    open_redline(s, "compare.versions", (&earlier, &format!("Version {a}")), (&later, "The later version"), title)
+}
+
+/// The redline of `b` against `a` (each named for messages), opened as a new document titled
+/// `title`, with Show Deleted Text on.
+fn open_redline(s: &mut Session, id: &str, (a, a_name): (&Document, &str), (b, b_name): (&Document, &str), title: String) -> Result<Value> {
+    for (d, which) in [(a, a_name), (b, b_name)] {
         if super::changes::tracked(d) {
-            return Err(bad("compare.file", format!("{which} has tracked changes: accept or reject them first")));
+            return Err(bad(id, format!("{which} has tracked changes: accept or reject them first")));
         }
     }
-    let changes = designcraft_flow::compare(&a, &b);
-    let mut red = redline(&a, &b, &changes);
-    red.title = format!("{} compared with {name}", if b.title.is_empty() { "Untitled" } else { &b.title });
+    let changes = designcraft_flow::compare(a, b);
+    let mut red = redline(a, b, &changes);
+    red.title = title;
     let deleted: Vec<u64> = changes.stories.iter().filter(|c| c.status == Status::Deleted).map(|c| c.story.0).collect();
     let status = |t: TableStatus| match t {
         TableStatus::Reshaped => "reshaped",

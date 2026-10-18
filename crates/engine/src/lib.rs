@@ -89,6 +89,9 @@ pub struct DocState {
     pub doc: Arc<Document>,
     pub selection: Selection,
     pub history: History,
+    /// The document's versions, kept in its file (Stage 5); not undoable: history is never
+    /// rewritten.
+    pub versions: designcraft_format::History,
     pub path: Option<String>,
     /// Names the document state for caches keyed `(uid, revision)` (see
     /// [`DocState::bump_revision`]).
@@ -150,6 +153,7 @@ impl DocState {
             doc,
             selection: Selection::default(),
             history: History { limit: 1000, ..Default::default() },
+            versions: designcraft_format::History::default(),
             path,
             revision,
             saved_revision: revision,
@@ -245,6 +249,8 @@ pub struct Prefs {
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
     pub recent_files_max: u32,
+    /// The name the document's versions are kept under (saves, File › Save a Version).
+    pub user_name: String,
 }
 
 /// The most recent files Preferences lets File › Open Recent keep.
@@ -320,6 +326,7 @@ impl Default for Prefs {
             flow_highlights: true,
             recent_files: Vec::new(),
             recent_files_max: 20,
+            user_name: String::new(),
         }
     }
 }
