@@ -47,6 +47,7 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("media", "Media", "panel-articles"),
     ("transitions", "Page Transitions", "panel-pages"),
     ("trackChanges", "Track Changes", "panel-articles"),
+    ("history", "History", "clock"),
     ("scripts", "Scripts", "panel-library"),
     ("dataMerge", "Data Merge", "panel-datamerge"),
 ];
@@ -306,6 +307,7 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
         "media" => panels::interactive::media(app, ui),
         "transitions" => panels::interactive::transitions(app, ui),
         "trackChanges" => panels::interactive::track_changes(app, ui),
+        "history" => panels::history::show(app, ui),
         "scripts" => panels::library::scripts(app, ui),
         "dataMerge" => panels::datamerge::show(app, ui),
         "table" => panels::table::show(app, ui),

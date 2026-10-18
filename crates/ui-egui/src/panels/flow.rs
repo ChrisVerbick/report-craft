@@ -874,7 +874,7 @@ fn file_icon(p: &egui::Painter, r: Rect, name: &str, c: Color32) {
 
 /// "just now", "5 minutes ago"…, for a time in seconds since 1970 (empty when unknown, as on the web).
 #[cfg(not(target_arch = "wasm32"))]
-fn ago(at: i64, lang: &str) -> String {
+pub(crate) fn ago(at: i64, lang: &str) -> String {
     if at <= 0 {
         return String::new();
     }
@@ -890,7 +890,7 @@ fn ago(at: i64, lang: &str) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn ago(_at: i64, _lang: &str) -> String {
+pub(crate) fn ago(_at: i64, _lang: &str) -> String {
     String::new()
 }
 
