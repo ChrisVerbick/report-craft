@@ -1143,6 +1143,9 @@ pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
 
 /// [`decode_pixmap`] for page `page` of a PDF (other formats have one page).
 pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
+    // Documents retain the EPS source; only display its TIFF preview or placeholder.
+    let proxy = if designcraft_images::is_eps(bytes) { Some(designcraft_images::eps_proxy(bytes)?.0) } else { None };
+    let bytes = proxy.as_deref().unwrap_or(bytes);
     if is_pdf(bytes) {
         return render_pdf_page(bytes, page as usize, 3000);
     }
@@ -1203,6 +1206,9 @@ fn now() -> u64 {
 
 /// Pixel size of an encoded image without decoding it fully.
 pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if designcraft_images::is_eps(bytes) {
+        return designcraft_images::eps_pixel_size(bytes);
+    }
     if is_pdf(bytes) {
         // Placed PDFs are sized by their page (crop box) in points.
         return pdf_page_size(bytes, 0).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
@@ -1215,7 +1221,8 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Natural size of a placed graphic, unrounded: a PDF page (crop box) and an SVG in points, a raster
-/// in pixels. Placed graphics are drawn at this size; `image_size` rounds it to whole pixels for display.
+/// in pixels, an EPS its bounding box independently of preview pixels. Placed graphics are drawn at
+/// this size; `image_size` rounds it to whole pixels for display.
 pub fn natural_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     if is_pdf(bytes) {
         return pdf_page_size(bytes, page).map(|(w, h)| (w.max(1e-3), h.max(1e-3)));
@@ -1470,6 +1477,34 @@ mod tests {
     use super::*;
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
+
+    #[test]
+    fn eps_source_decodes_like_its_preview() {
+        let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n";
+        let mut tiff = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 128])))
+            .write_to(&mut std::io::Cursor::new(&mut tiff), image::ImageFormat::Tiff)
+            .unwrap();
+        let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+        for value in [30usize, source.len(), 0, 0, 30 + source.len(), tiff.len()] {
+            dos.extend((value as u32).to_le_bytes());
+        }
+        dos.extend([0xFF, 0xFF]);
+        dos.extend_from_slice(source);
+        dos.extend_from_slice(&tiff);
+        for source in [source.as_slice(), dos.as_slice()] {
+            let proxy = designcraft_images::eps_proxy(source).unwrap().0;
+            let actual = decode_pixmap(source).unwrap();
+            let expected = decode_pixmap(&proxy).unwrap();
+            assert_eq!((actual.width(), actual.height()), (expected.width(), expected.height()));
+            assert_eq!(actual.data(), expected.data());
+            assert_eq!(image_size(source), image_size(&proxy));
+            assert_eq!(image_mime(source), "application/postscript");
+        }
+        let corrupt = b"%!PS-Adobe-3.0 EPSF-3.0\nno bounding box\n";
+        assert!(decode_pixmap(corrupt).is_none());
+        assert!(image_size(corrupt).is_none());
+    }
 
     #[test]
     fn footnote_vector_objects_are_painted() {

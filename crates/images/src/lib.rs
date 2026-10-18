@@ -13,7 +13,7 @@ mod eps;
 mod jpeg;
 mod psd;
 mod tone;
-pub use eps::{bounding_box as eps_bounding_box, eps_proxy, is_eps};
+pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
 pub use tone::{Tone, tone};
 
 /// CSS pixels (SVG user units) → points.
@@ -37,6 +37,9 @@ pub fn is_svg(bytes: &[u8]) -> bool {
 
 /// MIME type of a placed graphic.
 pub fn mime(bytes: &[u8]) -> &'static str {
+    if is_eps(bytes) {
+        return "application/postscript";
+    }
     if is_pdf(bytes) {
         return "application/pdf";
     }
@@ -72,7 +75,11 @@ fn svg_options() -> &'static usvg::Options<'static> {
         db.set_sans_serif_family("Source Sans 3");
         db.set_monospace_family("JetBrains Mono");
         let font_resolver = usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() };
-        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), font_resolver, ..Default::default() }
+        // Images inside an SVG come only from `data:` URLs: an `href` naming a file is not read
+        // (it is left out, as usvg leaves out an image it can't load).
+        let image_href_resolver =
+            usvg::ImageHrefResolver { resolve_data: usvg::ImageHrefResolver::default_data_resolver(), resolve_string: Box::new(|_, _| None) };
+        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), font_resolver, image_href_resolver, ..Default::default() }
     })
 }
 
@@ -508,6 +515,39 @@ mod tests {
         assert_eq!(&px[(100 * 400 + 100) * 4..][..4], &[255, 0, 0, 255]);
         assert!(px.chunks(4).skip(220).step_by(7).any(|p| p[3] > 128 && p[0] < 100), "text pixels");
         assert!(!is_svg(b"\x89PNG"));
+    }
+
+    #[test]
+    fn svg_images_come_only_from_data_urls() {
+        let dir = std::env::temp_dir().join(format!("dc-svg-href-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("red.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255])).save(&file).unwrap();
+        let blue = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='blue'/%3E%3C/svg%3E";
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="10">
+<image x="0" y="0" width="10" height="10" href="{}"/>
+<image x="10" y="0" width="10" height="10" href="{blue}"/>
+<image x="20" y="0" width="10" height="10" href="/etc/hostname"/>
+</svg>"#,
+            file.display()
+        );
+        // The image nodes usvg kept: only the data URL's (PDF export embeds every one).
+        fn images(g: &usvg::Group) -> usize {
+            g.children()
+                .iter()
+                .map(|n| match n {
+                    usvg::Node::Group(g) => images(g),
+                    usvg::Node::Image(_) => 1,
+                    _ => 0,
+                })
+                .sum()
+        }
+        assert_eq!(images(svg_tree(svg.as_bytes()).unwrap().root()), 1, "files the SVG names are not read");
+        let (px, w, _) = render_svg(svg.as_bytes(), 30).unwrap();
+        let at = |x: usize, y: usize| px[(y * w as usize + x) * 4..][..4].to_vec();
+        assert_eq!(at(15, 5), [0, 0, 255, 255], "a data URL is drawn");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The family of the font that sets each text glyph of `svg`, and the glyph's id.

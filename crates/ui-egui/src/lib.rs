@@ -959,7 +959,7 @@ impl DesignApp {
                 }
             }
             // Release only when the request actually replaces Find, including a native PDF picker.
-            if was_find && !self.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
+            if was_find && self.ui.dialog.as_ref().is_none_or(|d| d.id != "findChange") {
                 self.session.reset_find_scope();
             }
         }
@@ -1446,7 +1446,7 @@ impl DesignApp {
                 self.status(format!("{file}: {}", warnings.join("; ")));
                 // Find Font, offered for the document's missing fonts, stays up: the status line
                 // keeps the warnings.
-                if !self.ui.dialog.as_ref().is_some_and(|d| d.id == "findFont") {
+                if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
                     self.ui.dialog =
                         Some(dialogs::Dialog::new("alert", json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n")})));
                 }

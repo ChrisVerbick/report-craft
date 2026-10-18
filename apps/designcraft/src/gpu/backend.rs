@@ -138,13 +138,18 @@ pub fn choose(candidates: &[Backend], previous: &Record, version: &str, skipped:
     let first = *candidates.first()?;
     let same_version = previous.version == version;
     let mut failed: Vec<Backend> = if same_version { previous.failed.clone() } else { Vec::new() };
+    // A stored entry that is no candidate here came from another machine and says nothing. The
+    // backend the previous start was still on is added after this and stays, candidate or not:
+    // the instance can load a backend that is no candidate — everywhere but Windows OpenGL rides
+    // along beside the chosen one (`instance_backends`) — and a start that one took down must
+    // keep it out of the next instance.
+    failed.retain(|b| candidates.contains(b));
     let unfinished = previous.trying.filter(|_| same_version);
     if let Some(b) = unfinished
         && !failed.contains(&b)
     {
         failed.push(b);
     }
-    failed.retain(|b| candidates.contains(b));
     let pick = |failed: &[Backend]| candidates.iter().copied().find(|b| !failed.contains(b) && !skipped.contains(b));
     let backend = match pick(&failed) {
         Some(b) => b,
@@ -385,6 +390,23 @@ mod tests {
         let c = choose(&[Backend::Vulkan, Backend::Gl], &record(None, &[Backend::Metal, Backend::Vulkan]), V, &[]).unwrap();
         assert_eq!(c.backend, Backend::Gl);
         assert_eq!(c.record.failed, &[Backend::Vulkan]);
+    }
+
+    /// The backend the previous start was still on stays in `failed` even where it is no
+    /// candidate: on macOS Metal is the only candidate, but the instance loads OpenGL beside it,
+    /// so a start OpenGL took down has to keep it out of the next one. Only the stored list is
+    /// filtered to this platform's candidates — those entries came from another machine.
+    #[test]
+    fn the_backend_a_start_was_on_counts_as_failed_even_where_it_is_no_candidate() {
+        const MAC: &[Backend] = &[Backend::Metal];
+        let c = choose(MAC, &record(Some(Backend::Gl), &[]), V, &[]).unwrap();
+        assert_eq!(c.backend, Backend::Metal);
+        assert_eq!(c.record.failed, &[Backend::Gl], "OpenGL ran here, so it failed here");
+        assert_eq!(c.switched_from, Some(Backend::Gl));
+        assert!(!instance_backends(c.backend, &c.record.failed).contains(wgpu::Backends::GL));
+        // Stored on another machine, never run here: dropped, and OpenGL may ride along again.
+        let c = choose(MAC, &record(None, &[Backend::Gl]), V, &[]).unwrap();
+        assert_eq!(c.record.failed, &[]);
     }
 
     /// A restart that found no adapter of DirectX 12 names the backend in its skip list: that start

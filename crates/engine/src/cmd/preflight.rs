@@ -116,6 +116,7 @@ fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(des
 pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let Some(st) = s.active() else { return vec![] };
     let d = &st.doc;
+    let document = st.path.as_deref().map(std::path::Path::new);
     let mut out = Vec::new();
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
@@ -251,10 +252,13 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             match &it.content {
                 Content::Graphic(g) => match d.assets.get(&g.asset) {
                     None => out.push(Issue { severity: "error", kind: "missingLink", message: "Missing graphic".into(), item: Some(it.id.0), page }),
-                    Some(a) if a.data.is_empty() || super::links::link_missing(a) => out.push(Issue {
+                    Some(a) if a.data.is_empty() || super::links::link_missing(a, document) => out.push(Issue {
                         severity: "error",
                         kind: "missingLink",
-                        message: format!("Missing link: {}", a.link.as_deref().unwrap_or(&a.name)),
+                        message: match a.link.as_deref().and_then(|l| super::links::refused(l, document)) {
+                            Some(why) => format!("Missing link: {} ({why})", a.link.as_deref().unwrap_or(&a.name)),
+                            None => format!("Missing link: {}", a.link.as_deref().unwrap_or(&a.name)),
+                        },
                         item: Some(it.id.0),
                         page,
                     }),

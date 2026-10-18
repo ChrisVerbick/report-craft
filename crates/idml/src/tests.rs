@@ -1022,6 +1022,10 @@ fn round_trips_overridden_parent_items() {
 fn uri_and_base64_helpers() {
     assert_eq!(import::uri_to_path("file:/a%20b/c.png"), "/a b/c.png");
     assert_eq!(import::uri_to_path("file:///C:/x/y.jpg"), "C:/x/y.jpg");
+    assert_eq!(import::uri_to_path("file://localhost/a/b.png"), "/a/b.png");
+    assert_eq!(import::uri_to_path("file://C:/x/y.jpg"), "C:/x/y.jpg");
+    // Another computer stays one: a network path, not a folder named after it.
+    assert_eq!(import::uri_to_path("file://192.0.2.1/s/x%20y.png"), "//192.0.2.1/s/x y.png");
     assert_eq!(export::path_to_uri("/a b/c.png"), "file:/a%20b/c.png");
     let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
     assert_eq!(base64_decode(&base64_encode(&data)), data);

@@ -779,6 +779,8 @@ mod tests_idml;
 #[cfg(test)]
 mod tests_ime;
 #[cfg(test)]
+mod tests_linked_paths;
+#[cfg(test)]
 mod tests_params;
 #[cfg(test)]
 mod tests_roots;

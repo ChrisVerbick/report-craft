@@ -2360,7 +2360,11 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 _ => ("OK", t.text_dim),
             };
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
+            let status = crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
+            // Why a link isn't followed (a path on another computer, a device).
+            if let Some(why) = r["refused"].as_str() {
+                status.on_hover_text(why);
+            }
             let uses = r["uses"].as_array().cloned().unwrap_or_default();
             let info = match uses.first() {
                 Some(u) => {

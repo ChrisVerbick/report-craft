@@ -48,7 +48,7 @@ impl Bounds {
         }
         let Some(clip) = self.clips.last() else { return };
         let r = r.intersect(*clip);
-        if !(r.width() > 0.0 && r.height() > 0.0) || ![r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite()) {
+        if !(r.width() > 0.0 && r.height() > 0.0 && [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite())) {
             return;
         }
         self.out = Some(self.out.map_or(r, |o| o.union(r)));

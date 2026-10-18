@@ -2,6 +2,7 @@
 
 use designcraft_pdf::{Marks, PdfOptions, Standard};
 use serde_json::{Value, json};
+use std::{borrow::Cow, sync::Arc};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
@@ -23,7 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, type?: saddleStitch|twoUpConsecutive, spaceBetween? (pt)} — printer spreads as PDF (pages imposed in booklet order) → {path, bytes, sheets} (no path: {base64, …})",
         has_doc, print_booklet),
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
-        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
+        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),
         cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
@@ -55,6 +56,39 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+/// HTML and reflowable EPUB embed the EPS preview; keep the session's source bytes intact.
+fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Document>, Vec<String>) {
+    // Match the exporter's reading order (including Article exclusions), not every asset
+    // in the document: unused or hidden graphics must not prevent an export.
+    let mut used = std::collections::BTreeSet::new();
+    for block in designcraft_epub::reading_order(d) {
+        let designcraft_epub::Block::Image(id) = block else { continue };
+        let Some(it) = d.item(id) else { continue };
+        let designcraft_doc::Content::Graphic(g) = &it.content else { continue };
+        used.insert(g.asset);
+        if d.assets.get(&g.asset).is_some_and(|a| designcraft_doc::media_kind(&a.mime).is_some())
+            && let Some(poster) = it.media.as_ref().and_then(|m| m.poster)
+        {
+            used.insert(poster);
+        }
+    }
+    let mut out = Cow::Borrowed(d);
+    let mut warnings = Vec::new();
+    for id in used {
+        let Some(a) = d.assets.get(&id).filter(|a| designcraft_images::is_eps(&a.data)) else { continue };
+        let png = designcraft_images::eps_png(&a.data);
+        if png.is_none() {
+            warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+        }
+        if let Some(a) = out.to_mut().assets.get_mut(&id) {
+            let a = Arc::make_mut(a);
+            a.mime = "image/png".into();
+            a.data = Arc::new(png.unwrap_or_default());
+        }
+    }
+    (out, warnings)
+}
+
 fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_epub::HtmlOptions {
@@ -62,14 +96,15 @@ fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
         language: str_param(p, "language").map(str::to_string),
         generic_families: generic_families(&st.doc),
     };
-    let text = designcraft_epub::export_html(&st.doc, &opts);
+    let (doc, warnings) = eps_previews(&st.doc);
+    let text = designcraft_epub::export_html(&doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(path, text.as_bytes()).map_err(EngineError::Other)?;
-            Ok(json!({"path": path, "bytes": text.len()}))
+            Ok(json!({"path": path, "bytes": text.len(), "warnings": warnings}))
         }
-        None => Ok(json!({"bytes": text.len(), "text": text})),
+        None => Ok(json!({"bytes": text.len(), "text": text, "warnings": warnings})),
     }
 }
 
@@ -265,9 +300,11 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
             None => Ok(serde_json::json!({"base64": super::base64_encode(&bytes), "bytes": bytes.len(), "pages": pages.len()})),
         };
     }
-    let bytes = designcraft_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    let (epub_doc, eps_warnings) = eps_previews(epub_doc);
+    warnings.extend(eps_warnings);
+    let bytes = designcraft_epub::export_epub(&epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     warnings.extend(
-        designcraft_epub::images_without_alt(epub_doc)
+        designcraft_epub::images_without_alt(&epub_doc)
             .into_iter()
             .map(|name| format!("{name}: no alt text (Object Export Options); exported as decorative (alt=\"\")")),
     );
