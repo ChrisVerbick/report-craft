@@ -699,6 +699,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Restored version {id}", "აღდგენილია ვერსია {id}"),
     ("Exported version {id}", "ვერსია {id} ექსპორტირებულია"),
     ("Keep Earlier Versions in This File", "ადრინდელი ვერსიების შენახვა ამ ფაილში"),
+    ("This document's own setting; Preferences: on", "ამ დოკუმენტის საკუთარი პარამეტრი; პარამეტრები: ჩართული"),
+    ("This document's own setting; Preferences: off", "ამ დოკუმენტის საკუთარი პარამეტრი; პარამეტრები: გამორთული"),
     ("Table Styles", "ცხრილის სტილები"),
     ("Cell Styles", "უჯრის სტილები"),
     ("Nothing selected", "არაფერია მონიშნული"),

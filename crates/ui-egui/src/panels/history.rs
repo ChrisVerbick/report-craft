@@ -38,6 +38,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             RichText::new(crate::i18n::tr(&lang, "Off: saving drops this file's versions, and copies carry none.")).size(11.0).color(t.text_dim),
         );
     }
+    // A setting of its own isn't reached by Preferences: say so.
+    if app.session.active().is_some_and(|st| st.doc.settings.keep_versions.is_some()) {
+        let note = if app.session.prefs.keep_versions {
+            "This document's own setting; Preferences: on"
+        } else {
+            "This document's own setting; Preferences: off"
+        };
+        crate::rtl::label(ui, RichText::new(crate::i18n::tr(&lang, note)).size(11.0).color(t.text_dim));
+    }
     if list.is_empty() {
         crate::rtl::label(
             ui,
@@ -315,9 +324,12 @@ mod tests {
         assert_eq!(own(h.state()), Some(false));
         assert!(h.state().session.prefs.keep_versions, "the preference, for other documents, stays on");
         h.get_by_label("Off: saving drops this file's versions, and copies carry none.");
+        h.get_by_label("This document's own setting; Preferences: on");
+        // On again: the same as the preference, so the document follows it once more.
         h.get_by_label("Keep Earlier Versions in This File").click();
         h.run_steps(3);
-        assert_eq!(own(h.state()), Some(true));
+        assert_eq!(own(h.state()), None);
+        assert!(h.query_by_label("This document's own setting; Preferences: on").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -378,6 +390,10 @@ mod tests {
         h.get_by_label("Sent for review").click();
         h.run_steps(4);
         h.render().unwrap().save(shots.join("f5.3-history.png")).unwrap();
+        // F5.5: the document's own setting, off, with its notes.
+        h.state_mut().run("version.keep", json!({"on": false})).unwrap();
+        h.run_steps(4);
+        h.render().unwrap().save(shots.join("f5.5-history-own.png")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
