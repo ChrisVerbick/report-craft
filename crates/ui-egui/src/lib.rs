@@ -3371,3 +3371,141 @@ mod load_styles_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod import_preset_tests {
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::*;
+
+    /// A Word file whose paragraphs are styled heading 1 and Quote.
+    fn word_bytes() -> Vec<u8> {
+        use std::io::Write;
+        const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let styles = format!(
+            r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="H1"><w:name w:val="heading 1"/></w:style><w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/></w:style></w:styles>"#
+        );
+        let doc = format!(
+            r#"<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="H1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="Quote"/></w:pPr><w:r><w:t>Said</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
+            w.start_file(n, o).unwrap();
+            w.write_all(c.as_bytes()).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    /// An app with Head and Body styles and the preset Mag, in Import Options for that file (the
+    /// picker gives it).
+    fn import_options_app(test: &str) -> (DesignApp, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("dc-import-preset-{}-{test}.docx", std::process::id()));
+        std::fs::write(&path, word_bytes()).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        let services = Services { pick_open: Some(Box::new(move |purpose| (purpose == "place").then(|| picked.clone()))), ..Default::default() };
+        let mut app = DesignApp::new(Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        for name in ["Head", "Body"] {
+            app.run("style.paragraph.create", json!({"name": name})).unwrap();
+        }
+        app.run("place.savePreset", json!({"name": "Mag", "styleRules": [{"match": "heading*", "to": "Head"}], "styleMap": {"Quote": "Body"}, "styleConflicts": "autoRename"}))
+            .unwrap();
+        app.run("app.placeWithOptions", json!({})).unwrap();
+        (app, path)
+    }
+
+    fn import_options(test: &str) -> (Harness<'static, test_window::Window>, std::path::PathBuf) {
+        let (app, path) = import_options_app(test);
+        (test_window::open(app, egui::vec2(1400.0, 900.0)), path)
+    }
+
+    use egui_kittest::Harness;
+
+    fn fields(h: &Harness<'static, test_window::Window>) -> serde_json::Map<String, Value> {
+        h.state().app.ui.dialog.as_ref().expect("Import Options").fields.clone()
+    }
+
+    /// Whether a menu (combo box) shows `text`.
+    fn shows(h: &Harness<'static, test_window::Window>, text: &str) -> bool {
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some(text)).count() == 1
+    }
+
+    /// Choosing a preset fills the mapping (its rules resolved against the file) and its other
+    /// options; changing one shows [Custom] again; OK places with what the dialog shows.
+    #[test]
+    fn a_preset_fills_the_import_options() {
+        let (mut h, path) = import_options("fill");
+        assert!(shows(&h, "[Custom]"));
+        h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("preset".into(), json!("Mag"));
+        h.run_steps(3);
+        let f = fields(&h);
+        assert_eq!((&f["map"], &f["styleConflicts"]), (&json!({"heading 1": "Head", "Quote": "Body"}), &json!("autoRename")));
+        assert!(shows(&h, "Mag"));
+        h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("styleConflicts".into(), json!("redefine"));
+        h.run_steps(3);
+        assert!(shows(&h, "[Custom]"), "changed since: [Custom]");
+        dialogs::confirm(&mut h.state_mut().app).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let d = &h.state().app.session.doc().unwrap().doc;
+        let story = d.stories.values().find(|s| s.text.starts_with("Title")).expect("the placed story");
+        assert_eq!(story.paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Head", "Body"]);
+    }
+
+    /// F6.6's screenshot (`plan/shots/f6.6-import-preset.png`): Import Options with the preset Mag
+    /// chosen, its rules resolved against the file.
+    #[test]
+    #[ignore]
+    fn render_import_preset() {
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        let (mut app, path) = import_options_app("shot");
+        app.ui.dialog.as_mut().unwrap().fields.insert("preset".into(), json!("Mag"));
+        app.ui.dialog.as_mut().unwrap().fields.insert("presetName".into(), json!("House"));
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        h.render().unwrap().save(shots.join("f6.6-import-preset.png")).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Save Preset keeps the dialog's options under the name typed: for every document, or with
+    /// In This Document ticked, in this one.
+    #[test]
+    fn save_preset_keeps_the_dialogs_options() {
+        let (mut h, path) = import_options("save");
+        {
+            let d = h.state_mut().app.ui.dialog.as_mut().unwrap();
+            d.fields.insert("map".into(), json!({"heading 1": "Head"}));
+            d.fields.insert("styleConflicts".into(), json!("redefine"));
+            d.fields.insert("presetName".into(), json!("House"));
+        }
+        h.run_steps(2);
+        let at = h.get_by_label("Save Preset").rect().center();
+        test_window::click_at(&mut h, at);
+        let presets = h.state_mut().app.run("place.presets", json!({})).unwrap();
+        let house = presets.as_array().unwrap().iter().find(|p| p["name"] == "House").expect("saved").clone();
+        assert_eq!(
+            house,
+            json!({"name": "House", "scope": "user", "styleMap": {"heading 1": "Head"}, "styleRules": [], "styleConflicts": "redefine", "removeStyles": false})
+        );
+        assert_eq!(fields(&h)["preset"], "House", "the dialog's preset now");
+        {
+            let d = h.state_mut().app.ui.dialog.as_mut().unwrap();
+            d.fields.insert("presetName".into(), json!("Issue"));
+            d.fields.insert("presetInDocument".into(), json!(true));
+        }
+        h.run_steps(2);
+        let at = h.get_by_label("Save Preset").rect().center();
+        test_window::click_at(&mut h, at);
+        let kept: Vec<String> = h.state().app.session.doc().unwrap().doc.settings.import_presets.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(kept, ["Issue"]);
+        std::fs::remove_file(&path).unwrap();
+    }
+}

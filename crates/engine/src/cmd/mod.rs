@@ -44,6 +44,7 @@ mod paste_svg;
 mod path_type;
 mod paths;
 mod pdflayers;
+mod place_presets;
 mod place_text;
 pub mod preflight;
 mod prefs;
@@ -221,6 +222,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(tabs::specs());
         v.extend(style::specs());
         v.extend(load_styles::specs());
+        v.extend(place_presets::specs());
         v.extend(table::specs());
         v.extend(layout::specs());
         v.extend(overrides::specs());

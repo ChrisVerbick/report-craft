@@ -100,11 +100,19 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "snippet.export", "Export Selection as Snippet", ["File", "Export"], None,
             "{path?} — the selected items (with their stories, styles and images) as a .designcraft snippet; no path: {base64}", super::has_selection, snippet_export),
         cmd!(query "place.styles", "Import Options: Styles", [], None,
-        "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF file brings (for styleMap / styleConflicts)",
+        "{path | base64, name, preset?: an import preset (place.presets)} → {paragraph: [name], character: [name], conflicts: [name], with a preset also map: {imported name: document style}, styleConflicts, removeStyles} — the styles a Word/RTF file brings (for styleMap / styleConflicts); with `preset`, what the preset maps of them (its names, then its rules, onto styles this document has) and its other options",
         has_doc, |s, p| {
             let (bytes, name, _) = read_source(p)?;
             let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
-            Ok(import_styles(&s.doc()?.doc, &imp))
+            let mut out = import_styles(&s.doc()?.doc, &imp);
+            if let (Some(preset), Some(o)) = (str_param(p, "preset"), out.as_object_mut()) {
+                let preset = super::place_presets::find(s, preset, "place.styles")?;
+                o.insert("map".into(), json!(super::place_text::preset_map(&s.doc()?.doc, &imp, &preset)));
+                let conflicts = if preset.style_conflicts.is_empty() { "useExisting" } else { preset.style_conflicts.as_str() };
+                o.insert("styleConflicts".into(), json!(conflicts));
+                o.insert("removeStyles".into(), json!(preset.remove_styles));
+            }
+            Ok(out)
         }),
         cmd!(query "place.check", "Place with Flow: Check", [], None,
         "{path | base64, name, sheet?, range?, headerRows? (a workbook's part, as file.place)} → {paragraph, character, conflicts (as place.styles), problems: [{at, cell?, shows, formula?, kind, blocks, message}], warnings, preview: {paragraphs: [text]} | {rows: [[text]], more}, sheets?: [name] (workbooks)} — what a text file or workbook would bring in, before it is placed (Place with Flow)",
@@ -149,7 +157,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, sheet?, range?, headerRows?, tableStyle? (a workbook's sheet (default: the first), cells in A1 notation such as B3:F40 (default: the used range), header rows and table style; a linked workbook keeps them for Update), link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleRules?: [{match?: the imported style's name, * and ? as wildcards, case not counting, kind?: paragraph|character|any, attrs?: {para?, chars?} (what the imported style sets, through what it is based on), to: a document style, keepOverrides?: bool (false: the mapped text loses its own formatting)}] (for the styles styleMap doesn't name: the first rule that matches one and names a style of its kind here wins; a linked file keeps them, so Update maps styles new in the file too), styleConflicts?: useExisting|redefine|autoRename, preset?: an import preset's name (place.presets; what the call gives wins over it), sheet?, range?, headerRows?, tableStyle? (a workbook's sheet (default: the first), cells in A1 notation such as B3:F40 (default: the used range), header rows and table style; a linked workbook keeps them for Update), link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
             has_doc,
             file_place
         ),

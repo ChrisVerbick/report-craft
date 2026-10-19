@@ -196,6 +196,92 @@ pub struct TextFileLink {
     /// A workbook's sheet, range, header rows and table style as placed (Place with Flow).
     #[serde(flatten)]
     pub workbook: WorkbookPart,
+    /// `styleRules`: applied again by Update, so styles new in the file are mapped too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_rules: Vec<StyleRule>,
+}
+
+/// A Word/RTF import rule (`file.place {styleRules}`): the imported styles it matches become the
+/// document's style `to`. It matches by name pattern, by attributes, both, or (neither) every
+/// style of its kind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StyleRule {
+    /// The imported style's name: `*` stands for any run of characters, `?` for one, and case
+    /// doesn't count.
+    #[serde(rename = "match", skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(skip_serializing_if = "StyleRuleKind::is_any")]
+    pub kind: StyleRuleKind,
+    /// What the imported style sets, through the styles it is based on: every attribute given
+    /// here has this value.
+    #[serde(skip_serializing_if = "StyleRuleAttrs::is_empty")]
+    pub attrs: StyleRuleAttrs,
+    /// The document style the matched ones become.
+    pub to: String,
+    /// `false`: text the rule maps loses its own formatting, as with Clear Overrides.
+    #[serde(skip_serializing_if = "is_true")]
+    pub keep_overrides: bool,
+}
+
+impl Default for StyleRule {
+    fn default() -> Self {
+        StyleRule { pattern: None, kind: StyleRuleKind::Any, attrs: StyleRuleAttrs::default(), to: String::new(), keep_overrides: true }
+    }
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+/// The imported styles a [`StyleRule`] looks at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StyleRuleKind {
+    #[default]
+    Any,
+    Paragraph,
+    Character,
+}
+
+impl StyleRuleKind {
+    pub fn is_any(&self) -> bool {
+        *self == StyleRuleKind::Any
+    }
+}
+
+/// The paragraph and character attributes a [`StyleRule`] asks for, as a style's `para` and
+/// `chars`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StyleRuleAttrs {
+    #[serde(skip_serializing_if = "ParaAttrs::is_empty")]
+    pub para: ParaAttrs,
+    #[serde(skip_serializing_if = "CharAttrs::is_empty")]
+    pub chars: CharAttrs,
+}
+
+impl StyleRuleAttrs {
+    pub fn is_empty(&self) -> bool {
+        self.para.is_empty() && self.chars.is_empty()
+    }
+}
+
+/// Saved Word/RTF import options (Import Options › Preset), kept in a document or with the
+/// user's preferences.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ImportPreset {
+    pub name: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub style_map: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub style_rules: Vec<StyleRule>,
+    /// useExisting, redefine or autoRename (empty: useExisting).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub style_conflicts: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub remove_styles: bool,
 }
 
 /// The part of a workbook a linked story shows, kept on its link so Update imports the same cells.
