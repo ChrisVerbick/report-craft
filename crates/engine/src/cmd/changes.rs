@@ -1,6 +1,9 @@
-//! Type › Track Changes: record edits as inserted / deleted text; accept or reject them.
+//! Type › Track Changes: record edits as inserted / deleted text; accept or reject them. Changes
+//! in table cells and footnotes (Compare's redline marks them) are listed and resolved too.
 
-use designcraft_doc::{ChangeMark, Story, StoryId};
+use std::sync::Arc;
+
+use designcraft_doc::{CellAddr, ChangeMark, Story, StoryId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
@@ -54,13 +57,46 @@ fn resolve(st: &mut Story, accept: bool) -> usize {
     n
 }
 
-/// Accept or reject the one change at `start` in story `story`.
+/// The texts of `st` Track Changes reaches: its own (no address), its tables' cells, its footnotes.
+fn texts(st: &Story) -> Vec<(Option<CellAddr>, &Story)> {
+    let mut out = vec![(None, st)];
+    for (id, t) in &st.tables {
+        let cols = t.ncols().max(1);
+        out.extend(t.cells.iter().enumerate().map(|(i, c)| (Some(CellAddr { table: *id, row: i / cols, col: i % cols }), &c.text)));
+    }
+    out.extend(st.notes.iter().map(|n| (Some(CellAddr::footnote(n.id)), &n.text)));
+    out
+}
+
+fn has_changes(st: &Story) -> bool {
+    st.runs().any(|(_, f)| matches!(f.over.change, Some(ChangeMark::Inserted | ChangeMark::Deleted)))
+}
+
+/// Whether `d` has tracked changes left to accept or reject, in any story, table cell or footnote.
+pub(crate) fn tracked(d: &designcraft_doc::Document) -> bool {
+    d.stories.values().any(|st| texts(st).into_iter().any(|(_, t)| has_changes(t)))
+}
+
+/// The text a command names in its story: `cell: {table, row, col}`, `footnote: id`, or neither.
+pub(super) fn address(p: &Value, id: &str) -> Result<Option<CellAddr>> {
+    let given = |k: &str| p.get(k).filter(|v| !v.is_null());
+    match (given("cell"), given("footnote")) {
+        (Some(_), Some(_)) => Err(super::bad(id, "give `cell` or `footnote`, not both")),
+        (Some(c), None) => serde_json::from_value(c.clone()).map(Some).map_err(|e| super::bad(id, format!("cell: {{table, row, col}} ({e})"))),
+        (None, Some(n)) => n.as_u64().map(|n| Some(CellAddr::footnote(n))).ok_or_else(|| super::bad(id, "footnote: a footnote's id")),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Accept or reject the one change at `start` in story `story` (in its cell or footnote when
+/// given).
 fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
     let id = if accept { "changes.accept" } else { "changes.reject" };
     let sid = p.get("story").and_then(Value::as_u64).map(StoryId).ok_or_else(|| super::bad(id, "`story` required"))?;
     let start = p.get("start").and_then(Value::as_u64).ok_or_else(|| super::bad(id, "`start` required"))? as usize;
+    let at = address(p, id)?;
     s.edit(|d, sel| {
-        let st = d.story_mut(sid).ok_or_else(|| super::bad(id, "no such story"))?;
+        let st = d.text_story_mut(sid, at).ok_or_else(|| super::bad(id, "no such story, cell or footnote"))?;
         let (r, mark) = st
             .runs()
             .find(|(r, f)| matches!(f.over.change, Some(ChangeMark::Inserted | ChangeMark::Deleted)) && r.start <= start && start < r.end)
@@ -74,8 +110,9 @@ fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
         }
         if let Some(t) = &mut sel.text
             && t.story == sid
+            && t.cell == at
         {
-            let len = d.story(sid).map_or(0, |x| x.len());
+            let len = d.text_story(sid, at).map_or(0, |x| x.len());
             t.anchor = t.anchor.min(len);
             t.focus = t.focus.min(len);
         }
@@ -93,29 +130,53 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"on": on}))
             })
         }),
-        cmd!(query "changes.list", "Changes", [], None, "{} → [{story, start, end, kind: inserted|deleted, text}]", has_doc, |s, _| {
+        cmd!(query "changes.list", "Changes", [], None, "{} → [{story, start, end, kind: inserted|deleted, text, cell?: {table, row, col}, footnote?: id}] (offsets in the cell's or footnote's text when given)", has_doc, |s, _| {
             let d = &s.doc()?.doc;
             let mut out = Vec::new();
             for st in d.stories.values() {
-                for (r, f) in st.runs() {
-                    let kind = match f.over.change {
-                        Some(ChangeMark::Inserted) => "inserted",
-                        Some(ChangeMark::Deleted) => "deleted",
-                        _ => continue,
-                    };
-                    out.push(json!({"story": st.id.0, "start": r.start, "end": r.end, "kind": kind, "text": st.text[r].to_string()}));
+                for (at, text) in texts(st) {
+                    for (r, f) in text.runs() {
+                        let kind = match f.over.change {
+                            Some(ChangeMark::Inserted) => "inserted",
+                            Some(ChangeMark::Deleted) => "deleted",
+                            _ => continue,
+                        };
+                        let mut e = json!({"story": st.id.0, "start": r.start, "end": r.end, "kind": kind, "text": text.text[r].to_string()});
+                        match at.map(|a| (a, a.footnote_id())) {
+                            Some((_, Some(n))) => e["footnote"] = json!(n),
+                            Some((a, None)) => e["cell"] = json!(a),
+                            None => {}
+                        }
+                        out.push(e);
+                    }
                 }
             }
             Ok(Value::Array(out))
         }),
-        cmd!("changes.accept", "Accept Change", [], None, "{story, start} — the change at that position", has_doc, |s, p| one(s, p, true)),
-        cmd!("changes.reject", "Reject Change", [], None, "{story, start} — the change at that position", has_doc, |s, p| one(s, p, false)),
+        cmd!(
+            "changes.accept",
+            "Accept Change",
+            [],
+            None,
+            "{story, start, cell?: {table, row, col}, footnote?: id} — the change at that position (in that cell's or footnote's text)",
+            has_doc,
+            |s, p| one(s, p, true)
+        ),
+        cmd!(
+            "changes.reject",
+            "Reject Change",
+            [],
+            None,
+            "{story, start, cell?: {table, row, col}, footnote?: id} — the change at that position (in that cell's or footnote's text)",
+            has_doc,
+            |s, p| one(s, p, false)
+        ),
         cmd!(
             "changes.acceptAll",
             "Accept All Changes",
             ["Type", "Track Changes"],
             None,
-            "{story?} — deleted text goes, added text stays",
+            "{story?} — deleted text goes, added text stays (in the stories, their table cells and footnotes)",
             has_doc,
             |s, p| all(s, p, true)
         ),
@@ -124,7 +185,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reject All Changes",
             ["Type", "Track Changes"],
             None,
-            "{story?} — added text goes, deleted text comes back",
+            "{story?} — added text goes, deleted text comes back (in the stories, their table cells and footnotes)",
             has_doc,
             |s, p| all(s, p, false)
         ),
@@ -138,6 +199,15 @@ fn all(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
         let mut n = 0;
         for id in ids {
             if let Some(st) = d.story_mut(id) {
+                // Cells and footnotes first: accepting a story's deletion can take a table or note away.
+                for t in st.tables.values_mut().filter(|t| t.cells.iter().any(|c| has_changes(&c.text))) {
+                    for c in Arc::make_mut(t).cells.iter_mut() {
+                        n += resolve(&mut c.text, accept);
+                    }
+                }
+                for note in st.notes.iter_mut().filter(|n| has_changes(&n.text)) {
+                    n += resolve(&mut Arc::make_mut(note).text, accept);
+                }
                 n += resolve(st, accept);
             }
         }
@@ -157,6 +227,83 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    /// Track Changes reaches table cells and footnotes (Compare's redline marks them): their changes
+    /// are listed with where they are, and accepted or rejected one by one or all at once.
+    #[test]
+    fn changes_in_cells_and_footnotes_are_listed_accepted_and_rejected() {
+        use designcraft_doc::{CellAddr, ChangeMark, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Body."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 5, "focus": 5})).unwrap();
+        let note = s.execute("footnote.insert", &json!({"text": "Source"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let table = *s.doc().unwrap().doc.story(sid).unwrap().tables.keys().next().unwrap();
+        let cell = CellAddr { table, row: 0, col: 1 };
+        // As Compare marks them: the old value deleted, the new one inserted.
+        let marked = |s: &mut Session, at: CellAddr, text: &str, deleted: &str, inserted: &str| {
+            s.edit(|d, _| {
+                let st = d.text_story_mut(sid, Some(at)).unwrap();
+                let n = st.len();
+                st.replace(0..n, text);
+                for (word, m) in [(deleted, ChangeMark::Deleted), (inserted, ChangeMark::Inserted)] {
+                    let i = st.text.find(word).unwrap();
+                    st.format_chars(i..i + word.len(), |f| f.over.change = Some(m));
+                }
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        };
+        marked(&mut s, cell, "3.50 3.75", "3.50 ", "3.75");
+        marked(&mut s, CellAddr::footnote(note), "Source: 2025 2026.", "2025 ", "2026");
+        let listed = s.execute("changes.list", &json!({})).unwrap();
+        let entries: Vec<(serde_json::Value, serde_json::Value, String, String)> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c["cell"].clone(), c["footnote"].clone(), c["kind"].as_str().unwrap().into(), c["text"].as_str().unwrap().into()))
+            .collect();
+        let at_cell = json!({"table": table, "row": 0, "col": 1});
+        assert_eq!(
+            entries,
+            [
+                (at_cell.clone(), json!(null), "deleted".into(), "3.50 ".into()),
+                (at_cell.clone(), json!(null), "inserted".into(), "3.75".into()),
+                (json!(null), json!(note), "deleted".into(), "2025 ".into()),
+                (json!(null), json!(note), "inserted".into(), "2026".into()),
+            ]
+        );
+        let text = |s: &Session, at: CellAddr| s.doc().unwrap().doc.text_story(sid, Some(at)).unwrap().text.clone();
+        s.execute("changes.accept", &json!({"story": sid.0, "cell": at_cell, "start": 0})).unwrap();
+        assert_eq!(text(&s, cell), "3.75");
+        s.execute("changes.reject", &json!({"story": sid.0, "footnote": note, "start": 13})).unwrap();
+        assert_eq!(text(&s, CellAddr::footnote(note)), "Source: 2025 .");
+        s.execute("changes.acceptAll", &json!({})).unwrap();
+        assert_eq!((text(&s, cell), text(&s, CellAddr::footnote(note))), ("3.75".to_string(), "Source: .".to_string()));
+        assert!(s.execute("changes.list", &json!({})).unwrap().as_array().unwrap().is_empty());
+        marked(&mut s, cell, "old new", "old ", "new");
+        s.execute("changes.rejectAll", &json!({})).unwrap();
+        assert_eq!(text(&s, cell), "old ");
+    }
+
+    /// `text.select` reaches a cell's or footnote's text, as the changes there are addressed.
+    #[test]
+    fn text_selects_in_a_cell_or_footnote() {
+        use designcraft_doc::{CellAddr, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Body."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 5, "focus": 5})).unwrap();
+        let note = s.execute("footnote.insert", &json!({"text": "Source: 2025."})).unwrap()["id"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "footnote": note, "anchor": 8, "focus": 12})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.cell, t.range()), (Some(CellAddr::footnote(note)), 8..12));
+        assert!(s.execute("text.select", &json!({"story": sid.0, "cell": {"table": 99, "row": 0, "col": 0}, "anchor": 0, "focus": 0})).is_err());
+    }
 
     #[test]
     fn tracked_edits_accept_and_reject() {

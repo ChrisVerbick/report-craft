@@ -54,8 +54,14 @@ fn refusal(id: &str, params: serde_json::Value) -> String {
 #[test]
 fn the_issue_examples_are_refused() {
     // (The keys are checked in order: `end` comes before `start`.)
-    assert_eq!(refusal("text.select", json!({"story": 1, "start": 0, "end": 5})), "unknown parameter `end`; the command takes: story, anchor, focus");
-    assert_eq!(refusal("text.select", json!({"story": 1, "start": 0})), "unknown parameter `start`; the command takes: story, anchor, focus");
+    assert_eq!(
+        refusal("text.select", json!({"story": 1, "start": 0, "end": 5})),
+        "unknown parameter `end`; the command takes: story, anchor, focus, cell, footnote"
+    );
+    assert_eq!(
+        refusal("text.select", json!({"story": 1, "start": 0})),
+        "unknown parameter `start`; the command takes: story, anchor, focus, cell, footnote"
+    );
     assert_eq!(refusal("style.list", json!({"bogus": 1})), "unknown parameter `bogus`; the command takes no parameters");
 }
 
