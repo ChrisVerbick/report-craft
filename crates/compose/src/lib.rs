@@ -78,6 +78,9 @@ pub struct RunStyle {
     pub condition: Option<String>,
     /// Added while tracking changes (marked on screen).
     pub inserted: bool,
+    /// Deleted while tracking changes: laid out only for the "show deleted text" view, struck
+    /// through.
+    pub deleted: bool,
     /// Flow's highlight of what an update brought in (screen only).
     pub flow: designcraft_doc::FlowMark,
     /// XML element the text is tagged with (tag markers on screen).
@@ -612,6 +615,9 @@ pub struct ComposeOptions {
     pub label: Option<String>,
     /// Anchor pages for cross-references (needed when the story contains cross-references).
     pub xrefs: Option<Arc<xref::XrefIndex>>,
+    /// Lay out text tracked changes delete instead of leaving it out (the "show deleted text"
+    /// view of Compare's redline; never for output).
+    pub show_deleted: bool,
 }
 
 /// Nesting depth past which wrap obstacles inside groups are not collected.
@@ -817,7 +823,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     };
     let para_ranges = story.para_ranges();
     let np = para_ranges.len();
-    let deleted = deleted_paras(story, &para_ranges);
+    let deleted = if opts.show_deleted { vec![false; para_ranges.len()] } else { deleted_paras(story, &para_ranges) };
     let hyph_exceptions = doc.hyphenation_exception_map();
     let mut list_counter = ListCounter::default();
     // Named lists number independently of layout: one pass up front, for the labels.
@@ -934,7 +940,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let start = break_start(c)?;
             let (_, chars) = doc.styles.resolve_para(story.paras.get(p)?);
             let props = doc.styles.resolve_char(&chars, story.char_format_at(r.start + i + c.len_utf8()));
-            let gone = props.change == designcraft_doc::ChangeMark::Deleted || doc.conditions_hide(&props.conditions);
+            let gone = (props.change == designcraft_doc::ChangeMark::Deleted && !opts.show_deleted) || doc.conditions_hide(&props.conditions);
             (!gone).then_some(start)
         });
         if let Some(t) = story.para_table(pi) {
@@ -992,6 +998,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             auto_tcy: pp.auto_tcy.min(shape::AUTO_TCY_MAX),
             auto_tcy_roman: pp.auto_tcy_include_roman,
             rotate_roman: pp.rotate_roman,
+            show_deleted: opts.show_deleted,
             ..Default::default()
         };
         if !story.endnotes.is_empty() {
@@ -1238,7 +1245,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         // mark takes no room.
         let last_line_mark = story.text.get(prange.end..).filter(|t| t.starts_with('\n')).and_then(|_| {
             let props = doc.styles.resolve_char(&base_chars, story.format_after(prange.end));
-            let hidden = props.change == designcraft_doc::ChangeMark::Deleted
+            let hidden = (props.change == designcraft_doc::ChangeMark::Deleted && !sub.show_deleted)
                 || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c)));
             (!hidden).then_some(match props.leading {
                 designcraft_doc::Leading::Auto => props.size * pp.auto_leading,

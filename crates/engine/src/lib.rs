@@ -324,6 +324,29 @@ impl Default for Prefs {
     }
 }
 
+/// Commands that write what the document looks like: exports, printing, packages and the
+/// preview a saved file keeps.
+fn output_command(id: &str) -> bool {
+    ["file.export", "file.print", "file.save", "file.package", "file.recovery", "book.export"].iter().any(|p| id.starts_with(p))
+}
+
+/// The layout's "show deleted text" off until dropped, then as it was.
+struct DeletedHidden(Arc<Cache>, bool);
+
+impl DeletedHidden {
+    fn new(cache: &Arc<Cache>) -> Self {
+        let was = cache.shows_deleted();
+        cache.set_show_deleted(false);
+        DeletedHidden(cache.clone(), was)
+    }
+}
+
+impl Drop for DeletedHidden {
+    fn drop(&mut self) {
+        self.0.set_show_deleted(self.1);
+    }
+}
+
 pub struct Session {
     docs: Vec<DocState>,
     active: Option<usize>,
@@ -530,6 +553,8 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// document as it was (see [`guard`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        // Output never has the "show deleted text" view's deleted text: off while it runs.
+        let _plain = output_command(id).then(|| DeletedHidden::new(&self.cache));
         // A command from outside the IME ends its composition first, keeping the marked text as
         // typed: Undo then takes back that typing, and nothing runs on top of the preview the
         // composition would drop. Queries and recovery saves leave it alone.

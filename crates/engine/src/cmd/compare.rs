@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Compare with Earlier Version",
         [],
         None,
-        "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject → {redline: its document index, changes, stories (that changed), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
+        "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (that changed), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
         has_doc,
         compare_file
     )]
@@ -45,6 +45,8 @@ fn compare_file(s: &mut Session, p: &Value) -> Result<Value> {
         .flat_map(|c| c.tables.iter().map(|t| json!({"story": c.story.0, "table": t.table, "status": status(t.status)})))
         .collect();
     let i = s.add_document(DocState::new(red, None));
+    // A redline shows what was deleted.
+    s.cache.set_show_deleted(true);
     Ok(json!({"redline": i, "changes": changes.len(), "stories": changes.stories.len(), "deletedStories": deleted, "tables": tables}))
 }
 
@@ -278,6 +280,41 @@ mod tests {
         s.execute("text.insert", &json!({"text": "New "})).unwrap();
         let e = s.execute("compare.file", &json!({"path": path.to_string_lossy()})).unwrap_err().to_string();
         assert!(e.contains("tracked changes"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Show deleted text" is the screen's view: the layout then has the deleted text (struck
+    /// through), output never does. Compare's redline turns it on.
+    #[test]
+    fn deleted_text_shows_on_screen_but_never_in_output() {
+        let dir = std::env::temp_dir().join(format!("dc-show-deleted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "The cat sat"})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("changes.track", &json!({"on": true})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 7})).unwrap();
+        s.execute("text.insert", &json!({"text": "dog"})).unwrap();
+        let shown = |s: &Session| {
+            let d = s.doc().unwrap().doc.clone();
+            let cs = s.cache.get(&d, sid, None);
+            cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).any(|g| g.visible && g.adv > 0.0 && (4..7).contains(&g.byte))
+        };
+        let preview = |s: &mut Session, name: &str| {
+            let path = dir.join(name);
+            s.execute("file.saveACopy", &json!({"path": path.to_string_lossy()})).unwrap();
+            designcraft_format::read_preview(std::io::Cursor::new(std::fs::read(&path).unwrap())).expect("a preview")
+        };
+        assert!(!shown(&s));
+        let plain = preview(&mut s, "plain.designcraft");
+        assert_eq!(s.execute("view.showDeletedText", &json!({"on": true})).unwrap()["on"], true);
+        assert!(shown(&s), "on screen, the deleted text takes room");
+        assert_eq!(preview(&mut s, "shown.designcraft"), plain, "output leaves it out");
+        assert!(shown(&s), "and the view stays on");
+        s.execute("view.showDeletedText", &json!({})).unwrap();
+        assert!(!shown(&s), "toggled off");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
