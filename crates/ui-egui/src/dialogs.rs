@@ -3552,7 +3552,8 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             };
             app.run(
                 "style.load",
-                json!({"path": d.s("path"), "paragraph": checked("paragraph"), "character": checked("character"), "conflicts": d.s("conflicts")}),
+                json!({"path": d.s("path"), "paragraph": checked("paragraph"), "character": checked("character"), "object": checked("object"),
+                    "table": checked("table"), "cell": checked("cell"), "conflicts": d.s("conflicts")}),
             )
         }
         "importOptions" => app.open_file(
@@ -6836,6 +6837,15 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
     d.fields.insert("hex".into(), json!(format!("#{:02x}{:02x}{:02x}", to8(rgb[0]), to8(rgb[1]), to8(rgb[2]))));
 }
 
+/// The Load Styles dialog's sections: each kind of style, by its key in `style.load`.
+const LOAD_STYLE_KINDS: [(&str, &str); 5] = [
+    ("paragraph", "Paragraph Styles"),
+    ("character", "Character Styles"),
+    ("object", "Object Styles"),
+    ("table", "Table Styles"),
+    ("cell", "Cell Styles"),
+];
+
 /// Find/Replace Font: the document's fonts (missing ones first, flagged) and a replacement.
 /// Load Styles: a checkbox for each style of the picked file, and what happens to a style this
 /// document defines differently under the same name.
@@ -6846,7 +6856,7 @@ fn load_styles(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         for (label, on) in [("Select All", true), ("Deselect All", false)] {
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
-                for key in ["paragraph", "character"] {
+                for (key, _) in LOAD_STYLE_KINDS {
                     for row in d.fields.get_mut(key).and_then(Value::as_array_mut).into_iter().flatten().filter_map(Value::as_object_mut) {
                         row.insert("on".into(), json!(on));
                     }
@@ -6856,7 +6866,7 @@ fn load_styles(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
     let mut conflicts = 0;
     egui::ScrollArea::vertical().id_salt("load_styles").max_height(240.0).show(ui, |ui| {
-        for (key, title) in [("paragraph", "Paragraph Styles"), ("character", "Character Styles")] {
+        for (key, title) in LOAD_STYLE_KINDS {
             let Some(rows) = d.fields.get_mut(key).and_then(Value::as_array_mut).filter(|rows| !rows.is_empty()) else { continue };
             crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, title)).font(semibold(12.0)));
             for row in rows.iter_mut().filter_map(Value::as_object_mut) {

@@ -1,6 +1,6 @@
 //! Object Styles, Table Styles and Cell Styles panels: each family's styles. A click applies one
 //! to the selection (Alt-click clears its overrides too); the context menu applies, clears,
-//! redefines, breaks the link and deletes. The selection's style and whether it differs from it
+//! redefines, breaks the link and deletes; ☰ loads styles from another file. The selection's style and whether it differs from it
 //! come from `style.current`, as Redefine Style sees it.
 
 use egui::{Sense, vec2};
@@ -114,6 +114,16 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, f: Family) {
                     Family::Cell => app.run("style.cell.create", json!({"name": "Cell Style 1", "fromSelection": true})),
                 };
             }
+            crate::menus::menu_button(ui, "☰", |ui| {
+                let (label, cmd) = match f {
+                    Family::Object => ("Load Object Styles…", "app.loadObjectStyles"),
+                    Family::Table | Family::Cell => ("Load Table and Cell Styles…", "app.loadTableAndCellStyles"),
+                };
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).clicked() {
+                    let _ = app.run(cmd, json!({}));
+                    ui.close();
+                }
+            });
         });
     });
 }
@@ -214,6 +224,34 @@ mod tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app
+    }
+
+    /// Each panel's ☰ menu loads its family's styles from another file: Object Styles its object
+    /// styles, Table and Cell Styles both.
+    #[test]
+    fn the_panel_menus_load_styles_from_another_file() {
+        for (family, item, purpose) in [
+            (Family::Object, "Load Object Styles…", "styles:object"),
+            (Family::Table, "Load Table and Cell Styles…", "styles:tableCell"),
+            (Family::Cell, "Load Table and Cell Styles…", "styles:tableCell"),
+        ] {
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = asked.clone();
+            let services = crate::Services {
+                inbox: Some(crate::Inbox::default()),
+                open_async: Some(Box::new(move |request| seen.lock().unwrap().push(request))),
+                ..Default::default()
+            };
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+            app.run("file.new", json!({})).unwrap();
+            let mut h = harness(app, family);
+            h.run_steps(3);
+            h.get_by_label("☰").click();
+            h.run_steps(2);
+            h.get_by_label(item).click();
+            h.run_steps(2);
+            assert_eq!(asked.lock().unwrap().pop().map(|r| r.purpose), Some(purpose.to_string()), "{item}");
+        }
     }
 
     /// Right-click the last element labelled `label` and click `item` in its menu.
