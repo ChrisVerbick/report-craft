@@ -38,7 +38,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Keep Earlier Versions in This File",
             [],
             None,
-            "{on?: true | false | null (follow Preferences › File Handling)} — whether this document's saved file keeps its earlier versions (the document's own setting, saved with it; other documents aren't touched); off, saving drops them, copies, the serialized file and recovery data carry none, and Save a Version is refused → {on: in effect, document: its own setting or null, preference}",
+            "{on?: true | false | null (follow Preferences › File Handling)} — whether this document's saved file keeps its earlier versions (the document's own setting, saved with it, while it differs from the preference; the preference's value follows it again; other documents aren't touched); off, saving drops them, copies, the serialized file and recovery data carry none, and Save a Version is refused → {on: in effect, document: its own setting or null, preference}",
             has_doc,
             keep
         ),
@@ -158,8 +158,10 @@ pub(super) fn keep_around_update(s: &mut Session, before: &Document, r: &mut Val
 
 fn keep(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(v) = p.get("on") {
+        // The document's own setting only while it differs from the preference: set back to the
+        // preference's value, it follows Preferences again.
         let on = match v {
-            Value::Bool(b) => Some(*b),
+            Value::Bool(b) => Some(*b).filter(|b| *b != s.prefs.keep_versions),
             Value::Null => None,
             _ => return Err(bad("version.keep", "`on`: true, false or null")),
         };
@@ -490,6 +492,25 @@ mod switch_tests {
     use serde_json::{Value, json};
 
     use crate::Session;
+
+    /// A document keeps a setting of its own only while it differs from the preference. Turned off
+    /// and on again it follows Preferences, so turning the preference off reaches it.
+    #[test]
+    fn a_setting_that_matches_the_preference_follows_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert_eq!(s.execute("version.keep", &json!({"on": false})).unwrap()["document"], false);
+        let r = s.execute("version.keep", &json!({"on": true})).unwrap();
+        assert_eq!((r["on"].clone(), r["document"].clone()), (json!(true), Value::Null), "back to following Preferences");
+        s.execute("prefs.set", &json!({"keepVersions": false})).unwrap();
+        assert_eq!(s.execute("version.keep", &json!({})).unwrap()["on"], false, "the preference reaches it");
+        // With the preference off, on is the document's own; off again follows it.
+        assert_eq!(s.execute("version.keep", &json!({"on": true})).unwrap()["document"], true);
+        assert_eq!(s.execute("version.keep", &json!({"on": false})).unwrap()["document"], Value::Null);
+        // Explicit null still means follow.
+        s.execute("version.keep", &json!({"on": true})).unwrap();
+        assert_eq!(s.execute("version.keep", &json!({"on": null})).unwrap()["document"], Value::Null);
+    }
 
     fn versions_in(file: &[u8]) -> usize {
         designcraft_format::load_with_history(file).unwrap().1.unwrap().versions().count()
