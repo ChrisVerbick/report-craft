@@ -60,9 +60,9 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc()?;
             let mut copy = (*st.doc).clone();
             super::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let none = designcraft_format::History::default();
-            let versions = if p.get("history").and_then(Value::as_bool).unwrap_or(true) { &st.versions } else { &none };
-            let bytes = to_bytes_with_preview(&copy, versions, &s.cache)?;
+            let with = p.get("history").and_then(Value::as_bool).unwrap_or(true);
+            let versions = super::version::written(with && super::version::keeps(s.prefs.keep_versions, st), &st.versions);
+            let bytes = to_bytes_with_preview(&copy, &versions, &s.cache)?;
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
@@ -85,7 +85,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
-            let bytes = save_bytes(doc, &st.versions, None)?;
+            let bytes = save_bytes(doc, &super::version::written(super::version::keeps(s.prefs.keep_versions, st), &st.versions), None)?;
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
@@ -583,6 +583,7 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
 /// saved (see [`super::version::kept_on_save`]).
 pub(super) fn save_document(s: &mut Session, p: &Value, manual: Option<String>) -> Result<Value> {
     let author = s.prefs.user_name.clone();
+    let keep = super::version::keeps(s.prefs.keep_versions, s.doc()?);
     let st = s.doc_mut()?;
     // Saving to the document's own file keeps its name, even one opened without the extension.
     let path = str_param(p, "path")
@@ -597,7 +598,7 @@ pub(super) fn save_document(s: &mut Session, p: &Value, manual: Option<String>) 
     let paths_changed = saved.data_merge != st.doc.data_merge;
     let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
     // The versions once the file is written: a failed write leaves them as they were.
-    let versions = super::version::kept_on_save(st, &saved, manual, &author)?;
+    let versions = super::version::kept_on_save(st, &saved, manual, &author, keep)?;
     let bytes = to_bytes_with_preview(&saved, &versions, &s.cache)?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;

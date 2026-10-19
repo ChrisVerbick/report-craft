@@ -34,6 +34,15 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(noundo "version.show", "Show Version", [], None, "{id} — open version `id` as a new, unsaved document → {index}", has_doc, show),
         cmd!(
+            "version.keep",
+            "Keep Earlier Versions in This File",
+            [],
+            None,
+            "{on?: true | false | null (follow Preferences › File Handling)} — whether this document's saved file keeps its earlier versions (the document's own setting, saved with it; other documents aren't touched); off, saving drops them, copies, the serialized file and recovery data carry none, and Save a Version is refused → {on: in effect, document: its own setting or null, preference}",
+            has_doc,
+            keep
+        ),
+        cmd!(
             "version.restore",
             "Restore Version",
             [],
@@ -75,11 +84,33 @@ fn kept(h: &mut History, doc: &Document, v: NewVersion) -> Result<u32> {
     h.commit(doc, v).map_err(|e| EngineError::Other(format!("could not keep a version of the document: {e}")))
 }
 
+/// Why there are no versions to keep.
+pub(super) const VERSIONS_OFF: &str =
+    "Keep Earlier Versions is off for this document (its History panel; Preferences › File Handling sets it for documents that don't set their own)";
+
+/// Whether `st`'s saved file keeps its earlier versions: its own setting, else the preference
+/// (`preference`, Keep Earlier Versions in Saved Files).
+pub(crate) fn keeps(preference: bool, st: &DocState) -> bool {
+    st.doc.settings.keep_versions.unwrap_or(preference)
+}
+
+/// The versions a file written now carries: the document's, or none when it doesn't keep them.
+pub(crate) fn written(keep: bool, versions: &History) -> History {
+    if keep { versions.clone() } else { History::default() }
+}
+
 /// The document's versions once `saved` (the document as file.save writes it) is saved: with a
 /// version of it, manual (`manual`: its label) or, when it changed since it was last saved, a save
 /// (keeping the last [`SAVES_KEPT`] saves). The first such save of a file kept without versions
-/// keeps what the file had first.
-pub(super) fn kept_on_save(st: &DocState, saved: &Document, manual: Option<String>, author: &str) -> Result<History> {
+/// keeps what the file had first. With versions off (`keep` false), none: the file's are dropped,
+/// and a manual version is refused.
+pub(super) fn kept_on_save(st: &DocState, saved: &Document, manual: Option<String>, author: &str, keep: bool) -> Result<History> {
+    if !keep {
+        return match manual {
+            Some(_) => Err(EngineError::Other(format!("{VERSIONS_OFF}: turn it on to save a version"))),
+            None => Ok(History::default()),
+        };
+    }
     let mut h = st.versions.clone();
     match manual {
         Some(label) => {
@@ -101,6 +132,9 @@ pub(super) fn kept_on_save(st: &DocState, saved: &Document, manual: Option<Strin
 /// and after it, with the update's reports (`r["reports"]`). A version that can't be kept is a
 /// warning in `r`; the update stands.
 pub(super) fn keep_around_update(s: &mut Session, before: &Document, r: &mut Value) {
+    if !s.doc().is_ok_and(|st| keeps(s.prefs.keep_versions, st)) {
+        return;
+    }
     let author = s.prefs.user_name.clone();
     let Ok(st) = s.doc_mut() else { return };
     let mut h = st.versions.clone();
@@ -120,6 +154,24 @@ pub(super) fn keep_around_update(s: &mut Session, before: &Document, r: &mut Val
             }
         }
     }
+}
+
+fn keep(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(v) = p.get("on") {
+        let on = match v {
+            Value::Bool(b) => Some(*b),
+            Value::Null => None,
+            _ => return Err(bad("version.keep", "`on`: true, false or null")),
+        };
+        if s.doc()?.doc.settings.keep_versions != on {
+            s.edit(|d, _| {
+                d.settings.keep_versions = on;
+                Ok(())
+            })?;
+        }
+    }
+    let st = s.doc()?;
+    Ok(json!({"on": keeps(s.prefs.keep_versions, st), "document": st.doc.settings.keep_versions, "preference": s.prefs.keep_versions}))
 }
 
 fn commit(s: &mut Session, p: &Value) -> Result<Value> {
@@ -428,6 +480,131 @@ mod tests {
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("history")), "{r}");
         assert!(list(&mut s).is_empty());
         assert_eq!(text(&s, sid), "One.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use designcraft_doc::StoryId;
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    fn versions_in(file: &[u8]) -> usize {
+        designcraft_format::load_with_history(file).unwrap().1.unwrap().versions().count()
+    }
+
+    /// Preferences › File Handling › Keep Earlier Versions in Saved Files, off: saved files carry
+    /// no versions. Saving drops the file's; copies, the serialized file and recovery data carry
+    /// none, even before that save; Save a Version is refused. Turned back on, saves keep them.
+    #[test]
+    fn with_versions_off_saved_files_carry_none() {
+        let dir = std::env::temp_dir().join(format!("dc-version-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.designcraft");
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let sid = StoryId(
+            s.execute("frame.create", &json!({"rect": [72, 72, 400, 500], "content": "text", "text": "One."})).unwrap()["story"].as_u64().unwrap(),
+        );
+        let write = |s: &mut Session, text: &str| {
+            s.edit(|d, _| {
+                d.set_story_text(sid, text).unwrap();
+                Ok(Value::Null)
+            })
+            .unwrap();
+        };
+        s.execute("file.save", &json!({"path": path})).unwrap();
+        write(&mut s, "Two.");
+        s.execute("file.save", &json!({})).unwrap();
+        assert_eq!(versions_in(&std::fs::read(&path).unwrap()), 2);
+        assert_eq!(s.execute("prefs.set", &json!({})).unwrap()["keepVersions"], true, "on by default");
+        s.execute("prefs.set", &json!({"keepVersions": false})).unwrap();
+        // Before any save: a copy, the serialized file and recovery data carry none.
+        let copy = dir.join("copy.designcraft");
+        s.execute("file.saveACopy", &json!({"path": copy})).unwrap();
+        assert_eq!(versions_in(&std::fs::read(&copy).unwrap()), 0);
+        let b64 = s.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+        assert_eq!(versions_in(&crate::cmd::base64_decode(&b64)), 0);
+        write(&mut s, "Three.");
+        let rec = dir.join("recovery");
+        s.execute("file.recovery.save", &json!({"dir": rec})).unwrap();
+        let mut t = Session::new();
+        t.execute("file.recovery.open", &json!({"dir": rec})).unwrap();
+        assert_eq!(t.execute("version.list", &json!({})).unwrap(), json!([]));
+        let e = s.execute("version.commit", &json!({"label": "Draft"})).unwrap_err().to_string();
+        assert!(e.contains("Keep Earlier Versions is off"), "{e}");
+        // Saved: the file's versions are dropped.
+        s.execute("file.save", &json!({})).unwrap();
+        assert_eq!(versions_in(&std::fs::read(&path).unwrap()), 0);
+        assert_eq!(s.execute("version.list", &json!({})).unwrap(), json!([]));
+        // On again: the next save keeps versions again.
+        s.execute("prefs.set", &json!({"keepVersions": true})).unwrap();
+        write(&mut s, "Four.");
+        s.execute("file.save", &json!({})).unwrap();
+        assert!(versions_in(&std::fs::read(&path).unwrap()) > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The document's own setting wins over the preference, and touches no other document: one
+    /// document turned off drops its versions when saved while another keeps its own; one turned
+    /// on keeps them with the preference off.
+    #[test]
+    fn each_document_can_keep_its_versions_or_not() {
+        let dir = std::env::temp_dir().join(format!("dc-version-per-doc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::new();
+        let mut docs = Vec::new();
+        for name in ["a", "b"] {
+            s.execute("file.new", &json!({})).unwrap();
+            let sid = StoryId(
+                s.execute("frame.create", &json!({"rect": [72, 72, 400, 500], "content": "text", "text": "One."})).unwrap()["story"]
+                    .as_u64()
+                    .unwrap(),
+            );
+            let path = dir.join(format!("{name}.designcraft"));
+            s.execute("file.save", &json!({"path": path})).unwrap();
+            s.edit(|d, _| {
+                d.set_story_text(sid, "Two.").unwrap();
+                Ok(Value::Null)
+            })
+            .unwrap();
+            s.execute("file.save", &json!({})).unwrap();
+            docs.push((s.active_index().unwrap(), sid, path));
+        }
+        // A off: its next save drops its versions. B keeps its own.
+        let (a, b) = (&docs[0], &docs[1]);
+        s.execute("file.activate", &json!({"index": a.0})).unwrap();
+        let r = s.execute("version.keep", &json!({"on": false})).unwrap();
+        assert_eq!((r["on"].as_bool(), r["document"].as_bool(), r["preference"].as_bool()), (Some(false), Some(false), Some(true)));
+        assert!(s.doc().unwrap().is_dirty(), "the document's own setting is saved with it");
+        s.execute("file.save", &json!({})).unwrap();
+        s.execute("file.activate", &json!({"index": b.0})).unwrap();
+        s.edit(|d, _| {
+            d.set_story_text(b.1, "Three.").unwrap();
+            Ok(Value::Null)
+        })
+        .unwrap();
+        s.execute("file.save", &json!({})).unwrap();
+        assert_eq!((versions_in(&std::fs::read(&a.2).unwrap()), versions_in(&std::fs::read(&b.2).unwrap())), (0, 3));
+        // The preference off, B on: B keeps them.
+        s.execute("prefs.set", &json!({"keepVersions": false})).unwrap();
+        s.execute("version.keep", &json!({"on": true})).unwrap();
+        s.edit(|d, _| {
+            d.set_story_text(b.1, "Four.").unwrap();
+            Ok(Value::Null)
+        })
+        .unwrap();
+        s.execute("file.save", &json!({})).unwrap();
+        assert_eq!(versions_in(&std::fs::read(&b.2).unwrap()), 4);
+        // Reopened, A remembers its own setting.
+        let mut t = Session::new();
+        t.execute("file.open", &json!({"path": a.2})).unwrap();
+        assert_eq!(t.execute("version.keep", &json!({})).unwrap()["document"], false);
+        assert!(s.execute("version.keep", &json!({"on": "yes"})).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

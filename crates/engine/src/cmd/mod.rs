@@ -359,3 +359,4 @@ pub(crate) use file::{load_bytes, load_document_fonts};
 pub use layout::chapter_numbering;
 pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;
+pub(crate) use version::{keeps as keeps_versions, written as versions_written};
