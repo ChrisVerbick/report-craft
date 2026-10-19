@@ -2064,6 +2064,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "polygonSettings" => crate::i18n::tr(&app.ui.language, "Polygon Settings"),
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
+        "saveVersion" => crate::i18n::tr(&app.ui.language, "Save a Version"),
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "deletePages" => crate::i18n::tr(&app.ui.language, "Warning"),
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
@@ -2098,7 +2099,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
-            "closeDocument" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
+            "closeDocument" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "saveVersion" => 380.0,
             "newDocument" => 960.0,
             "numberingSection" => 560.0,
             crate::effects_dialog::ID => 720.0,
@@ -2631,6 +2632,33 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             crate::rtl::label(ui, crate::i18n::tr(&lang, "Resize:"));
                             combo(ui, &mut d, "resize", &resizes);
                         });
+                    }
+                    "saveVersion" => {
+                        ui.horizontal(|ui| {
+                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Label:"));
+                            let mut s = d.s("label");
+                            let field = ui.add(egui::TextEdit::singleline(&mut s).desired_width(240.0).horizontal_align(egui::Align::Min));
+                            let name = crate::i18n::tr(&app.ui.language, "Label");
+                            field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
+                            if !d.b("focused") {
+                                field.request_focus();
+                                d.fields.insert("focused".into(), json!(true));
+                            }
+                            if field.changed() {
+                                d.fields.insert("label".into(), Value::String(s));
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
+                        crate::rtl::label(
+                            ui,
+                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "The document is saved, and the version is kept in its file."))
+                                .size(11.0)
+                                .color(dim),
+                        );
+                        if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+                            crate::rtl::label(ui, egui::RichText::new(st).size(11.0).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+                        }
                     }
                     "newWorkspace" => {
                         ui.horizontal(|ui| {
@@ -3443,6 +3471,24 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             doc["overprintBlack"] = json!(d.b("overprintBlack"));
             doc["glyphFallback"] = json!(d.b("glyphFallback"));
             app.run("document.preferences", doc)
+        }
+        "saveVersion" => {
+            let mut p = json!({"label": d.s("label").trim()});
+            // A document never saved picks its file first.
+            if let Some(name) = app.session.active().filter(|x| x.path.is_none()).map(|x| format!("{}.designcraft", x.doc.title)) {
+                let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) else { return Ok(Value::Null) };
+                if let Some(o) = p.as_object_mut() {
+                    o.insert("path".into(), json!(path));
+                }
+            }
+            let r = app.run("version.commit", p);
+            if let Err(e) = &r {
+                // Kept open with the reason.
+                let mut d = d;
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            r
         }
         "newWorkspace" => app.run(
             "window.newWorkspace",

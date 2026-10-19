@@ -24,6 +24,18 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.save", "Save", Some("Cmd+S"), "{}"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
     ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{} — choose where to write a copy (the document stays as it is)"),
+    (
+        "app.saveCopyWithoutHistoryDialog",
+        "Save a Copy without History…",
+        None,
+        "{} — choose where to write a copy that leaves the document's versions out",
+    ),
+    (
+        "app.saveVersionDialog",
+        "Save a Version…",
+        None,
+        "{} — ask for a label, then keep the document as a version and save it (version.commit; a document never saved picks its file first)",
+    ),
     ("app.loadSwatches", "Load Swatches…", None, "{} — pick a swatch exchange (.ase) file"),
     (
         "app.loadParagraphStyles",
@@ -341,6 +353,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.save",
             "ui:app.saveDialog",
             "ui:app.saveCopyDialog",
+            "ui:app.saveCopyWithoutHistoryDialog",
+            "ui:app.saveVersionDialog",
             "cmd:file.revert",
             "ui:app.compareWithFile",
             "ui:app.exportChangesPdf",
@@ -871,6 +885,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel|Flow|{\"panel\": \"flow\"}",
             "ui:window.panel|Notes|{\"panel\": \"notes\"}",
             "ui:window.panel|Track Changes|{\"panel\": \"trackChanges\"}",
+            "ui:window.panel|History|{\"panel\": \"history\"}",
             "<",
             "ui:window.panel|Effects|{\"panel\": \"effects\"}",
             "ui:window.panel|Info|{\"panel\": \"info\"}",
@@ -1078,17 +1093,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 Ok(r) => r,
                 Err(e) => return Some(Err(e)),
             };
-            // What the redline holds, and what it can't show.
-            let lang = app.ui.language.clone();
-            let mut status = changes_summary(&lang, r["changes"].as_u64().unwrap_or(0), r["stories"].as_u64().unwrap_or(0));
-            let deleted = r["deletedStories"].as_array().map_or(0, Vec::len);
-            if deleted > 0 {
-                status += &crate::i18n::tr(&lang, "; {n} deleted text frame(s) aren't shown").replace("{n}", &deleted.to_string());
-            }
-            let reshaped = r["tables"].as_array().map_or(0, |t| t.iter().filter(|x| x["status"] == "reshaped").count());
-            if reshaped > 0 {
-                status += &crate::i18n::tr(&lang, "; {n} table(s) changed shape and aren't marked").replace("{n}", &reshaped.to_string());
-            }
+            let status = redline_status(&app.ui.language, &r);
             app.status(status);
             Ok(r)
         }
@@ -1150,11 +1155,15 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.request_quit();
             Ok(Value::Null)
         }
-        "app.saveCopyDialog" => {
+        "app.saveCopyDialog" | "app.saveCopyWithoutHistoryDialog" => {
             let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                return Some(app.run("file.saveACopy", json!({"path": path})));
+                return Some(app.run("file.saveACopy", json!({"path": path, "history": id == "app.saveCopyDialog"})));
             }
+            Ok(Value::Null)
+        }
+        "app.saveVersionDialog" => {
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("saveVersion", json!({"label": ""})));
             Ok(Value::Null)
         }
         "app.exportPng" => export_png(app, p),
@@ -3325,6 +3334,21 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
 }
 
 /// "4 changes in 2 stories": the Track Changes panel's summary and Compare's status.
+/// What a redline holds, and what it can't show (a compare.file or compare.versions result), for
+/// the status line.
+pub(crate) fn redline_status(lang: &str, r: &Value) -> String {
+    let mut status = changes_summary(lang, r["changes"].as_u64().unwrap_or(0), r["stories"].as_u64().unwrap_or(0));
+    let deleted = r["deletedStories"].as_array().map_or(0, Vec::len);
+    if deleted > 0 {
+        status += &crate::i18n::tr(lang, "; {n} deleted text frame(s) aren't shown").replace("{n}", &deleted.to_string());
+    }
+    let reshaped = r["tables"].as_array().map_or(0, |t| t.iter().filter(|x| x["status"] == "reshaped").count());
+    if reshaped > 0 {
+        status += &crate::i18n::tr(lang, "; {n} table(s) changed shape and aren't marked").replace("{n}", &reshaped.to_string());
+    }
+    status
+}
+
 pub(crate) fn changes_summary(lang: &str, changes: u64, stories: u64) -> String {
     let changes = match changes {
         1 => crate::i18n::tr(lang, "1 change").to_string(),
