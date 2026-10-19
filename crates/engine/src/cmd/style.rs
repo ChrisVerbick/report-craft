@@ -278,7 +278,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!("style.paragraph.apply", "Apply Paragraph Style", [], None, "{name, clearOverrides?: bool}", has_text_or_frames, apply_para),
-        cmd!("style.character.apply", "Apply Character Style", [], None, "{name}", has_text_or_frames, apply_char),
+        cmd!(
+            "style.character.apply",
+            "Apply Character Style",
+            [],
+            None,
+            "{name, clearOverrides?: bool (the text's own character formatting goes too)}",
+            has_text_or_frames,
+            apply_char
+        ),
         cmd!(
             "style.paragraph.redefine",
             "Redefine Paragraph Style",
@@ -368,7 +376,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Object Style Options…",
             [],
             None,
-            "{name, newName?, basedOn?: an object style | null, fill?: a swatch | null, stroke?: {…} | null (fields as object.stroke names them, merged into the style's: swatch, tint, weight 0–1000, type, align, cap, join, …), paragraphStyle?: name | null, effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — Object Style Options. A null: the style no longer sets it (its objects keep theirs). Fill and stroke: objects whose setting is the style's take the new one (every object using the style, when the style didn't set it before); one with its own keeps it. Effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects match the style's (no effects, when the style set none) take the new effects, items with their own effects keep them. Renamed, its objects, the styles based on it and the defaults for new frames follow; built-in names can't be taken → {name, updated: objects that took a change}",
+            "{name, rename?, basedOn?: an object style | null, fill?: a swatch | null, stroke?: {…} | null (fields as object.stroke names them, merged into the style's: swatch, tint, weight 0–1000, type, align, cap, join, …), paragraphStyle?: name | null, effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — Object Style Options. A null: the style no longer sets it (its objects keep theirs). Fill and stroke: objects whose setting is the style's take the new one (every object using the style, when the style didn't set it before); one with its own keeps it. Effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects match the style's (no effects, when the style set none) take the new effects, items with their own effects keep them. Renamed, its objects, the styles based on it and the defaults for new frames follow; built-in names can't be taken → {name, updated: objects that took a change}",
             has_doc,
             edit_object
         ),
@@ -822,6 +830,7 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.character.apply", "missing name"))?.to_string();
+    let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
     if s.doc()?.doc.styles.char_style(&name).is_none() {
         return Err(bad("style.character.apply", format!("no character style `{name}`")));
     }
@@ -840,7 +849,11 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
                     inherited.apply(&styles.char_style_attrs(&name));
                     st.format_chars(range, |f| {
                         f.style = name.clone();
-                        f.over.retain_differences(&inherited);
+                        if clear {
+                            f.over = CharAttrs::default();
+                        } else {
+                            f.over.retain_differences(&inherited);
+                        }
                     });
                 }
             }
@@ -1614,10 +1627,10 @@ fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Some(_) => return Err(bad(CMD, "`basedOn` must be an object style or null")),
     }
-    let renamed = match str_param(p, "newName").map(str::trim) {
+    let renamed = match str_param(p, "rename").map(str::trim) {
         None => None,
         Some(n) if n == name => None,
-        Some("") => return Err(bad(CMD, "`newName` is empty")),
+        Some("") => return Err(bad(CMD, "`rename` is empty")),
         Some(n) if n.starts_with('[') => return Err(bad(CMD, format!("`{n}`: built-in style names can't be taken"))),
         Some(n) if d.styles.object_style(n).is_some() => return Err(bad(CMD, format!("an object style is already called `{n}`"))),
         Some(n) => Some(n.to_string()),
@@ -1751,6 +1764,24 @@ fn redefine_object(s: &mut Session, p: &Value) -> Result<Value> {
             },
         );
         Ok(json!({"name": name, "changed": changed, "updated": updated}))
+    })
+}
+
+/// Break Link to Style for objects: they keep their look and take [None].
+pub(super) fn break_object_link(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = super::targets(s, p)?;
+    if ids.is_empty() {
+        return Err(bad("style.breakLink", super::NOTHING_SELECTED));
+    }
+    s.edit(|d, _| {
+        let mut n = 0;
+        for id in &ids {
+            if let Some(it) = d.item_mut(*id) {
+                it.object_style = designcraft_doc::NO_OBJECT_STYLE.into();
+                n += 1;
+            }
+        }
+        Ok(json!({"objects": n}))
     })
 }
 
@@ -3870,7 +3901,7 @@ mod object_style_tests {
         let r = s
             .execute(
                 "style.object.edit",
-                &json!({"name": "Callout", "fill": "[Registration]", "stroke": {"swatch": "[Black]", "weight": 3}, "paragraphStyle": "[Basic Paragraph]", "newName": "Note", "basedOn": "[Basic Graphics Frame]"}),
+                &json!({"name": "Callout", "fill": "[Registration]", "stroke": {"swatch": "[Black]", "weight": 3}, "paragraphStyle": "[Basic Paragraph]", "rename": "Note", "basedOn": "[Basic Graphics Frame]"}),
             )
             .unwrap();
         assert_eq!(r["name"], "Note", "{r}");
@@ -3888,8 +3919,8 @@ mod object_style_tests {
         let note = style(&s, "Note").unwrap();
         assert_eq!((note.fill, note.based_on), (None, None));
         for (p, why) in [
-            (json!({"name": "Note", "newName": "Boxed"}), "already"),
-            (json!({"name": "Note", "newName": "[None]"}), "built-in"),
+            (json!({"name": "Note", "rename": "Boxed"}), "already"),
+            (json!({"name": "Note", "rename": "[None]"}), "built-in"),
             (json!({"name": "Note", "basedOn": "Boxed"}), "based on itself"),
             (json!({"name": "Note", "basedOn": "Nope"}), "no object style `Nope`"),
             (json!({"name": "Note", "fill": "No Such Swatch"}), "No Such Swatch"),
@@ -3989,5 +4020,47 @@ mod object_redefine_tests {
             s.doc().unwrap().doc.styles.object_style("Full").unwrap().apply_to(&mut resolved);
             assert_eq!((&resolved.fill, &resolved.stroke, &resolved.effects), (&overridden.fill, &overridden.stroke, &overridden.effects));
         }
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use designcraft_doc::{ItemId, StoryId};
+
+    use super::*;
+
+    /// Applying a character style keeps the text's own formatting unless told to clear it.
+    #[test]
+    fn applying_a_character_style_can_clear_overrides() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Plain and bold."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("style.character.create", &json!({"name": "Strong", "chars": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 10, "focus": 14})).unwrap();
+        s.execute("type.char", &json!({"size": 20})).unwrap();
+        let over = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().char_format_at(11).over.size;
+        s.execute("style.character.apply", &json!({"name": "Strong"})).unwrap();
+        assert_eq!(over(&s), Some(20.0), "kept");
+        s.execute("style.character.apply", &json!({"name": "Strong", "clearOverrides": true})).unwrap();
+        assert_eq!(over(&s), None, "cleared");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().char_format_at(11).style, "Strong");
+    }
+
+    /// Break Link to Style for objects: they keep their look and take [None].
+    #[test]
+    fn breaking_the_link_to_an_object_style_keeps_the_look() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.object.create", &json!({"name": "Callout", "fromSelection": false, "fill": "[Black]"})).unwrap();
+        let id = ItemId(s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("style.object.apply", &json!({"name": "Callout", "ids": [id.0]})).unwrap();
+        let before = s.doc().unwrap().doc.item(id).unwrap().clone();
+        let r = s.execute("style.breakLink", &json!({"kind": "object", "ids": [id.0]})).unwrap();
+        assert_eq!(r["objects"], 1, "{r}");
+        let it = s.doc().unwrap().doc.item(id).unwrap().clone();
+        assert_eq!((it.object_style.as_str(), &it.fill), (designcraft_doc::NO_OBJECT_STYLE, &before.fill));
+        s.execute("style.object.edit", &json!({"name": "Callout", "fill": "[Paper]"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(id).unwrap().fill, before.fill, "the style's edits no longer reach it");
     }
 }

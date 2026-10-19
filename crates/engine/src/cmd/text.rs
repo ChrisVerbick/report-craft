@@ -358,8 +358,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Break Link to Style",
             [],
             None,
-            "{kind: paragraph|character} — the selected text keeps its look as local formatting, with [No Paragraph Style] / [None]",
-            has_text_or_frames,
+            "{kind: paragraph|character|object|table|cell, ids? (objects; default: the selection), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (a table or its cells; default: the selection)} — the selection keeps its look as its own formatting and loses the style: text takes [No Paragraph Style] / [None], objects [None], a table [Basic Table], cells [None] → for objects, tables and cells: {objects | tables | cells: how many}",
+            super::has_text_or_items,
             break_link
         ),
         cmd!(
@@ -1719,7 +1719,10 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
     let para = match p.get("kind").and_then(Value::as_str).unwrap_or("paragraph") {
         "paragraph" => true,
         "character" => false,
-        k => return Err(bad("style.breakLink", format!("unknown kind `{k}`"))),
+        "object" => return super::style::break_object_link(s, p),
+        "table" => return super::table::break_link(s, p, true),
+        "cell" => return super::table::break_link(s, p, false),
+        k => return Err(bad("style.breakLink", format!("unknown kind `{k}` (paragraph, character, object, table, cell)"))),
     };
     let targets = format_targets(s);
     s.edit(|d, _| {

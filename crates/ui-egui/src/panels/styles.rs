@@ -320,4 +320,41 @@ mod tests {
         app.run("style.character.apply", json!({"name": "Character Style 1"})).unwrap();
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["underline"], true);
     }
+
+    /// Clicking a character style in the panel applies it; Alt-click clears the text's own
+    /// formatting too. (Every click sends `clearOverrides`, which the command once refused.)
+    #[test]
+    fn clicking_a_character_style_applies_it_and_alt_click_clears_overrides() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "alpha beta"})).unwrap();
+        app.run("style.character.create", json!({"name": "Strong", "chars": {"fontStyle": "Bold"}})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 5})).unwrap();
+        app.run("type.char", json!({"size": 20})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(360.0, 240.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                character(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Strong").click();
+        h.run_steps(3);
+        let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!((a["characterStyle"].as_str(), a["chars"]["size"].as_f64()), (Some("Strong"), Some(20.0)), "applied, its own size kept");
+        // The row (after the caption, which names the current style too).
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+        h.get_all_by_label("Strong").next_back().unwrap().click();
+        h.run_steps(3);
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!(a["characterStyle"], "Strong");
+        assert_ne!(a["chars"]["size"].as_f64(), Some(20.0), "its own size cleared: {a}");
+    }
 }
