@@ -39,7 +39,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "Apply Cell Style",
             [],
             None,
-            "{name, story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} — the target cells (the whole table when the cursor is in it)",
+            "{name, clearOverrides?: bool (the cells' own formatting goes first: they start from what the table style gives them), story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} — the target cells (the whole table when the cursor is in it)",
             in_table,
             cell_style_apply
         ),
@@ -75,7 +75,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "Apply Table Style",
             [],
             None,
-            "{name, story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?}",
+            "{name, clearOverrides?: bool (the table's own formatting and its cells' go first: the table becomes what the style makes it), story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?}",
             in_table,
             table_style_apply
         ),
@@ -1656,11 +1656,30 @@ fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("style.cell.apply", format!("no cell style `{name}`")));
     }
     let cs = designcraft_doc::resolve_cell_style(styles, &name);
+    let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
     let g = target(s, p, "style.cell.apply")?;
+    let doc = &s.doc()?.doc;
+    let (table, cells) = (styled_table(doc, &g, "style.cell.apply")?.1, doc.styles.cell.clone());
+    let ts = doc.styles.resolve_table_style(&table);
     edit_table(s, &g, "style.cell.apply", |t| {
+        let owners = t.selected_owners(g.range);
+        // Cleared, each cell starts from what its table style gives it.
+        let base = clear.then(|| {
+            let mut base = t.clone();
+            for (r, c) in &owners {
+                if let Some(cell) = base.cell_mut(*r, *c) {
+                    *cell = plain_cell(cell);
+                }
+            }
+            ts.apply_to(&mut base, &cells);
+            base
+        });
         let mut n = 0;
-        for (r, c) in t.selected_owners(g.range) {
+        for (r, c) in owners {
             if let Some(cell) = t.cell_mut(r, c) {
+                if let Some(from) = base.as_ref().and_then(|b| b.cell(r, c)) {
+                    *cell = from.clone();
+                }
                 cs.apply_to(cell);
                 n += 1;
             }
@@ -1886,10 +1905,53 @@ fn table_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let ts = doc.styles.resolve_table_style(&name);
     let cells = doc.styles.cell.clone();
+    let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
     let g = target(s, p, "style.table.apply")?;
     edit_table(s, &g, "style.table.apply", |t| {
+        if clear {
+            // The formatting a table style can set, and every cell's, back to a new table's.
+            let o = &mut t.options;
+            let new = designcraft_doc::TableOptions::default();
+            (o.border, o.borders, o.space_before, o.space_after) = (new.border, new.borders, new.space_before, new.space_after);
+            (o.alt_rows, o.alt_cols, o.row_strokes, o.column_strokes) = (new.alt_rows, new.alt_cols, new.row_strokes, new.column_strokes);
+            for cell in &mut t.cells {
+                *cell = plain_cell(cell);
+            }
+        }
         ts.apply_to(t, &cells);
         ok()
+    })
+}
+
+/// `cell` with a new cell's formatting: its text, graphic and spans stay.
+fn plain_cell(cell: &designcraft_doc::Cell) -> designcraft_doc::Cell {
+    designcraft_doc::Cell {
+        row_span: cell.row_span,
+        col_span: cell.col_span,
+        text: cell.text.clone(),
+        graphic: cell.graphic.clone(),
+        ..Default::default()
+    }
+}
+
+/// Break Link to Style for a table (it takes [Basic Table]) or its target cells ([None]): their
+/// look stays.
+pub(super) fn break_link(s: &mut Session, p: &Value, table: bool) -> Result<Value> {
+    const ID: &str = "style.breakLink";
+    let g = target(s, p, ID)?;
+    edit_table(s, &g, ID, |t| {
+        if table {
+            t.style = String::new();
+            return Ok(json!({"tables": 1}));
+        }
+        let mut n = 0;
+        for (r, c) in t.selected_owners(g.range) {
+            if let Some(cell) = t.cell_mut(r, c) {
+                cell.style = String::new();
+                n += 1;
+            }
+        }
+        Ok(json!({"cells": n}))
     })
 }
 
@@ -2876,5 +2938,97 @@ mod redefine_tests {
                 "{options}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use designcraft_doc::{StoryId, Table, VerticalJustification};
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    /// A 3×2 table styled "Data" (6 pt before; body cells "Body": Paper fill), with local
+    /// settings neither style makes: 8 pt after on the table, center vertical justification on
+    /// cell (1, 0).
+    fn setup() -> (Session, u64, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Body", "fill": "[Paper]"})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Data", "body": "Body", "spaceBefore": 6})).unwrap();
+        s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
+        let tid = *s.doc().unwrap().doc.story(StoryId(sid)).unwrap().tables.keys().next().unwrap();
+        s.execute("table.options", &json!({"story": sid, "table": tid, "spaceAfter": 8})).unwrap();
+        s.execute("table.setCell", &json!({"story": sid, "table": tid, "row": 1, "col": 0, "vj": "center", "fill": "[Black]"})).unwrap();
+        (s, sid, tid)
+    }
+
+    fn table(s: &Session, sid: u64) -> Table {
+        (**s.doc().unwrap().doc.story(StoryId(sid)).unwrap().tables.values().next().unwrap()).clone()
+    }
+
+    /// Applying a table style keeps the table's own settings unless told to clear them: then the
+    /// table and its cells are as the style makes them.
+    #[test]
+    fn applying_a_table_style_can_clear_overrides() {
+        let (mut s, sid, tid) = setup();
+        let fresh = |s: &mut Session| {
+            let end = s.doc().unwrap().doc.story(StoryId(sid)).unwrap().len();
+            s.execute("text.select", &json!({"story": sid, "anchor": end, "focus": end})).unwrap();
+            s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+            s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
+            s.doc().unwrap().doc.story(StoryId(sid)).unwrap().tables.values().nth(1).map(|t| (**t).clone()).unwrap()
+        };
+        s.execute("style.table.apply", &json!({"name": "Data", "story": sid, "table": tid})).unwrap();
+        let t = table(&s, sid);
+        assert_eq!((t.options.space_after, t.cell(1, 0).unwrap().vj), (8.0, VerticalJustification::Center), "kept");
+        s.execute("style.table.apply", &json!({"name": "Data", "story": sid, "table": tid, "clearOverrides": true})).unwrap();
+        let (t, styled) = (table(&s, sid), fresh(&mut s));
+        assert_eq!(t.options, styled.options, "as the style makes it");
+        for (a, b) in t.cells.iter().zip(&styled.cells) {
+            assert_eq!((&a.fill, a.vj, &a.style), (&b.fill, b.vj, &b.style));
+        }
+    }
+
+    /// Applying a cell style keeps the cell's own settings unless told to clear them: then the
+    /// cell is as the table style and the cell style make it.
+    #[test]
+    fn applying_a_cell_style_can_clear_overrides() {
+        let (mut s, sid, tid) = setup();
+        let at = json!({"story": sid, "table": tid, "row": 1, "col": 0, "name": "Body"});
+        s.execute("style.cell.apply", &at).unwrap();
+        assert_eq!(table(&s, sid).cell(1, 0).unwrap().vj, VerticalJustification::Center, "kept");
+        let mut clear = at.clone();
+        clear["clearOverrides"] = json!(true);
+        s.execute("style.cell.apply", &clear).unwrap();
+        let t = table(&s, sid);
+        let (cell, other) = (t.cell(1, 0).unwrap(), t.cell(2, 0).unwrap());
+        assert_eq!((cell.vj, &cell.fill, &cell.style), (other.vj, &other.fill, &other.style));
+        assert_eq!(cell.text.text, "", "its text stays");
+    }
+
+    /// Break Link to Style: the table or cells keep their look and lose the style.
+    #[test]
+    fn breaking_the_link_to_a_table_or_cell_style_keeps_the_look() {
+        let (mut s, sid, tid) = setup();
+        let before = table(&s, sid);
+        s.execute("style.breakLink", &json!({"kind": "cell", "story": sid, "table": tid, "row": 1, "col": 0})).unwrap();
+        let t = table(&s, sid);
+        assert_eq!(t.cell(1, 0).unwrap().style, "");
+        assert_eq!(t.cell(2, 0).unwrap().style, "Body", "only the target cell");
+        assert_eq!((&t.cell(1, 0).unwrap().fill, t.cell(1, 0).unwrap().vj), (&before.cell(1, 0).unwrap().fill, before.cell(1, 0).unwrap().vj));
+        s.execute("style.breakLink", &json!({"kind": "table", "story": sid, "table": tid})).unwrap();
+        let t = table(&s, sid);
+        assert_eq!((t.style.as_str(), &t.options), ("", &before.options));
+        // Editing the style no longer reaches it.
+        s.execute("style.table.edit", &json!({"name": "Data", "spaceBefore": 20})).unwrap();
+        assert_eq!(table(&s, sid).options.space_before, before.options.space_before);
+        let e = s.execute("style.breakLink", &json!({"kind": "row"})).unwrap_err().to_string();
+        assert!(e.contains("row"), "{e}");
+        let _: Value = json!(null);
     }
 }

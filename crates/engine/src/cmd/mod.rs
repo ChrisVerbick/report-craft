@@ -143,6 +143,15 @@ pub fn has_text(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| d.selection.text.is_some()) { Ok(()) } else { Err("no text insertion point".into()) }
 }
+/// Text, objects or table cells selected (Break Link to Style, for every kind of style).
+pub fn has_text_or_items(s: &Session) -> std::result::Result<(), String> {
+    has_doc(s)?;
+    if s.active().is_some_and(|d| d.selection.text.is_some() || d.selection.cells.is_some() || !d.selection.items.is_empty()) {
+        Ok(())
+    } else {
+        Err("select text, objects or table cells".into())
+    }
+}
 pub fn has_text_or_frames(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| d.selection.text.is_some() || d.selection.items.iter().any(|i| d.doc.item(*i).is_some_and(|x| x.is_text_frame()))) {
