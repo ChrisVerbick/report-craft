@@ -2295,6 +2295,17 @@ mod text_link_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// With Keep Earlier Versions in Saved Files off, a Flow update keeps no versions.
+    #[test]
+    fn a_flow_update_keeps_no_versions_when_they_are_off() {
+        let (dir, path, mut s, sid) = placed("update-no-version", "Revenue grew.");
+        s.execute("prefs.set", &json!({"keepVersions": false})).unwrap();
+        revise(&path, "Revenue grew strongly.");
+        assert_eq!(s.execute("links.update", &json!({"story": sid.0})).unwrap()["updated"], 1);
+        assert_eq!(s.execute("version.list", &json!({})).unwrap(), json!([]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A workbook with named sheets, each a list of (cell, text): inline strings, or error values
     /// for text starting with `#`.
     fn book(sheets: &[(&str, &[(&str, &str)])]) -> Vec<u8> {

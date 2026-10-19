@@ -25,6 +25,19 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // A version no longer listed (another document's, or pruned) isn't picked.
     let mut sel = ui.data(|d| d.get_temp::<Option<u64>>(sel_id)).flatten().filter(|s| list.iter().any(|v| v["id"].as_u64() == Some(*s)));
     let mut act = None;
+    // Whether this document's saved file keeps them: its own setting, else the preference.
+    let keeps = app.session.active().is_some_and(|st| st.doc.settings.keep_versions.unwrap_or(app.session.prefs.keep_versions));
+    let mut on = keeps;
+    let hint = crate::i18n::tr(&lang, "Anyone you send the file to can restore them. File › Save a Copy without History… leaves them out.");
+    if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Keep Earlier Versions in This File"))).on_hover_text(hint).changed() {
+        let _ = app.run("version.keep", json!({"on": on}));
+    }
+    if !keeps {
+        crate::rtl::label(
+            ui,
+            RichText::new(crate::i18n::tr(&lang, "Off: saving drops this file's versions, and copies carry none.")).size(11.0).color(t.text_dim),
+        );
+    }
     if list.is_empty() {
         crate::rtl::label(
             ui,
@@ -286,6 +299,53 @@ mod tests {
         h.state_mut().run("app.saveCopyWithoutHistoryDialog", json!({})).unwrap();
         assert_eq!((versions_in(&copy), versions_in(&path)), (0, 1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The panel's switch is this document's own: it turns its versions off, with a note saying
+    /// what that means, and on again; the preference for other documents stays as it was.
+    #[test]
+    fn the_panel_switch_turns_versions_off_and_on() {
+        let dir = folder("switch");
+        let (app, _) = app_with_versions(&dir);
+        let mut h = harness(app);
+        h.run_steps(3);
+        let own = |app: &DesignApp| app.session.active().unwrap().doc.settings.keep_versions;
+        h.get_by_label("Keep Earlier Versions in This File").click();
+        h.run_steps(3);
+        assert_eq!(own(h.state()), Some(false));
+        assert!(h.state().session.prefs.keep_versions, "the preference, for other documents, stays on");
+        h.get_by_label("Off: saving drops this file's versions, and copies carry none.");
+        h.get_by_label("Keep Earlier Versions in This File").click();
+        h.run_steps(3);
+        assert_eq!(own(h.state()), Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Preferences › File Handling opens with the switch on and saves it off.
+    #[test]
+    fn preferences_save_the_switch() {
+        let (mut app, _) = app_with("One.");
+        app.run("app.preferences", json!({})).unwrap();
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.fields["keepVersions"], true);
+        d.fields.insert("keepVersions".into(), json!(false));
+        d.fields.insert("section".into(), json!("files"));
+        let mut h = Harness::builder().with_size(egui::vec2(900.0, 700.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                crate::dialogs::show(app, &ui.ctx().clone());
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Keep Earlier Versions in Saved Files");
+        crate::dialogs::confirm(h.state_mut()).unwrap();
+        assert!(!h.state().session.prefs.keep_versions);
     }
 
     /// F5.3's screenshot (`plan/shots/f5.3-history.png`): the History panel beside a document

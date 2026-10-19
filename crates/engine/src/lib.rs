@@ -251,6 +251,10 @@ pub struct Prefs {
     pub recent_files_max: u32,
     /// The name the document's versions are kept under (saves, File › Save a Version).
     pub user_name: String,
+    /// Preferences › File Handling › Keep Earlier Versions in Saved Files (History): on, saved
+    /// files keep the document's versions; off, saved files, copies, the serialized file and
+    /// recovery data carry none, and saving drops the file's.
+    pub keep_versions: bool,
 }
 
 /// The most recent files Preferences lets File › Open Recent keep.
@@ -327,6 +331,7 @@ impl Default for Prefs {
             recent_files: Vec::new(),
             recent_files_max: 20,
             user_name: String::new(),
+            keep_versions: true,
         }
     }
 }

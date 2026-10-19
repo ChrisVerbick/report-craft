@@ -698,6 +698,20 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Flow update", "Flow-ის განახლება"),
     ("Restored version {id}", "აღდგენილია ვერსია {id}"),
     ("Exported version {id}", "ვერსია {id} ექსპორტირებულია"),
+    ("Keep Earlier Versions in This File", "ადრინდელი ვერსიების შენახვა ამ ფაილში"),
+    ("Keep Earlier Versions in Saved Files", "ადრინდელი ვერსიების შენახვა შენახულ ფაილებში"),
+    (
+        "Off: saving drops this file's versions, and copies carry none.",
+        "გამორთულია: შენახვისას ამ ფაილის ვერსიები იშლება და ასლებს ისინი არ მოჰყვება.",
+    ),
+    (
+        "Anyone you send the file to can restore them. File › Save a Copy without History… leaves them out.",
+        "ვისაც ფაილს გაუგზავნით, შეუძლია მათი აღდგენა. ფაილი › ასლის შენახვა ისტორიის გარეშე… მათ არ შეიცავს.",
+    ),
+    (
+        "For documents that don't set their own in the History panel. Off: they drop their earlier versions when saved. Anyone you send a file to can restore its versions; File › Save a Copy without History… leaves them out.",
+        "დოკუმენტებისთვის, რომლებსაც ისტორიის პანელში საკუთარი პარამეტრი არ აქვთ. გამორთულია: შენახვისას ისინი ადრინდელ ვერსიებს შლიან. ვისაც ფაილს გაუგზავნით, შეუძლია მისი ვერსიების აღდგენა; ფაილი › ასლის შენახვა ისტორიის გარეშე… მათ არ შეიცავს.",
+    ),
     ("Export Changes as PDF…", "ცვლილებების ექსპორტი PDF-ში…"),
     ("Polygon Settings…", "მრავალკუთხედის პარამეტრები…"),
     ("Preflight Document", "დოკუმენტის წინასწარი შემოწმება"),

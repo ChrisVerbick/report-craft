@@ -401,6 +401,10 @@ pub struct DocSettings {
     /// The fill and stroke new shapes are drawn with: what the Tools panel's proxy shows and sets
     /// with nothing selected (InDesign's document defaults).
     pub new_object: NewObjectColors,
+    /// History panel › Keep Earlier Versions in This File: whether this document's saved file
+    /// keeps its earlier versions. `None` follows the application's preference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_versions: Option<bool>,
 }
 
 fn is_origin(p: &[f64; 2]) -> bool {
@@ -461,6 +465,7 @@ impl Default for DocSettings {
             zero_point: [0.0, 0.0],
             zero_point_locked: false,
             new_object: NewObjectColors::default(),
+            keep_versions: None,
         }
     }
 }

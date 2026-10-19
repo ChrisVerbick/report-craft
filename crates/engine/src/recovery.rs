@@ -528,7 +528,7 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             discard(dir, d.uid);
             continue;
         }
-        write_entry(&access, dir, d)?;
+        write_entry(&access, dir, d, crate::cmd::keeps_versions(s.prefs.keep_versions, d))?;
         n += 1;
     }
     Ok(n)
@@ -537,6 +537,7 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
 /// Command-path checkpointing also records explicitly selected directories, without configuring
 /// automatic recovery. The immutable public helper remains available for fixtures and callers.
 pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
+    let keep = s.prefs.keep_versions;
     // Reject the complete batch before writing rather than silently losing old ownership records.
     for document in &s.docs {
         if document.is_dirty() && !has_checkpoint(document, dir) && document.recovery_entries.len() >= MAX_RECOVERY_ENTRIES {
@@ -559,9 +560,12 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
         }
         let Some(document) = s.docs.get_mut(index) else { continue };
         let (doc, meta) = files(dir, document.uid);
-        let bytes =
-            designcraft_format::save_with_history(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()), &document.versions, None)
-                .map_err(|e| EngineError::Other(e.to_string()))?;
+        let bytes = designcraft_format::save_with_history(
+            document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()),
+            &crate::cmd::versions_written(crate::cmd::keeps_versions(keep, document), &document.versions),
+            None,
+        )
+        .map_err(|e| EngineError::Other(e.to_string()))?;
         // An entry this run did not write is never replaced, even one made since it checked.
         let replace = access.owns(document.uid);
         publish_recovery_file(&doc, &bytes, replace)?;
@@ -578,9 +582,10 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
 }
 
 /// Publish a document's recovery entry before its optional metadata.
-fn write_entry(access: &Access, dir: &Path, d: &DocState) -> Result<()> {
+fn write_entry(access: &Access, dir: &Path, d: &DocState, keep: bool) -> Result<()> {
     let (doc, meta) = files(dir, d.uid);
-    let bytes = designcraft_format::save_with_history(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()), &d.versions, None)
+    let versions = crate::cmd::versions_written(keep, &d.versions);
+    let bytes = designcraft_format::save_with_history(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()), &versions, None)
         .map_err(|e| EngineError::Other(e.to_string()))?;
     let replace = access.owns(d.uid);
     publish_recovery_file(&doc, &bytes, replace)?;
@@ -783,6 +788,7 @@ pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
 }
 
 fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Path, &[u8]) -> Result<()>) -> Result<Vec<usize>> {
+    let keep = s.prefs.keep_versions;
     #[cfg(not(target_arch = "wasm32"))]
     validate_recovery_dir(dir)?;
     let source = access(dir, false)?;
@@ -837,9 +843,13 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         // clean up every snapshot this document actually owns rather than an unrelated same uid.
         if let Some(state) = s.docs.get_mut(index) {
             let (document, metadata) = files(&destination, state.uid);
-            let published = designcraft_format::save_with_history(state.doc.as_ref(), &state.versions, None)
-                .map_err(|e| EngineError::Other(e.to_string()))
-                .and_then(|bytes| publish(&document, &bytes));
+            let published = designcraft_format::save_with_history(
+                state.doc.as_ref(),
+                &crate::cmd::versions_written(crate::cmd::keeps_versions(keep, state), &state.versions),
+                None,
+            )
+            .map_err(|e| EngineError::Other(e.to_string()))
+            .and_then(|bytes| publish(&document, &bytes));
             match published {
                 Ok(()) => {
                     target.record(state.uid);
