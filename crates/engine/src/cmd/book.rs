@@ -36,6 +36,19 @@ fn save(_: &Book) -> Result<()> {
     Err(EngineError::Other("books need a file system".into()))
 }
 
+/// A chapter's file, resolved against the book's file. A chapter on another computer (other than
+/// the book's own network share) or a device is not opened ([`crate::io::document_path`]).
+fn chapter(b: &Book, path: &str) -> Result<String> {
+    crate::io::document_path(path, Some(std::path::Path::new(&b.path)))
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|why| EngineError::Other(format!("{path}: {why}")))
+}
+
+/// Every chapter's file ([`chapter`]), in order.
+fn chapters(b: &Book) -> Result<Vec<String>> {
+    b.documents.iter().map(|path| chapter(b, path)).collect()
+}
+
 fn load(path: &str) -> Result<designcraft_doc::Document> {
     #[cfg(not(target_arch = "wasm32"))]
     let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
@@ -45,7 +58,8 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         vec![]
     };
     if path.to_lowercase().ends_with(".idml") {
-        return super::interchange::import_idml_confined(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")));
+        return super::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(path)))
+            .map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }
     super::file::from_bytes(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }
@@ -144,7 +158,7 @@ fn paginate(s: &Session) -> Result<Value> {
     let mut next = 1u32;
     let mut chapter = 0u32;
     let mut chapters = Vec::with_capacity(b.documents.len());
-    for path in &b.documents {
+    for path in &self::chapters(b)? {
         writable_chapter(s, path, "book.paginate")?;
         let mut d = load(path)?;
         start_at(&mut d, next);
@@ -167,13 +181,14 @@ fn paginate(s: &Session) -> Result<Value> {
 fn sync_styles(s: &Session) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
     let mut batch = ChapterBatch::new(b.documents.len(), "book.syncStyles")?;
-    let src_path = b.documents.get(b.style_source).ok_or_else(|| bad("book.syncStyles", "the book is empty"))?;
+    let paths = chapters(b)?;
+    let src_path = paths.get(b.style_source).ok_or_else(|| bad("book.syncStyles", "the book is empty"))?;
     let src = load(src_path)?;
     let styles = src.styles.clone();
     let swatches = src.swatches.clone();
     drop(src);
     let mut n = 0;
-    for (i, path) in b.documents.iter().enumerate() {
+    for (i, path) in paths.iter().enumerate() {
         if i == b.style_source {
             continue;
         }
@@ -304,7 +319,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let mut first = 1usize;
             let mut docs = Vec::new();
             for p in &b.documents {
-                let pages = load(p).map(|d| d.page_count()).unwrap_or(0);
+                let pages = chapter(b, p).and_then(|p| load(&p)).map(|d| d.page_count()).unwrap_or(0);
                 docs.push(json!({"path": p, "pages": pages, "firstPage": first}));
                 first = first.saturating_add(pages);
             }
@@ -319,7 +334,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "book.exportPdf", "Export Book to PDF…", [], None, "{path?} — every document in order as one PDF → {path, bytes, pages} (no path: {base64, …})", has_book, |s, p| {
             let b = s.book.clone().ok_or_else(no_book)?;
             let mut parts = Vec::new();
-            for path in &b.documents {
+            for path in &chapters(&b)? {
                 let mut d = load(path)?;
                 // The chapter's own fonts, for this export (skipped font files are logged).
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;

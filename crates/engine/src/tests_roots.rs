@@ -71,9 +71,10 @@ fn idml_links_are_read_through_the_roots() {
     // Linked, not embedded: opening the package has to read the file its link names.
     let idml = base64_idml(&mut s);
     let linked = |doc: &designcraft_doc::Document| doc.assets.values().filter(|a| !a.data.is_empty()).count();
-    let unconfined = cmd::interchange::import_idml_confined(&idml).unwrap();
+    let package = base.join("outside/x.idml");
+    let unconfined = cmd::interchange::import_idml_confined(&idml, Some(&package)).unwrap();
     assert_eq!(linked(&unconfined), 1, "without roots the link is followed");
-    let confined = confine(Some(&roots), || cmd::interchange::import_idml_confined(&idml)).unwrap();
+    let confined = confine(Some(&roots), || cmd::interchange::import_idml_confined(&idml, Some(&package))).unwrap();
     assert_eq!(linked(&confined), 0, "with roots a link outside the read root is not read");
     // The same through the commands that open or place a package.
     let b64 = cmd::base64_encode(&idml);
