@@ -249,7 +249,8 @@ impl CellStrokeAttrs {
         }
     }
 
-    fn from_stroke(stroke: &crate::table::CellStroke) -> Self {
+    /// Attributes that set every field to `stroke`'s.
+    pub fn from_stroke(stroke: &crate::table::CellStroke) -> Self {
         Self {
             weight: Some(stroke.weight),
             color: Some(stroke.color.clone()),
@@ -324,7 +325,8 @@ impl AltFillsAttrs {
         }
     }
 
-    fn from_fills(fills: &crate::table::AltFills) -> Self {
+    /// Attributes that set every field to `fills`'.
+    pub fn from_fills(fills: &crate::table::AltFills) -> Self {
         Self {
             first: Some(fills.first),
             first_color: Some(fills.first_color.clone()),
@@ -391,6 +393,18 @@ pub struct AltStrokesAttrs {
 impl AltStrokesAttrs {
     pub fn is_empty(&self) -> bool {
         self == &Self::default()
+    }
+
+    /// Attributes that set every field to `strokes`'.
+    pub fn from_strokes(strokes: &crate::table::AltStrokes) -> Self {
+        Self {
+            first: Some(strokes.first),
+            next: Some(strokes.next),
+            first_stroke: CellStrokeAttrs::from_stroke(&strokes.first_stroke),
+            next_stroke: CellStrokeAttrs::from_stroke(&strokes.next_stroke),
+            skip_first: Some(strokes.skip_first),
+            skip_last: Some(strokes.skip_last),
+        }
     }
 
     pub fn merge(&mut self, other: &Self) {
