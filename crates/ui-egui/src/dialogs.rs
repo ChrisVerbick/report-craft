@@ -2501,6 +2501,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         // Word and RTF files have styles to map; a workbook or plain text has none.
                         let styled = d.id == "importOptions" || d.b("word");
                         if styled {
+                            import_preset(app, ui, &mut d);
                             check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
                         }
                         if styled && !d.b("removeStyles") {
@@ -6837,6 +6838,78 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
     d.fields.insert("cmyk".into(), json!(cmyk));
     d.fields.insert("model".into(), json!(model));
     d.fields.insert("hex".into(), json!(format!("#{:02x}{:02x}{:02x}", to8(rgb[0]), to8(rgb[1]), to8(rgb[2]))));
+}
+
+/// The options an import preset sets, as Import Options holds them.
+fn preset_options(d: &Dialog) -> Value {
+    json!({"map": d.fields.get("map"), "styleConflicts": d.s("styleConflicts"), "removeStyles": d.b("removeStyles")})
+}
+
+/// Import Options › Preset: a saved preset fills the dialog's options (its rules resolved against
+/// the file), shown as [Custom] once they change; Save Preset keeps the dialog's options under the
+/// name typed, for every document or, with In This Document, in this one.
+fn import_preset(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let names: Vec<String> = app
+        .session
+        .execute("place.presets", &json!({}))
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|p| p["name"].as_str().map(str::to_string)).collect()))
+        .unwrap_or_default();
+    // A preset chosen (in the menu below, or by a script) fills the options once.
+    let chosen = d.s("preset");
+    if !chosen.is_empty() && d.s("presetApplied") != chosen {
+        match app.run("place.styles", json!({"path": d.s("path"), "preset": chosen})) {
+            Ok(info) => {
+                for key in ["map", "styleConflicts", "removeStyles"] {
+                    d.fields.insert(key.into(), info[key].clone());
+                }
+                d.fields.insert("presetApplied".into(), json!(chosen));
+                d.fields.insert("presetOptions".into(), preset_options(d));
+            }
+            Err(e) => {
+                d.fields.insert("preset".into(), json!(""));
+                app.status(e);
+            }
+        }
+    }
+    let chosen = d.s("preset");
+    let custom = chosen.is_empty() || d.fields.get("presetOptions") != Some(&preset_options(d));
+    let shown = if custom { crate::i18n::tr(&lang, "[Custom]").to_string() } else { chosen.clone() };
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Preset:"));
+        egui::ComboBox::from_id_salt("imp_preset").selected_text(crate::rtl::widget(ui, &shown)).width(170.0).show_ui(ui, |ui| {
+            for n in &names {
+                if ui.selectable_label(!custom && *n == chosen, crate::rtl::widget(ui, n)).clicked() {
+                    d.fields.insert("preset".into(), json!(n));
+                    d.fields.remove("presetApplied");
+                }
+            }
+        });
+    });
+    ui.horizontal(|ui| {
+        let mut name = d.s("presetName");
+        let hint = crate::i18n::tr(&lang, "Preset name");
+        if ui.add(egui::TextEdit::singleline(&mut name).hint_text(hint).desired_width(140.0)).changed() {
+            d.fields.insert("presetName".into(), json!(name));
+        }
+        check(ui, d, "presetInDocument", crate::i18n::tr(&lang, "In This Document"));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Save Preset"))).clicked() {
+            let scope = if d.b("presetInDocument") { "document" } else { "user" };
+            let params = json!({"name": d.s("presetName"), "scope": scope, "styleMap": d.fields.get("map").cloned().unwrap_or(json!({})),
+                "styleConflicts": d.s("styleConflicts"), "removeStyles": d.b("removeStyles")});
+            match app.run("place.savePreset", params) {
+                Ok(r) => {
+                    let name = r["name"].as_str().unwrap_or_default().to_string();
+                    d.fields.insert("preset".into(), json!(name));
+                    d.fields.insert("presetApplied".into(), json!(name));
+                    d.fields.insert("presetOptions".into(), preset_options(d));
+                    app.status(crate::i18n::tr(&lang, "Saved the import preset “{name}”").replace("{name}", &name));
+                }
+                Err(e) => app.status(e),
+            }
+        }
+    });
 }
 
 /// The Load Styles dialog's sections: each kind of style, by its key in `style.load`.

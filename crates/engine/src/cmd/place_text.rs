@@ -2,10 +2,14 @@
 //! selected frame, or a new frame on the page; with autoflow, pages and threaded frames are added
 //! until the whole story fits (InDesign's Shift-click with a loaded text cursor).
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use designcraft_doc::{
-    CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, Story, StoryId, TextDirection, TextFileLink, TextSel, WorkbookPart,
+    CharAttrs, CharacterStyle, Content, Document, ImportPreset, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, Story, StoryId, StyleRule,
+    StyleRuleAttrs, StyleRuleKind, TextDirection, TextFileLink, TextSel, WorkbookPart,
 };
 use designcraft_geom::Rect;
+use designcraft_textimport::{Imported, ImportedStyle};
 use serde_json::{Value, json};
 
 use super::bad;
@@ -25,12 +29,12 @@ enum Conflict {
 }
 
 impl Conflict {
-    fn parse(c: &str) -> Result<Self> {
+    fn parse(c: &str, cmd: &str) -> Result<Self> {
         match c {
             "useExisting" | "" => Ok(Conflict::UseExisting),
             "redefine" => Ok(Conflict::Redefine),
             "autoRename" => Ok(Conflict::AutoRename),
-            c => Err(bad("file.place", format!("unknown styleConflicts `{c}` (useExisting, redefine, autoRename)"))),
+            c => Err(bad(cmd, format!("unknown styleConflicts `{c}` (useExisting, redefine, autoRename)"))),
         }
     }
 
@@ -91,6 +95,207 @@ fn map_styles(
         }
     });
     rename
+}
+
+/// `styleConflicts` checked: its name as `file.place` takes it.
+pub(super) fn conflicts_name(c: &str, cmd: &str) -> Result<&'static str> {
+    Conflict::parse(c, cmd).map(Conflict::name)
+}
+
+/// Does `name` match `pattern`: `*` stands for any run of characters, `?` for any one, and case
+/// doesn't count.
+fn glob(pattern: &str, name: &str) -> bool {
+    let (p, n): (Vec<char>, Vec<char>) = (pattern.to_lowercase().chars().collect(), name.to_lowercase().chars().collect());
+    // The last `*` and where in `name` its run started: a mismatch makes that run one longer.
+    let (mut pi, mut ni, mut star) = (0, 0, None);
+    while ni < n.len() {
+        match (p.get(pi), n.get(ni)) {
+            (Some('*'), _) => {
+                star = Some((pi, ni));
+                pi += 1;
+            }
+            (Some(c), Some(x)) if *c == '?' || c == x => {
+                pi += 1;
+                ni += 1;
+            }
+            _ => match star {
+                Some((sp, sn)) => {
+                    star = Some((sp, sn + 1));
+                    (pi, ni) = (sp + 1, sn + 1);
+                }
+                None => return false,
+            },
+        }
+    }
+    p.get(pi..).is_some_and(|rest| rest.iter().all(|c| *c == '*'))
+}
+
+/// At most this many rules in one `styleRules`.
+const MAX_RULES: usize = 500;
+
+/// The `styleRules` of `p`, checked (`None`: not given).
+pub(super) fn rules_param(p: &Value, cmd: &str) -> Result<Option<Vec<StyleRule>>> {
+    let Some(v) = p.get("styleRules").filter(|v| !v.is_null()) else { return Ok(None) };
+    let list = v.as_array().ok_or_else(|| bad(cmd, "`styleRules` must be a list of rules"))?;
+    if list.len() > MAX_RULES {
+        return Err(bad(cmd, format!("`styleRules` has at most {MAX_RULES} rules")));
+    }
+    let mut rules = Vec::with_capacity(list.len());
+    for (i, r) in list.iter().enumerate() {
+        let why = |e: String| bad(cmd, format!("`styleRules` rule {}: {e}", i + 1));
+        let keys = r.as_object().ok_or_else(|| why("must be an object".into()))?;
+        let known = |k: &String, of: &[&str]| of.contains(&k.as_str());
+        if let Some(k) = keys.keys().find(|k| !known(k, &["match", "kind", "attrs", "to", "keepOverrides"])) {
+            return Err(why(format!("unknown key `{k}`")));
+        }
+        if let Some(k) = keys.get("attrs").and_then(Value::as_object).and_then(|a| a.keys().find(|k| !known(k, &["para", "chars"])).cloned()) {
+            return Err(why(format!("`attrs` takes para and chars, not `{k}`")));
+        }
+        let rule: StyleRule = serde_json::from_value(r.clone()).map_err(|e| why(e.to_string()))?;
+        if rule.to.trim().is_empty() {
+            return Err(why("give `to`, the document style it maps to".into()));
+        }
+        rules.push(rule);
+    }
+    Ok(Some(rules))
+}
+
+/// An imported style's attributes with those of the styles it is based on, in the import.
+fn imported_attrs(styles: &[ImportedStyle], name: &str) -> (ParaAttrs, CharAttrs) {
+    let mut chain: Vec<&ImportedStyle> = Vec::new();
+    let mut cur = styles.iter().find(|s| s.name == name);
+    while let Some(s) = cur {
+        if chain.iter().any(|c| c.name == s.name) {
+            break;
+        }
+        chain.push(s);
+        cur = s.based_on.as_deref().and_then(|b| styles.iter().find(|x| x.name == b));
+    }
+    let (mut para, mut chars) = (ParaAttrs::default(), CharAttrs::default());
+    for s in chain.into_iter().rev() {
+        para.merge(&s.para);
+        chars.merge(&s.chars);
+    }
+    (para, chars)
+}
+
+/// Does a style with the attributes `own` have every attribute `want` gives, with its value?
+fn has_attrs(want: &StyleRuleAttrs, own: &(ParaAttrs, CharAttrs)) -> bool {
+    let (mut para, mut chars) = own.clone();
+    para.merge(&want.para);
+    chars.merge(&want.chars);
+    (para, chars) == *own
+}
+
+/// What `rules` make of the imported styles `map` doesn't name: for each, the first rule that
+/// matches it (kind, name and attributes) and names a style of its kind in the document. Also
+/// the styles (`true`: a paragraph style) whose rule clears their text's own formatting.
+fn resolve_rules(
+    d: &Document,
+    imp: &Imported,
+    map: &HashMap<String, String>,
+    rules: &[StyleRule],
+) -> (HashMap<String, String>, HashSet<(bool, String)>) {
+    let (mut mapped, mut clear) = (HashMap::new(), HashSet::new());
+    if rules.is_empty() {
+        return (mapped, clear);
+    }
+    for (para, styles) in [(true, &imp.para_styles), (false, &imp.char_styles)] {
+        for s in styles.iter().filter(|s| !map.contains_key(&s.name)) {
+            let own = imported_attrs(styles, &s.name);
+            let rule = rules.iter().find(|r| {
+                let kind = match r.kind {
+                    StyleRuleKind::Any => true,
+                    StyleRuleKind::Paragraph => para,
+                    StyleRuleKind::Character => !para,
+                };
+                let target = if para { d.styles.para(&r.to).is_some() } else { d.styles.char_style(&r.to).is_some() };
+                kind && target && r.pattern.as_deref().is_none_or(|p| glob(p, &s.name)) && has_attrs(&r.attrs, &own)
+            });
+            if let Some(r) = rule {
+                mapped.insert(s.name.clone(), r.to.clone());
+                if !r.keep_overrides {
+                    clear.insert((para, s.name.clone()));
+                }
+            }
+        }
+    }
+    (mapped, clear)
+}
+
+/// Text whose style a rule with `keepOverrides: false` maps (`true`: a paragraph style) loses its
+/// own formatting, as with Clear Overrides. Run while the text still has the import's style names.
+fn clear_overrides(story: &mut Story, clear: &HashSet<(bool, String)>) {
+    if clear.is_empty() {
+        return;
+    }
+    let n = story.len();
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, range) in story.para_ranges().into_iter().enumerate() {
+        let Some(p) = story.paras.get_mut(i) else { continue };
+        if clear.contains(&(true, p.style.clone())) {
+            p.para = ParaAttrs::default();
+            p.chars = CharAttrs::default();
+            runs.push(range.start..range.end.saturating_add(1).min(n));
+        }
+    }
+    runs.extend(story.runs().filter(|(_, f)| clear.contains(&(false, f.style.clone()))).map(|(r, _)| r));
+    for r in runs {
+        story.format_chars(r, |f| f.over = CharAttrs::default());
+    }
+}
+
+/// Map the import's styles by `map` and then `rules` (clearing what a rule asks), resolving name
+/// clashes as `conflict` says. Returns what the link keeps: `map`'s mappings and Auto Rename's
+/// names, not what the rules mapped (they map again on Update).
+fn apply_options(
+    d: &Document,
+    imp: &mut Imported,
+    map: &HashMap<String, String>,
+    rules: &[StyleRule],
+    conflict: Conflict,
+) -> HashMap<String, String> {
+    let (ruled, clear) = resolve_rules(d, imp, map, rules);
+    clear_overrides(&mut imp.story, &clear);
+    let mut all = map.clone();
+    all.extend(ruled.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut kept = map_styles(d, imp, &all, conflict);
+    kept.retain(|k, _| !ruled.contains_key(k));
+    kept
+}
+
+/// What `preset` maps of the import's styles onto styles the document has: its names, then its
+/// rules (Import Options › Preset fills the mapping with it).
+pub(super) fn preset_map(d: &Document, imp: &Imported, preset: &ImportPreset) -> BTreeMap<String, String> {
+    let names: HashSet<&str> = imp.para_styles.iter().chain(&imp.char_styles).map(|s| s.name.as_str()).collect();
+    let has = |to: &str| d.styles.para(to).is_some() || d.styles.char_style(to).is_some();
+    let map: HashMap<String, String> =
+        preset.style_map.iter().filter(|(from, to)| names.contains(from.as_str()) && has(to)).map(|(f, t)| (f.clone(), t.clone())).collect();
+    let (ruled, _) = resolve_rules(d, imp, &map, &preset.style_rules);
+    map.into_iter().chain(ruled).collect()
+}
+
+/// A `file.place`'s Word Import Options: those it gives, else its `preset`'s.
+struct Options {
+    map: HashMap<String, String>,
+    rules: Vec<StyleRule>,
+    conflict: Conflict,
+    remove: bool,
+}
+
+fn options(s: &Session, p: &Value, cmd: &str) -> Result<Options> {
+    let preset = match super::str_param(p, "preset") {
+        Some(name) => super::place_presets::find(s, name, cmd)?,
+        None => ImportPreset::default(),
+    };
+    let conflict = Conflict::parse(p.get("styleConflicts").and_then(Value::as_str).unwrap_or(&preset.style_conflicts), cmd)?;
+    let map = match p.get("styleMap").and_then(Value::as_object) {
+        Some(o) => o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect(),
+        None => preset.style_map.into_iter().collect(),
+    };
+    let rules = rules_param(p, cmd)?.unwrap_or(preset.style_rules);
+    let remove = p.get("removeStyles").and_then(Value::as_bool).unwrap_or(preset.remove_styles);
+    Ok(Options { map, rules, conflict, remove })
 }
 
 fn add_styles(d: &mut Document, imp: &designcraft_textimport::Imported, conflict: Conflict) {
@@ -203,6 +408,7 @@ fn text_link(
         base: Some(std::sync::Arc::new(Story { frames: Vec::new(), file_link: None, ..story.clone() })),
         last_update: None,
         workbook: WorkbookPart::default(),
+        style_rules: Vec::new(),
     }
 }
 
@@ -216,6 +422,7 @@ struct Again {
     map: std::collections::HashMap<String, String>,
     conflict: Conflict,
     workbook: WorkbookPart,
+    rules: Vec<StyleRule>,
 }
 
 /// The linked file imported again with the import options it was placed with, and its styles
@@ -228,7 +435,7 @@ fn import_again(d: &mut Document, link: &TextFileLink, path: &str, bytes: &[u8])
         imp.para_styles.clear();
         imp.char_styles.clear();
     }
-    let conflict = Conflict::parse(&link.style_conflicts)?;
+    let conflict = Conflict::parse(&link.style_conflicts, "links.update")?;
     // A mapping to a style the document no longer has is dropped: that style is imported again.
     let map: std::collections::HashMap<String, String> = link
         .style_map
@@ -236,7 +443,7 @@ fn import_again(d: &mut Document, link: &TextFileLink, path: &str, bytes: &[u8])
         .filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some())
         .map(|(from, to)| (from.clone(), to.clone()))
         .collect();
-    let map = map_styles(d, &mut imp, &map, conflict);
+    let map = apply_options(d, &mut imp, &map, &link.style_rules, conflict);
     add_styles(d, &imp, conflict);
     let mut workbook = link.workbook.clone();
     if !workbook.table_style.is_empty() && !d.styles.table.iter().any(|t| t.name == workbook.table_style) {
@@ -244,7 +451,7 @@ fn import_again(d: &mut Document, link: &TextFileLink, path: &str, bytes: &[u8])
         workbook.table_style.clear();
     }
     style_tables(d, &mut imp, &workbook.table_style);
-    Ok((imp, Again { map, conflict, workbook }))
+    Ok((imp, Again { map, conflict, workbook, rules: link.style_rules.clone() }))
 }
 
 /// Update Link of a linked text file: `bytes` (read from `path`) imported again into the story
@@ -263,7 +470,7 @@ pub(crate) fn reimport(
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     fill(story, &imp.story);
     let applied = text_link(path, bytes, before, again.map, again.conflict, link.remove_styles, story);
-    story.file_link = Some(TextFileLink { workbook: again.workbook, ..applied });
+    story.file_link = Some(TextFileLink { workbook: again.workbook, style_rules: again.rules, ..applied });
     mark(story, &Value::Null, &imp.problems);
     Ok((imp.warnings, imp.problems))
 }
@@ -318,7 +525,8 @@ pub(crate) fn remerge(
     // The story counts as edited while it differs from the file as applied.
     let applied = text_link(path, bytes, before, again.map, again.conflict, link.remove_styles, story);
     let story_hash = super::links::story_hash(&theirs);
-    story.file_link = Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, workbook: again.workbook, ..applied });
+    story.file_link =
+        Some(TextFileLink { base: Some(std::sync::Arc::new(theirs)), story_hash, workbook: again.workbook, style_rules: again.rules, ..applied });
     mark(story, &report, &imp.problems);
     place_report(d, sid, &mut report);
     Ok((warnings, report, imp.problems))
@@ -705,19 +913,13 @@ pub(super) fn place_text(
         return Err(bad("file.place", format!("no table style `{}`", workbook.table_style)));
     }
     style_tables(&s.doc()?.doc, &mut imp, &workbook.table_style);
-    let remove = p.get("removeStyles").and_then(Value::as_bool).unwrap_or(false);
+    let Options { map, rules, conflict, remove } = options(s, p, "file.place")?;
     if remove {
         strip(&mut imp.story);
         imp.para_styles.clear();
         imp.char_styles.clear();
     }
-    let conflict = Conflict::parse(p.get("styleConflicts").and_then(Value::as_str).unwrap_or("useExisting"))?;
-    let map: std::collections::HashMap<String, String> = p
-        .get("styleMap")
-        .and_then(Value::as_object)
-        .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
-        .unwrap_or_default();
-    let map = map_styles(&s.doc()?.doc, &mut imp, &map, conflict);
+    let map = apply_options(&s.doc()?.doc, &mut imp, &map, &rules, conflict);
     // Create Links When Placing Text Files (only a file on disk can be linked).
     let link = path.filter(|_| p.get("link").and_then(Value::as_bool).unwrap_or(s.prefs.link_text_files));
     // A file too large for the Links panel to check isn't linked.
@@ -789,9 +991,11 @@ pub(super) fn place_text(
             };
             let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             fill(story, &imp.story);
-            story.file_link = link
-                .as_deref()
-                .map(|path| TextFileLink { workbook: workbook.clone(), ..text_link(path, bytes, before, map.clone(), conflict, remove, story) });
+            story.file_link = link.as_deref().map(|path| TextFileLink {
+                workbook: workbook.clone(),
+                style_rules: rules.clone(),
+                ..text_link(path, bytes, before, map.clone(), conflict, remove, story)
+            });
             *sel = designcraft_doc::Selection::items(vec![fid]);
             sid
         };
@@ -1251,5 +1455,277 @@ mod pdf_page_tests {
         let r =
             s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "styleConflicts": "autoRename", "rect": [72, 520, 300, 600]})).unwrap();
         assert_eq!(placed(&s, &r), georgia("Normal_wrd_1"));
+    }
+}
+
+#[cfg(test)]
+mod style_rule_tests {
+    use super::*;
+
+    /// A Word file with six styles, each used: paragraph styles Normal (10 pt), heading 1 (on
+    /// Normal, bold, 16 pt), heading 2 (on heading 1, 13 pt) and Quote (on Normal, italic);
+    /// character styles Strong (bold) and Emphasis (italic). The Normal paragraph is centred and
+    /// ends in a 15 pt run of its own; the Quote paragraph is right-aligned. `extra`: a heading 3
+    /// (on heading 1) paragraph at the end.
+    fn six_styles(extra: bool) -> Vec<u8> {
+        use std::io::Write;
+        const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let (h3_style, h3) = if extra {
+            (
+                r#"<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Heading1"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style>"#,
+                r#"<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Sub</w:t></w:r></w:p>"#,
+            )
+        } else {
+            ("", "")
+        };
+        let styles = format!(
+            r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="20"/></w:rPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Heading1"/><w:rPr><w:sz w:val="26"/></w:rPr></w:style>
+            <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:basedOn w:val="Normal"/><w:rPr><w:i/></w:rPr></w:style>
+            <w:style w:type="character" w:styleId="Strong"><w:name w:val="Strong"/><w:rPr><w:b/></w:rPr></w:style>
+            <w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:i/></w:rPr></w:style>{h3_style}</w:styles>"#
+        );
+        let doc = format!(
+            r#"<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Section</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Normal"/><w:jc w:val="center"/></w:pPr><w:r><w:t xml:space="preserve">Plain </w:t></w:r><w:r><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>strong</w:t></w:r><w:r><w:t xml:space="preserve"> and </w:t></w:r><w:r><w:rPr><w:rStyle w:val="Emphasis"/></w:rPr><w:t>em</w:t></w:r><w:r><w:rPr><w:sz w:val="30"/></w:rPr><w:t xml:space="preserve"> big</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Quote"/><w:jc w:val="right"/></w:pPr><w:r><w:t>Said</w:t></w:r></w:p>{h3}</w:body></w:document>"#
+        );
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
+            w.start_file(n, o).unwrap();
+            w.write_all(c.as_bytes()).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    /// A new document of `s` with paragraph styles Head, Body and its own Quote (11 pt), and
+    /// character styles Bold and Em.
+    fn magazine(s: &mut Session) {
+        s.execute("file.new", &json!({})).unwrap();
+        for (name, size) in [("Head", 20), ("Body", 9), ("Quote", 11)] {
+            s.execute("style.paragraph.create", &json!({"name": name, "chars": {"size": size}})).unwrap();
+        }
+        for name in ["Bold", "Em"] {
+            s.execute("style.character.create", &json!({"name": name})).unwrap();
+        }
+    }
+
+    fn magazine_session() -> Session {
+        let mut s = Session::new();
+        magazine(&mut s);
+        s
+    }
+
+    /// The placed story's paragraph styles, and its character-styled runs (text, style).
+    fn placed_styles(s: &Session, r: &Value) -> (Vec<String>, Vec<(String, String)>) {
+        let st = s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap().clone();
+        let runs = st
+            .runs()
+            .filter(|(_, f)| f.style != designcraft_doc::NO_CHAR_STYLE)
+            .map(|(rg, f)| (st.text.get(rg).unwrap_or_default().to_string(), f.style.clone()))
+            .collect();
+        (st.paras.iter().map(|p| p.style.clone()).collect(), runs)
+    }
+
+    fn six_b64() -> String {
+        crate::cmd::base64_encode(&six_styles(false))
+    }
+
+    #[test]
+    fn glob_matches_names_ignoring_case() {
+        for (pattern, name, yes) in [
+            ("heading*", "Heading 1", true),
+            ("heading ?", "heading 1", true),
+            ("heading ?", "heading 12", false),
+            ("*", "", true),
+            ("", "", true),
+            ("", "a", false),
+            ("a*b*c", "aXXbYYc", true),
+            ("a*b*c", "aXXbYY", false),
+            ("*title", "Subtitle", true),
+            ("?*", "", false),
+            ("**", "x", true),
+            ("ÉTÉ*", "été 2026", true),
+            ("normal", "Normal", true),
+        ] {
+            assert_eq!(glob(pattern, name), yes, "`{pattern}` and `{name}`");
+        }
+    }
+
+    /// Rules by name: the headings become Head, Normal Body and Strong Bold; Quote and Emphasis,
+    /// which no rule matches, follow Style Name Conflicts as before.
+    #[test]
+    fn rules_map_word_styles_by_name() {
+        let mut s = magazine_session();
+        let rules = json!([{"match": "heading*", "kind": "paragraph", "to": "Head"}, {"match": "normal", "to": "Body"}, {"match": "str*", "kind": "character", "to": "Bold"}]);
+        let r = s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "styleRules": rules})).unwrap();
+        let (paras, runs) = placed_styles(&s, &r);
+        assert_eq!(paras, ["Head", "Head", "Body", "Quote"]);
+        assert_eq!(runs, [("strong".to_string(), "Bold".to_string()), ("em".to_string(), "Emphasis".to_string())]);
+        let st = &s.doc().unwrap().doc.styles;
+        assert!(st.para("heading 1").is_none() && st.para("Normal").is_none() && st.char_style("Strong").is_none(), "mapped styles aren't imported");
+        assert_eq!(st.para("Quote").unwrap().chars.size, Some(11.0), "Quote clashes: the document's (useExisting)");
+        assert!(st.char_style("Emphasis").is_some(), "Emphasis is new: imported");
+    }
+
+    /// Rules by attributes, through what each style is based on: bold paragraph styles (heading 2
+    /// is, through heading 1) become Head, italic character styles Em. Quote is italic too, but a
+    /// paragraph style: the character rule leaves it, though the document has a paragraph Em.
+    #[test]
+    fn rules_map_word_styles_by_their_attributes() {
+        let mut s = magazine_session();
+        s.execute("style.paragraph.create", &json!({"name": "Em"})).unwrap();
+        let rules = json!([
+            {"kind": "paragraph", "attrs": {"chars": {"fontStyle": "Bold"}}, "to": "Head"},
+            {"kind": "character", "attrs": {"chars": {"fontStyle": "Italic"}}, "to": "Em"},
+            {"match": "normal", "to": "Body"},
+        ]);
+        let r =
+            s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "styleRules": rules, "styleConflicts": "autoRename"})).unwrap();
+        let (paras, runs) = placed_styles(&s, &r);
+        assert_eq!(paras, ["Head", "Head", "Body", "Quote_wrd_1"], "Quote is italic, not bold: Auto Rename");
+        assert_eq!(runs, [("strong".to_string(), "Strong".to_string()), ("em".to_string(), "Em".to_string())]);
+    }
+
+    #[test]
+    fn a_style_map_entry_beats_the_rules_and_the_first_matching_rule_wins() {
+        let mut s = magazine_session();
+        s.execute("style.paragraph.create", &json!({"name": "Sub"})).unwrap();
+        let rules = json!([
+            {"match": "heading*", "to": "Head"},
+            {"match": "heading 1", "to": "Body"},
+            {"match": "quote", "to": "Nope"},
+            {"match": "q*", "kind": "paragraph", "to": "Body"},
+        ]);
+        let r =
+            s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "styleMap": {"heading 2": "Sub"}, "styleRules": rules})).unwrap();
+        // heading 1: the first rule; heading 2: the map; Quote: no style Nope here, so the next rule.
+        assert_eq!(placed_styles(&s, &r).0, ["Head", "Sub", "Normal", "Body"]);
+    }
+
+    /// `keepOverrides: false`: the text a rule maps loses its own formatting (Normal's centring
+    /// and its 15 pt run); text the rule doesn't map keeps its own (Quote's alignment).
+    #[test]
+    fn a_rule_can_clear_the_local_formatting_of_what_it_maps() {
+        for keep in [true, false] {
+            let mut s = magazine_session();
+            let rules = json!([{"match": "normal", "to": "Body", "keepOverrides": keep}]);
+            let r = s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "styleRules": rules})).unwrap();
+            let st = s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap().clone();
+            let big = st.format_after(st.text.find("big").unwrap()).over.size;
+            assert_eq!((st.paras[2].para.align.is_some(), big), (keep, keep.then_some(15.0)), "keepOverrides: {keep}");
+            assert!(st.paras[3].para.align.is_some(), "Quote's own alignment stays");
+            assert_eq!(st.format_after(st.text.find("strong").unwrap()).style, "Strong", "a run keeps its character style");
+        }
+    }
+
+    #[test]
+    fn style_rules_that_are_not_rules_are_refused() {
+        let mut s = magazine_session();
+        for rules in [json!({"to": "Body"}), json!([{"to": 3}]), json!([{"match": "a", "kind": "table", "to": "Body"}]), json!([{"match": "a"}])] {
+            let e = s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "styleRules": rules})).unwrap_err().to_string();
+            assert!(e.contains("styleRules") && !e.contains("unknown parameter"), "{rules}: {e}");
+        }
+    }
+
+    /// Presets: saved for the user or in the document; a name is looked up in the document first
+    /// (case doesn't count), and what a call gives wins over its preset.
+    #[test]
+    fn import_presets_are_found_in_the_document_first() {
+        let mut s = magazine_session();
+        s.execute(
+            "place.savePreset",
+            &json!({"name": "Magazine", "styleRules": [{"match": "heading*", "to": "Head"}], "styleConflicts": "autoRename"}),
+        )
+        .unwrap();
+        s.execute("place.savePreset", &json!({"name": "magazine", "scope": "document", "styleMap": {"heading 1": "Body"}})).unwrap();
+        let list = s.execute("place.presets", &json!({})).unwrap();
+        let rows: Vec<(String, String)> =
+            list.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap().to_string(), p["scope"].as_str().unwrap().to_string())).collect();
+        assert_eq!(rows, [("magazine".to_string(), "document".to_string()), ("Magazine".to_string(), "user".to_string())]);
+        assert_eq!(list[1]["styleRules"], json!([{"match": "heading*", "to": "Head"}]));
+        let r = s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "preset": "MAGAZINE"})).unwrap();
+        assert_eq!(placed_styles(&s, &r).0[..2], ["Body", "heading 2"], "the document's preset");
+        // The document's preset is saved with it.
+        let bytes = crate::cmd::base64_decode(s.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap());
+        let mut t = Session::new();
+        t.execute("file.openBytes", &json!({"name": "m.designcraft", "base64": crate::cmd::base64_encode(&bytes)})).unwrap();
+        assert_eq!(t.execute("place.presets", &json!({})).unwrap()[0]["scope"], "document");
+        // Deleted from the document, the name finds the user's: its rules and its Auto Rename.
+        s.execute("place.deletePreset", &json!({"name": "Magazine", "scope": "document"})).unwrap();
+        magazine(&mut s);
+        let r = s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "preset": "Magazine"})).unwrap();
+        assert_eq!(placed_styles(&s, &r).0, ["Head", "Head", "Normal", "Quote_wrd_1"]);
+        magazine(&mut s);
+        let r =
+            s.execute("file.place", &json!({"base64": six_b64(), "name": "a.docx", "preset": "Magazine", "styleConflicts": "useExisting"})).unwrap();
+        assert_eq!(placed_styles(&s, &r).0[3], "Quote", "the call's styleConflicts wins");
+        // Saving a name again replaces that preset.
+        s.execute("place.savePreset", &json!({"name": "MAGAZINE", "removeStyles": true})).unwrap();
+        let list = s.execute("place.presets", &json!({})).unwrap();
+        assert_eq!((list.as_array().unwrap().len(), &list[0]["name"], &list[0]["removeStyles"]), (1, &json!("MAGAZINE"), &json!(true)));
+    }
+
+    #[test]
+    fn what_is_no_preset_is_refused() {
+        let mut s = magazine_session();
+        let err = |s: &mut Session, cmd: &str, p: Value| s.execute(cmd, &p).unwrap_err().to_string();
+        assert!(err(&mut s, "file.place", json!({"base64": six_b64(), "name": "a.docx", "preset": "Nope"})).contains("no import preset `Nope`"));
+        assert!(err(&mut s, "place.savePreset", json!({"name": "  "})).contains("name"));
+        assert!(err(&mut s, "place.savePreset", json!({"name": "x".repeat(101)})).contains("100"));
+        assert!(err(&mut s, "place.savePreset", json!({"name": "A", "scope": "team"})).contains("scope"));
+        assert!(err(&mut s, "place.savePreset", json!({"name": "A", "styleConflicts": "merge"})).contains("styleConflicts"));
+        assert!(err(&mut s, "place.savePreset", json!({"name": "A", "styleRules": [{"to": 3}]})).contains("styleRules"));
+        assert!(err(&mut s, "place.deletePreset", json!({"name": "Nope"})).contains("no import preset `Nope`"));
+        for i in 0..500 {
+            s.execute("place.savePreset", &json!({"name": format!("P{i}")})).unwrap();
+        }
+        assert!(err(&mut s, "place.savePreset", json!({"name": "One more"})).contains("500"));
+        s.execute("place.savePreset", &json!({"name": "P7", "removeStyles": true})).unwrap();
+        assert!(s.prefs.import_presets.iter().any(|p| p.name == "P7" && p.remove_styles), "replacing one is still possible");
+    }
+
+    /// Import Options: what a preset maps of the file's styles, and its other options.
+    #[test]
+    fn place_styles_shows_what_a_preset_maps_for_the_file() {
+        let mut s = magazine_session();
+        let preset = json!({"name": "Mag", "styleMap": {"Quote": "Body", "Gone": "Body", "Strong": "Nope"}, "styleRules": [{"match": "heading*", "kind": "paragraph", "to": "Head"}], "styleConflicts": "redefine"});
+        s.execute("place.savePreset", &preset).unwrap();
+        let info = s.execute("place.styles", &json!({"base64": six_b64(), "name": "a.docx", "preset": "Mag"})).unwrap();
+        assert_eq!(
+            info["map"],
+            json!({"heading 1": "Head", "heading 2": "Head", "Quote": "Body"}),
+            "only the file's styles, onto styles this document has"
+        );
+        assert_eq!((&info["styleConflicts"], &info["removeStyles"]), (&json!("redefine"), &json!(false)));
+        assert!(s.execute("place.styles", &json!({"base64": six_b64(), "name": "a.docx"})).unwrap().get("map").is_none());
+    }
+
+    /// A linked file's rules are kept on its link: an update, merging or replacing, maps a style
+    /// that is new in the file by them, and they stay for the next one.
+    #[test]
+    fn update_maps_styles_new_in_the_file_by_the_rules() {
+        for mode in ["merge", "replace"] {
+            let dir = std::env::temp_dir().join(format!("dc-style-rules-{}-{mode}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("story.docx");
+            std::fs::write(&path, six_styles(false)).unwrap();
+            let mut s = magazine_session();
+            let rules = json!([{"match": "heading*", "kind": "paragraph", "to": "Head"}]);
+            let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "styleRules": rules})).unwrap();
+            let sid = StoryId(r["story"].as_u64().unwrap());
+            std::fs::write(&path, six_styles(true)).unwrap();
+            s.execute("links.update", &json!({"story": sid.0, "mode": mode})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let st = d.story(sid).unwrap();
+            assert_eq!((st.paras.len(), st.paras.last().unwrap().style.as_str()), (5, "Head"), "{mode}: heading 3 by the rule");
+            assert!(d.styles.para("heading 3").is_none(), "{mode}");
+            assert_eq!(st.file_link.as_ref().unwrap().style_rules.len(), 1, "{mode}: the rules stay on the link");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

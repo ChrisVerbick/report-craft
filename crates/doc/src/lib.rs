@@ -405,6 +405,10 @@ pub struct DocSettings {
     /// keeps its earlier versions. `None` follows the application's preference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_versions: Option<bool>,
+    /// Word/RTF import presets kept with this document (Import Options › Preset); they come
+    /// before the user's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub import_presets: Vec<ImportPreset>,
 }
 
 fn is_origin(p: &[f64; 2]) -> bool {
@@ -466,6 +470,7 @@ impl Default for DocSettings {
             zero_point_locked: false,
             new_object: NewObjectColors::default(),
             keep_versions: None,
+            import_presets: Vec::new(),
         }
     }
 }
