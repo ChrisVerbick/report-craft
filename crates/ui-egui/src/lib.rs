@@ -1001,17 +1001,24 @@ impl DesignApp {
     }
 
     /// Load Styles: ask the host for a document whose styles to load; `kind` is `paragraph`,
-    /// `character` or empty for both. A synchronous picker opens the dialog that chooses among
-    /// the file's styles; an asynchronous one (web) loads them all when the file arrives.
+    /// `character`, empty for both, `object`, or `tableCell` for table and cell styles. A
+    /// synchronous picker opens the dialog that chooses among the file's styles; an asynchronous
+    /// one (web) loads them all when the file arrives.
     pub fn pick_styles(&mut self, kind: &str) -> Result<Value, String> {
         designcraft_engine::cmd::has_doc(&self.session)?;
         if let Some(pick) = self.services.pick_open.as_mut() {
             let Some(path) = pick("styles") else { return Ok(Value::Null) };
             let found = self.run("style.load.list", json!({"path": path}))?;
-            let of = |k: &str| if kind.is_empty() || kind == k { found[k].clone() } else { json!([]) };
+            let offered = |k: &str| match kind {
+                "" => k == "paragraph" || k == "character",
+                "tableCell" => k == "table" || k == "cell",
+                _ => k == kind,
+            };
+            let of = |k: &str| if offered(k) { found[k].clone() } else { json!([]) };
             self.ui.dialog = Some(dialogs::Dialog::new(
                 "loadStyles",
-                json!({"path": path, "paragraph": of("paragraph"), "character": of("character"), "conflicts": "redefine"}),
+                json!({"path": path, "paragraph": of("paragraph"), "character": of("character"), "object": of("object"),
+                    "table": of("table"), "cell": of("cell"), "conflicts": "redefine"}),
             ));
             return Ok(Value::Null);
         }
@@ -1089,6 +1096,17 @@ impl DesignApp {
             match kind {
                 ":paragraph" => params["character"] = json!([]),
                 ":character" => params["paragraph"] = json!([]),
+                ":object" => {
+                    params["paragraph"] = json!([]);
+                    params["character"] = json!([]);
+                    params["object"] = json!(true);
+                }
+                ":tableCell" => {
+                    params["paragraph"] = json!([]);
+                    params["character"] = json!([]);
+                    params["table"] = json!(true);
+                    params["cell"] = json!(true);
+                }
                 _ => {}
             }
             return self.run("style.load", params);
@@ -3088,13 +3106,17 @@ mod browser_import_tests {
 mod load_styles_tests {
     use super::*;
 
-    /// A client's document on disk: Head based on Body, and a Lead character style.
+    /// A client's document on disk: Head based on Body, a Lead character style, a Callout object
+    /// style, and a Data table style whose body is Body Cell, whose text is Body.
     fn client_bytes() -> Vec<u8> {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.execute("style.paragraph.create", &json!({"name": "Body", "chars": {"size": 10}})).unwrap();
         s.execute("style.paragraph.create", &json!({"name": "Head", "basedOn": "Body", "chars": {"size": 20}})).unwrap();
         s.execute("style.character.create", &json!({"name": "Lead", "chars": {"size": 9}})).unwrap();
+        s.execute("style.object.create", &json!({"name": "Callout", "fromSelection": false, "fill": "[Black]"})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Body Cell", "fromSelection": false, "fill": "[Black]", "paragraphStyle": "Body"})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Data", "body": "Body Cell"})).unwrap();
         designcraft_engine::cmd::base64_decode(s.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap())
     }
 
@@ -3124,6 +3146,9 @@ mod load_styles_tests {
         assert_eq!(d.id, "loadStyles");
         assert_eq!(d.fields["paragraph"], json!([row("[Basic Paragraph]", false), row("Body", true), row("Head", false)]));
         assert_eq!(d.fields["character"], json!([row("Lead", false)]));
+        for key in ["object", "table", "cell"] {
+            assert_eq!(d.fields[key], json!([]), "Load All Text Styles offers no {key} styles");
+        }
         // Lead is unchecked; the rest loads, and Body takes the file's definition.
         d.fields["character"][0]["on"] = json!(false);
         dialogs::confirm(&mut app).unwrap();
@@ -3131,6 +3156,43 @@ mod load_styles_tests {
         assert!(app.ui.dialog.is_none());
         assert_eq!(names(&app), (vec!["Body".to_string(), "Head".to_string()], vec![]));
         assert_eq!(app.session.doc().unwrap().doc.styles.para("Body").unwrap().chars.size, Some(10.0));
+    }
+
+    #[test]
+    fn load_table_and_cell_styles_offers_only_table_and_cell_styles() {
+        let (mut app, path) = app_and_file("table");
+        app.run("app.loadTableAndCellStyles", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        let row = |name: &str| json!({"name": name, "conflict": false});
+        for key in ["paragraph", "character", "object"] {
+            assert_eq!(d.fields[key], json!([]), "{key}");
+        }
+        assert_eq!(d.fields["table"], json!([row("[Basic Table]"), row("Data")]));
+        assert_eq!(d.fields["cell"], json!([row("Body Cell")]));
+        // Data unticked: Body Cell still loads, ticked in its own section.
+        app.ui.dialog.as_mut().unwrap().fields["table"][1]["on"] = json!(false);
+        dialogs::confirm(&mut app).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let st = &app.session.doc().unwrap().doc.styles;
+        assert!(st.table.iter().all(|t| t.name != "Data"));
+        assert_eq!(st.cell.iter().find(|c| c.name == "Body Cell").and_then(|c| c.paragraph_style.as_deref()), Some("Body"));
+        assert_eq!(st.para("Body").unwrap().chars.size, Some(8.0), "the document's own Body stays");
+        assert!(st.object_style("Callout").is_none());
+    }
+
+    #[test]
+    fn load_object_styles_offers_only_object_styles() {
+        let (mut app, path) = app_and_file("object");
+        app.run("app.loadObjectStyles", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        let rows: Vec<&str> = d.fields["object"].as_array().unwrap().iter().filter_map(|r| r["name"].as_str()).collect();
+        assert_eq!(rows, ["[Basic Graphics Frame]", "[Basic Text Frame]", "Callout"]);
+        assert_eq!((&d.fields["paragraph"], &d.fields["table"]), (&json!([]), &json!([])));
+        dialogs::confirm(&mut app).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let st = &app.session.doc().unwrap().doc.styles;
+        assert!(st.object_style("Callout").is_some());
+        assert!(st.table.iter().all(|t| t.name != "Data"));
     }
 
     #[test]
@@ -3214,5 +3276,85 @@ mod load_styles_tests {
         assert_eq!(app.session.active_index(), Some(0));
         assert_eq!(names(&app), (vec![], vec!["Lead".to_string()]));
         assert!(app.session.documents()[1].doc.styles.char_style("Lead").is_none());
+        let st = &app.session.doc().unwrap().doc.styles;
+        assert!(st.object_style("Callout").is_none() && st.table.iter().all(|t| t.name != "Data"), "only character styles");
+    }
+
+    /// From the web's picker, Load Object Styles and Load Table and Cell Styles load all of those
+    /// styles of the file, and of the text styles only what they name.
+    #[test]
+    fn object_or_table_styles_from_an_asynchronous_picker_load_alone() {
+        for (command, purpose) in [("app.loadObjectStyles", "styles:object"), ("app.loadTableAndCellStyles", "styles:tableCell")] {
+            let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = asked.clone();
+            let services = Services {
+                inbox: Some(Inbox::default()),
+                open_async: Some(Box::new(move |request| seen.lock().unwrap().push(request))),
+                ..Default::default()
+            };
+            let mut app = DesignApp::new(Session::new(), services);
+            app.run("file.new", json!({})).unwrap();
+            app.run(command, json!({})).unwrap();
+            let request = asked.lock().unwrap().pop().expect("the picker was asked");
+            assert_eq!(request.purpose, purpose);
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                request,
+                name: "client.designcraft".into(),
+                bytes: client_bytes(),
+            });
+            app.drain_inbox();
+            let st = &app.session.doc().unwrap().doc.styles;
+            let (callout, data) = (st.object_style("Callout").is_some(), st.table.iter().any(|t| t.name == "Data"));
+            assert_eq!((callout, data), (purpose == "styles:object", purpose == "styles:tableCell"), "{command}");
+            // Body Cell's paragraph style comes with it; Head, Lead and the rest don't.
+            let body = if purpose == "styles:tableCell" { vec!["Body".to_string()] } else { vec![] };
+            assert_eq!(names(&app), (body, vec![]), "{command}");
+        }
+    }
+
+    /// F6.5's screenshot (`plan/shots/f6.5-load-styles.png`): Load Table and Cell Styles from the
+    /// client's file, which clashes with the document's own Data.
+    #[test]
+    #[ignore]
+    fn render_load_table_and_cell_styles() {
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        let (mut app, path) = app_and_file("shot");
+        app.run("style.table.create", json!({"name": "Data", "spaceBefore": 3})).unwrap();
+        app.run("app.loadTableAndCellStyles", json!({})).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        h.render().unwrap().save(shots.join("f6.5-load-styles.png")).unwrap();
+    }
+
+    /// The dialog shows object, table and cell styles in sections of their own, counts their
+    /// clashes, and Deselect All unticks them.
+    #[test]
+    fn the_dialog_shows_and_unticks_object_table_and_cell_styles() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut h = test_window::open(DesignApp::new(Session::new(), Services::default()), egui::vec2(1200.0, 800.0));
+        let row = |name: &str, conflict: bool| json!({"name": name, "conflict": conflict});
+        h.state_mut().app.ui.dialog = Some(dialogs::Dialog::new(
+            "loadStyles",
+            json!({"path": "x", "conflicts": "redefine", "paragraph": [], "character": [], "object": [row("Callout", true)], "table": [row("Data", false)], "cell": [row("Body Cell", false)]}),
+        ));
+        h.run_steps(3);
+        for label in ["Callout", "Data", "Body Cell", "Redefine Document Style"] {
+            h.get_by_label(label);
+        }
+        let button = h.get_by_label("Deselect All").rect().center();
+        test_window::click_at(&mut h, button);
+        let d = h.state().app.ui.dialog.as_ref().unwrap();
+        for key in ["object", "table", "cell"] {
+            assert_eq!(d.fields[key][0]["on"], false, "{key}");
+        }
     }
 }

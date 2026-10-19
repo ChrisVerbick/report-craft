@@ -45,6 +45,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.loadCharacterStyles", "Load Character Styles…", None, "{} — the same for its character styles"),
     ("app.loadTextStyles", "Load All Text Styles…", None, "{} — the same for its paragraph and character styles"),
+    ("app.loadObjectStyles", "Load Object Styles…", None, "{} — the same for its object styles"),
+    ("app.loadTableAndCellStyles", "Load Table and Cell Styles…", None, "{} — the same for its table and cell styles"),
     (
         "effects.dialog",
         "Effects…",
@@ -1296,6 +1298,8 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.loadParagraphStyles" => app.pick_styles("paragraph"),
         "app.loadCharacterStyles" => app.pick_styles("character"),
         "app.loadTextStyles" => app.pick_styles(""),
+        "app.loadObjectStyles" => app.pick_styles("object"),
+        "app.loadTableAndCellStyles" => app.pick_styles("tableCell"),
         "app.saveSwatches" => {
             let path = match p.get("path").and_then(Value::as_str) {
                 Some(s) => Some(s.to_string()),
