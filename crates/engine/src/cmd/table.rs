@@ -2011,39 +2011,24 @@ fn table_style_redefine(s: &mut Session, p: &Value) -> Result<Value> {
     d.styles.resolve_table_style(&name).apply_to(&mut styled, &d.styles.cell);
     let mut ts = d.styles.table.iter().find(|x| x.name == name).cloned().ok_or_else(|| bad(ID, format!("no table style `{name}`")))?;
     let (o, was) = (&t.options, &styled.options);
-    let mut changed = Vec::new();
-    for i in 0..4 {
-        if was.border_for(i) != o.border_for(i) {
-            ts.borders[i] = designcraft_doc::CellStrokeAttrs::from_stroke(o.border_for(i));
-            if !changed.contains(&"border") {
-                changed.push("border");
+    let changed = table_changes(was, o);
+    for c in &changed {
+        match *c {
+            "border" => {
+                for i in (0..4).filter(|i| was.border_for(*i) != o.border_for(*i)) {
+                    ts.borders[i] = designcraft_doc::CellStrokeAttrs::from_stroke(o.border_for(i));
+                }
             }
+            "altRows" => {
+                ts.alt_rows = o.alt_rows.clone();
+                ts.row_fills = Default::default();
+            }
+            "altColumns" => ts.column_fills = o.alt_cols.as_ref().map(designcraft_doc::AltFillsAttrs::from_fills).unwrap_or_default(),
+            "rowStrokes" => ts.row_strokes = o.row_strokes.as_ref().map(designcraft_doc::AltStrokesAttrs::from_strokes).unwrap_or_default(),
+            "columnStrokes" => ts.column_strokes = o.column_strokes.as_ref().map(designcraft_doc::AltStrokesAttrs::from_strokes).unwrap_or_default(),
+            "spaceBefore" => ts.space_before = Some(o.space_before),
+            _ => ts.space_after = Some(o.space_after),
         }
-    }
-    if let (true, Some(a)) = (was.alt_rows != o.alt_rows, &o.alt_rows) {
-        ts.alt_rows = Some(a.clone());
-        ts.row_fills = Default::default();
-        changed.push("altRows");
-    }
-    if let (true, Some(a)) = (was.alt_cols != o.alt_cols, &o.alt_cols) {
-        ts.column_fills = designcraft_doc::AltFillsAttrs::from_fills(a);
-        changed.push("altColumns");
-    }
-    if let (true, Some(a)) = (was.row_strokes != o.row_strokes, &o.row_strokes) {
-        ts.row_strokes = designcraft_doc::AltStrokesAttrs::from_strokes(a);
-        changed.push("rowStrokes");
-    }
-    if let (true, Some(a)) = (was.column_strokes != o.column_strokes, &o.column_strokes) {
-        ts.column_strokes = designcraft_doc::AltStrokesAttrs::from_strokes(a);
-        changed.push("columnStrokes");
-    }
-    if was.space_before != o.space_before {
-        ts.space_before = Some(o.space_before);
-        changed.push("spaceBefore");
-    }
-    if was.space_after != o.space_after {
-        ts.space_after = Some(o.space_after);
-        changed.push("spaceAfter");
     }
     if changed.is_empty() {
         return Ok(json!({"name": name, "changed": changed}));
@@ -2055,6 +2040,84 @@ fn table_style_redefine(s: &mut Session, p: &Value) -> Result<Value> {
         reapply_table_styles(d, &name);
         Ok(json!({"name": name, "changed": changed}))
     })
+}
+
+/// What table options `o` override of `was`, what the table's style gives it, that the style can
+/// take (Redefine Style; `style.current`'s overrides).
+pub(super) fn table_changes(was: &designcraft_doc::TableOptions, o: &designcraft_doc::TableOptions) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    if (0..4).any(|i| was.border_for(i) != o.border_for(i)) {
+        changed.push("border");
+    }
+    for (name, differs) in [
+        ("altRows", was.alt_rows != o.alt_rows && o.alt_rows.is_some()),
+        ("altColumns", was.alt_cols != o.alt_cols && o.alt_cols.is_some()),
+        ("rowStrokes", was.row_strokes != o.row_strokes && o.row_strokes.is_some()),
+        ("columnStrokes", was.column_strokes != o.column_strokes && o.column_strokes.is_some()),
+        ("spaceBefore", was.space_before != o.space_before),
+        ("spaceAfter", was.space_after != o.space_after),
+    ] {
+        if differs {
+            changed.push(name);
+        }
+    }
+    changed
+}
+
+/// A cell's edges, as `cell_changes` names them.
+const EDGES: [&str; 4] = ["strokeTop", "strokeLeft", "strokeBottom", "strokeRight"];
+
+fn first_para_style(c: &designcraft_doc::Cell) -> Option<String> {
+    c.text.paras.first().map(|p| p.style.clone())
+}
+
+/// What `cell` overrides of what its style (`resolved`, giving it `styled`) sets: the fill with its
+/// tint (a style setting the fill sets a tint, 100% unset), insets, vertical justification, edge
+/// strokes, paragraph style (Redefine Style; `style.current`'s overrides).
+pub(super) fn cell_changes(resolved: &designcraft_doc::CellStyle, styled: &designcraft_doc::Cell, cell: &designcraft_doc::Cell) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    let sets_fill = resolved.fill.is_some() || resolved.fill_tint.is_some();
+    if sets_fill && (styled.fill != cell.fill || resolved.fill_tint.unwrap_or(1.0) != cell.fill_tint) {
+        changed.push("fill");
+    }
+    if styled.insets != cell.insets {
+        changed.push("insets");
+    }
+    if styled.vj != cell.vj {
+        changed.push("vj");
+    }
+    for (i, edge) in EDGES.into_iter().enumerate() {
+        if styled.strokes.get(i) != cell.strokes.get(i) {
+            changed.push(edge);
+        }
+    }
+    if first_para_style(styled) != first_para_style(cell) {
+        changed.push("paragraphStyle");
+    }
+    changed
+}
+
+/// The target table's and cell's styles for `style.current`, each `{name, overrides}`; `None` when
+/// the selection isn't in a table.
+pub(super) fn current(s: &Session) -> Option<(Value, Value)> {
+    const ID: &str = "style.current";
+    let g = target(s, &json!({}), ID).ok()?;
+    let d = &s.doc().ok()?.doc;
+    let (t, name) = styled_table(d, &g, ID).ok()?;
+    let mut styled = t.clone();
+    d.styles.resolve_table_style(&name).apply_to(&mut styled, &d.styles.cell);
+    let table = json!({"name": name, "overrides": !table_changes(&styled.options, &t.options).is_empty()});
+    let (r, c) = t.owner(g.range.r0, g.range.c0);
+    let cell = t.cell(r, c)?;
+    let cell = if cell.style.is_empty() || cell.style == designcraft_doc::NO_CELL_STYLE {
+        json!({"name": designcraft_doc::NO_CELL_STYLE, "overrides": false})
+    } else {
+        let resolved = designcraft_doc::resolve_cell_style(&d.styles.cell, &cell.style);
+        let mut styled = cell.clone();
+        resolved.apply_to(&mut styled);
+        json!({"name": cell.style, "overrides": !cell_changes(&resolved, &styled, cell).is_empty()})
+    };
+    Some((table, cell))
 }
 
 fn cell_style_redefine(s: &mut Session, p: &Value) -> Result<Value> {
@@ -2072,35 +2135,21 @@ fn cell_style_redefine(s: &mut Session, p: &Value) -> Result<Value> {
     let mut styled = cell.clone();
     resolved.apply_to(&mut styled);
     let mut cs = d.styles.cell.iter().find(|x| x.name == name).cloned().ok_or_else(|| bad(ID, format!("no cell style `{name}`")))?;
-    let mut changed = Vec::new();
-    // The fill and its tint go together: a style that sets the fill sets a tint (100% unset).
-    let sets_fill = resolved.fill.is_some() || resolved.fill_tint.is_some();
-    if sets_fill && (styled.fill != cell.fill || resolved.fill_tint.unwrap_or(1.0) != cell.fill_tint) {
-        cs.fill = Some(cell.fill.clone());
-        cs.fill_tint = Some(cell.fill_tint);
-        changed.push("fill");
-    }
-    if styled.insets != cell.insets {
-        cs.insets = Some(cell.insets);
-        cs.inset_overrides = Default::default();
-        changed.push("insets");
-    }
-    if styled.vj != cell.vj {
-        cs.vj = Some(cell.vj);
-        changed.push("vj");
-    }
-    for (i, edge) in ["strokeTop", "strokeLeft", "strokeBottom", "strokeRight"].into_iter().enumerate() {
-        if styled.strokes.get(i) != cell.strokes.get(i)
-            && let Some(st) = cell.strokes.get(i)
-        {
-            cs.strokes[i] = designcraft_doc::CellStrokeAttrs::from_stroke(st);
-            changed.push(edge);
+    let changed = cell_changes(&resolved, &styled, cell);
+    for c in &changed {
+        match *c {
+            "fill" => (cs.fill, cs.fill_tint) = (Some(cell.fill.clone()), Some(cell.fill_tint)),
+            "insets" => (cs.insets, cs.inset_overrides) = (Some(cell.insets), Default::default()),
+            "vj" => cs.vj = Some(cell.vj),
+            "paragraphStyle" => cs.paragraph_style = first_para_style(cell),
+            edge => {
+                if let Some(i) = EDGES.iter().position(|e| *e == edge)
+                    && let Some(st) = cell.strokes.get(i)
+                {
+                    cs.strokes[i] = designcraft_doc::CellStrokeAttrs::from_stroke(st);
+                }
+            }
         }
-    }
-    let first = |c: &designcraft_doc::Cell| c.text.paras.first().map(|p| p.style.clone());
-    if first(&styled) != first(cell) {
-        cs.paragraph_style = first(cell);
-        changed.push("paragraphStyle");
     }
     if changed.is_empty() {
         return Ok(json!({"name": name, "changed": changed}));
@@ -3030,5 +3079,56 @@ mod override_tests {
         let e = s.execute("style.breakLink", &json!({"kind": "row"})).unwrap_err().to_string();
         assert!(e.contains("row"), "{e}");
         let _: Value = json!(null);
+    }
+}
+
+#[cfg(test)]
+mod current_tests {
+    use designcraft_doc::StoryId;
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    /// `style.current` names the styles of the selection's first object and of the table and
+    /// cell commands act on, and flags where the selection differs from what its style sets
+    /// (what Redefine Style would take).
+    #[test]
+    fn current_names_the_styles_and_flags_overrides() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let current = |s: &mut Session| s.execute("style.current", &json!({})).unwrap();
+        // An object.
+        s.execute("style.object.create", &json!({"name": "Callout", "fromSelection": false, "fill": "[Black]"})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("style.object.apply", &json!({"name": "Callout", "ids": [id]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+        assert_eq!(current(&mut s), json!({"object": {"name": "Callout", "overrides": false}}));
+        s.execute("object.fill", &json!({"ids": [id], "swatch": "[Paper]"})).unwrap();
+        assert_eq!(current(&mut s)["object"]["overrides"], true);
+        // A table and its cells.
+        let r = s.execute("frame.create", &json!({"rect": [72, 300, 500, 700], "content": "text", "text": ""})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Body", "fill": "[Paper]"})).unwrap();
+        s.execute("style.table.create", &json!({"name": "Data", "body": "Body", "spaceBefore": 6})).unwrap();
+        s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
+        let tid = *s.doc().unwrap().doc.story(StoryId(sid)).unwrap().tables.keys().next().unwrap();
+        s.execute("table.select", &json!({"story": sid, "table": tid, "rows": [1, 1], "cols": [0, 0]})).unwrap();
+        let c = current(&mut s);
+        assert_eq!(
+            (c["table"].clone(), c["cell"].clone()),
+            (json!({"name": "Data", "overrides": false}), json!({"name": "Body", "overrides": false})),
+            "{c}"
+        );
+        s.execute("table.setCell", &json!({"story": sid, "table": tid, "row": 1, "col": 0, "fill": "[Black]"})).unwrap();
+        s.execute("table.options", &json!({"story": sid, "table": tid, "spaceBefore": 12})).unwrap();
+        let c = current(&mut s);
+        assert_eq!((c["table"]["overrides"].clone(), c["cell"]["overrides"].clone()), (json!(true), json!(true)), "{c}");
+        // A cell without a style: [None], nothing to override.
+        s.execute("style.cell.apply", &json!({"story": sid, "table": tid, "row": 0, "col": 1, "name": "[None]"})).unwrap();
+        s.execute("table.select", &json!({"story": sid, "table": tid, "rows": [0, 0], "cols": [1, 1]})).unwrap();
+        assert_eq!(current(&mut s)["cell"], json!({"name": "[None]", "overrides": false}));
+        let _: Value = Value::Null;
     }
 }

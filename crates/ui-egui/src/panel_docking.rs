@@ -298,7 +298,7 @@ fn restore_front_tabs(layout: &mut Layout<String>, front: &[String]) {
 
 /// Panels InDesign opens together as one floating group from the Window menu, in tab order:
 /// Window › Styles › Paragraph Styles (or Character Styles) brings both.
-const FLOATING_GROUPS: &[&[&str]] = &[&["characterStyles", "paragraphStyles"]];
+const FLOATING_GROUPS: &[&[&str]] = &[&["characterStyles", "paragraphStyles"], &["cellStyles", "tableStyles"]];
 
 /// Window › a panel of a [`FLOATING_GROUPS`] group none of whose panels is showing: the group
 /// opens floating over the right of the canvas, with that panel in front. None otherwise (the

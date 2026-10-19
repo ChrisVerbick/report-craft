@@ -343,7 +343,7 @@ pub fn specs() -> Vec<CommandSpec> {
             edit_char
         ),
         cmd!("style.character.delete", "Delete Character Style", [], None, "{name, replaceWith?}", has_doc, delete_char),
-        cmd!(query "style.list", "List Styles", [], None, "{} → paragraph and character style names", has_doc, |s, _| {
+        cmd!(query "style.list", "List Styles", [], None, "{} → {paragraph, character, object, cell, table}: the style names of each family", has_doc, |s, _| {
             let st = s.doc()?;
             Ok(json!({
                 "paragraph": st.doc.styles.paragraph.iter().map(|p| &p.name).collect::<Vec<_>>(),
@@ -379,6 +379,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{name, rename?, basedOn?: an object style | null, fill?: a swatch | null, stroke?: {…} | null (fields as object.stroke names them, merged into the style's: swatch, tint, weight 0–1000, type, align, cap, join, …), paragraphStyle?: name | null, effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — Object Style Options. A null: the style no longer sets it (its objects keep theirs). Fill and stroke: objects whose setting is the style's take the new one (every object using the style, when the style didn't set it before); one with its own keeps it. Effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects match the style's (no effects, when the style set none) take the new effects, items with their own effects keep them. Renamed, its objects, the styles based on it and the defaults for new frames follow; built-in names can't be taken → {name, updated: objects that took a change}",
             has_doc,
             edit_object
+        ),
+        cmd!(
+            query "style.current",
+            "Current Styles",
+            [],
+            None,
+            "{} → {object?: {name, overrides}, table?: {name, overrides}, cell?: {name, overrides}}: the styles of the selection's first object and of the table and cell table commands act on (no key when there is none), and whether each differs from what its style sets, as Redefine Style sees it",
+            has_doc,
+            current
         ),
         cmd!(
             "style.object.redefine",
@@ -1685,6 +1694,43 @@ fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// What object `it` overrides of what its style `os` sets: fill, stroke, effects, text frame
+/// options (Redefine Style; `style.current`'s overrides).
+fn object_changes(os: &ObjectStyle, it: &Item) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    if os.fill.as_ref().is_some_and(|f| *f != it.fill) {
+        changed.push("fill");
+    }
+    if os.stroke.as_ref().is_some_and(|st| *st != it.stroke) {
+        changed.push("stroke");
+    }
+    if os.effects.as_ref().is_some_and(|e| *e != it.effects) {
+        changed.push("effects");
+    }
+    if let (Some(o), Some(tf)) = (&os.text_frame, it.text_frame())
+        && *o != tf.options
+    {
+        changed.push("textFrame");
+    }
+    changed
+}
+
+/// The styles the selection uses, and whether it differs from what each sets.
+fn current(s: &mut Session, _: &Value) -> Result<Value> {
+    let st = s.doc()?;
+    let d = &st.doc;
+    let mut out = serde_json::Map::new();
+    if let Some(it) = st.selection.items.first().and_then(|id| d.item(*id)) {
+        let overrides = d.styles.object_style(&it.object_style).is_some_and(|os| !object_changes(os, it).is_empty());
+        out.insert("object".into(), json!({"name": it.object_style, "overrides": overrides}));
+    }
+    if let Some((table, cell)) = super::table::current(s) {
+        out.insert("table".into(), table);
+        out.insert("cell".into(), cell);
+    }
+    Ok(Value::Object(out))
+}
+
 fn redefine_object(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "style.object.redefine";
     let ids = super::targets(s, p)?;
@@ -1700,24 +1746,14 @@ fn redefine_object(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let old = d.styles.object_style(&name).cloned().ok_or_else(|| bad(ID, format!("no object style `{name}`")))?;
     let mut new = old.clone();
-    let mut changed = Vec::new();
-    if old.fill.as_ref().is_some_and(|f| *f != it.fill) {
-        new.fill = Some(it.fill.clone());
-        changed.push("fill");
-    }
-    if old.stroke.as_ref().is_some_and(|st| *st != it.stroke) {
-        new.stroke = Some(it.stroke.clone());
-        changed.push("stroke");
-    }
-    if old.effects.as_ref().is_some_and(|e| *e != it.effects) {
-        new.effects = Some(it.effects.clone());
-        changed.push("effects");
-    }
-    if let (Some(o), Some(tf)) = (&old.text_frame, it.text_frame())
-        && *o != tf.options
-    {
-        new.text_frame = Some(tf.options.clone());
-        changed.push("textFrame");
+    let changed = object_changes(&old, it);
+    for c in &changed {
+        match *c {
+            "fill" => new.fill = Some(it.fill.clone()),
+            "stroke" => new.stroke = Some(it.stroke.clone()),
+            "effects" => new.effects = Some(it.effects.clone()),
+            _ => new.text_frame = it.text_frame().map(|tf| tf.options.clone()),
+        }
     }
     if changed.is_empty() {
         return Ok(json!({"name": name, "changed": changed, "updated": 0}));

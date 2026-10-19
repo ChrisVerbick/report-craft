@@ -303,6 +303,27 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.line(&[(13.0, 10.0), (18.0, 10.0)]);
             pen.line(&[(13.0, 14.0), (18.0, 14.0)]);
         }
+        // Object, Table and Cell Styles: a frame, a table, a filled cell, beside the style lines.
+        "panel-ostyles" => {
+            pen.rect(3.0, 5.0, 11.0, 15.0);
+            pen.line(&[(13.0, 6.0), (18.0, 6.0)]);
+            pen.line(&[(13.0, 10.0), (18.0, 10.0)]);
+            pen.line(&[(13.0, 14.0), (18.0, 14.0)]);
+        }
+        "panel-tstyles" => {
+            pen.rect(3.0, 5.0, 11.0, 15.0);
+            pen.line(&[(3.0, 10.0), (11.0, 10.0)]);
+            pen.line(&[(7.0, 5.0), (7.0, 15.0)]);
+            pen.line(&[(13.0, 6.0), (18.0, 6.0)]);
+            pen.line(&[(13.0, 10.0), (18.0, 10.0)]);
+            pen.line(&[(13.0, 14.0), (18.0, 14.0)]);
+        }
+        "panel-clstyles" => {
+            pen.frect(3.0, 7.0, 11.0, 13.0);
+            pen.line(&[(13.0, 6.0), (18.0, 6.0)]);
+            pen.line(&[(13.0, 10.0), (18.0, 10.0)]);
+            pen.line(&[(13.0, 14.0), (18.0, 14.0)]);
+        }
         "panel-wrap" => {
             pen.frect(7.0, 7.0, 13.0, 13.0);
             for y in [3.0, 17.0] {
@@ -1089,6 +1110,21 @@ mod tests {
         });
         out.textures_delta.clear();
         format!("{:?}", out.shapes.iter().map(|s| &s.shape).collect::<Vec<_>>())
+    }
+
+    /// The Object, Table and Cell Styles panels have icons of their own: drawn, and unlike each
+    /// other and the other style and table icons.
+    #[test]
+    fn the_style_panels_have_their_own_icons() {
+        let names = ["panel-ostyles", "panel-tstyles", "panel-clstyles", "panel-pstyles", "panel-cstyles", "panel-table"];
+        let drawn: Vec<String> = names.iter().map(|n| drawing(n)).collect();
+        let placeholder = drawing("no-such-icon");
+        for (i, a) in drawn.iter().enumerate() {
+            assert_ne!(*a, placeholder, "{} is drawn", names[i]);
+            for (j, b) in drawn.iter().enumerate().skip(i + 1) {
+                assert_ne!(a, b, "{} and {}", names[i], names[j]);
+            }
+        }
     }
 
     /// The Pathfinder panel's icons are all drawn, and all differ.

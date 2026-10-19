@@ -72,7 +72,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 egui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
                     for n in &names {
                         if ui.selectable_label(*n == cur, n).clicked() {
-                            run(app, &format!("style.{kind}.apply"), json!({"name": n, "table": tid}));
+                            run(app, &format!("style.{kind}.apply"), style_params(kind, n, &info));
                         }
                     }
                 });
@@ -236,4 +236,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             run(app, "table.options", json!({"footerRows": v.max(0.0) as u64}));
         }
     });
+}
+
+/// What applying `kind` style `name` from the panel acts on: the table, or for a cell style only
+/// the selected cells (the table alone would style them all).
+pub(crate) fn style_params(kind: &str, name: &str, info: &Value) -> Value {
+    let r = &info["range"];
+    match kind {
+        "cell" => json!({"name": name, "story": info["story"], "table": info["table"], "rows": [r["r0"], r["r1"]], "cols": [r["c0"], r["c1"]]}),
+        _ => json!({"name": name, "story": info["story"], "table": info["table"]}),
+    }
 }
