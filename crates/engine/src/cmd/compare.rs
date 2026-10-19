@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Compare with Earlier Version",
         [],
         None,
-        "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (that changed), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
+        "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (the redline's marked changes and their stories, as changes.list gives them), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
         has_doc,
         compare_file
     )]
@@ -44,10 +44,13 @@ fn compare_file(s: &mut Session, p: &Value) -> Result<Value> {
         .iter()
         .flat_map(|c| c.tables.iter().map(|t| json!({"story": c.story.0, "table": t.table, "status": status(t.status)})))
         .collect();
+    // Counted as Track Changes lists them: each deleted and each inserted run.
+    let marked = super::changes::listed(&red);
+    let stories = marked.iter().map(|((story, ..), ..)| *story).collect::<std::collections::BTreeSet<_>>().len();
     let i = s.add_document(DocState::new(red, None));
     // A redline shows what was deleted.
     s.cache.set_show_deleted(true);
-    Ok(json!({"redline": i, "changes": changes.len(), "stories": changes.stories.len(), "deletedStories": deleted, "tables": tables}))
+    Ok(json!({"redline": i, "changes": marked.len(), "stories": stories, "deletedStories": deleted, "tables": tables}))
 }
 
 /// The redline of `b` against `a` (architecture §4): `b` with what `a` had and `b` lost put back,

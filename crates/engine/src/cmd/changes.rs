@@ -68,6 +68,84 @@ fn texts(st: &Story) -> Vec<(Option<CellAddr>, &Story)> {
     out
 }
 
+/// Where a text of `st` comes in the list's order: its own text, then its cells (by table, then
+/// cell), then its footnotes.
+fn rank(st: &Story, at: Option<CellAddr>) -> (u8, u64, usize) {
+    match at {
+        None => (0, 0, 0),
+        Some(a) => match a.footnote_id() {
+            Some(n) => (2, st.notes.iter().position(|x| x.id == n).unwrap_or(usize::MAX) as u64, 0),
+            None => (1, a.table, a.row.saturating_mul(st.tables.get(&a.table).map_or(1, |t| t.ncols().max(1))).saturating_add(a.col)),
+        },
+    }
+}
+
+/// Every tracked change in `d` as changes.list gives them, in order, each with its sort key
+/// (story, its text's rank, start) and where it is.
+pub(super) fn listed(d: &designcraft_doc::Document) -> Vec<((u64, (u8, u64, usize), usize), Option<CellAddr>, Value)> {
+    let mut out = Vec::new();
+    for st in d.stories.values() {
+        for (at, text) in texts(st) {
+            for (r, f) in text.runs() {
+                let kind = match f.over.change {
+                    Some(ChangeMark::Inserted) => "inserted",
+                    Some(ChangeMark::Deleted) => "deleted",
+                    _ => continue,
+                };
+                let mut e = json!({"story": st.id.0, "start": r.start, "end": r.end, "kind": kind, "text": text.text[r.clone()].to_string()});
+                match at.map(|a| (a, a.footnote_id())) {
+                    Some((_, Some(n))) => e["footnote"] = json!(n),
+                    Some((a, None)) => e["cell"] = json!(a),
+                    None => {}
+                }
+                out.push(((st.id.0, rank(st, at), r.start), at, e));
+            }
+        }
+    }
+    out
+}
+
+/// Next (or previous) Change: select the change after (before) the selection in the list's order,
+/// round to the first (last) past the end, and say its page.
+fn step(s: &mut Session, next: bool) -> Result<Value> {
+    let id = if next { "changes.next" } else { "changes.previous" };
+    let d = s.doc()?.doc.clone();
+    let all = listed(&d);
+    let here = s.doc()?.selection.text.and_then(|t| Some((t.story.0, rank(d.story(t.story)?, t.cell), t.range().start)));
+    let found = match here {
+        Some(h) if next => all.iter().find(|(k, ..)| *k > h),
+        Some(h) => all.iter().rev().find(|(k, ..)| *k < h),
+        None => None,
+    };
+    let wrapped = found.is_none() && here.is_some();
+    let ((sid, ..), at, entry) =
+        found.or(if next { all.first() } else { all.last() }).ok_or_else(|| super::bad(id, "there are no tracked changes"))?.clone();
+    let (start, end) = (entry["start"].as_u64().unwrap_or(0) as usize, entry["end"].as_u64().unwrap_or(0) as usize);
+    let sid = StoryId(sid);
+    // The page: of the change, or of the cell's table or the footnote's reference.
+    let pos = match at {
+        None => Some(start),
+        Some(a) => match a.footnote_id() {
+            Some(n) => d.story(sid).and_then(|st| st.note_anchor(n)),
+            None => d.story(sid).and_then(|st| {
+                st.text
+                    .match_indices(designcraft_doc::TABLE_ANCHOR)
+                    .map(|(i, _)| i)
+                    .find(|i| st.paras.get(st.para_at(*i)).and_then(|p| p.table) == Some(a.table))
+            }),
+        },
+    };
+    let cs = s.cache.get(&d, sid, None);
+    let page = pos.and_then(|p| cs.frames.iter().find(|f| f.range.start <= p && p <= f.range.end)).and_then(|f| d.page_of_item(f.frame));
+    let st = s.doc_mut()?;
+    st.selection = designcraft_doc::Selection::text(designcraft_doc::TextSel { story: sid, anchor: start, focus: end, frame: None, cell: at });
+    st.bump_revision();
+    let mut out = entry;
+    out["page"] = json!(page);
+    out["wrapped"] = json!(wrapped);
+    Ok(out)
+}
+
 fn has_changes(st: &Story) -> bool {
     st.runs().any(|(_, f)| matches!(f.over.change, Some(ChangeMark::Inserted | ChangeMark::Deleted)))
 }
@@ -131,28 +209,26 @@ pub fn specs() -> Vec<CommandSpec> {
             })
         }),
         cmd!(query "changes.list", "Changes", [], None, "{} → [{story, start, end, kind: inserted|deleted, text, cell?: {table, row, col}, footnote?: id}] (offsets in the cell's or footnote's text when given)", has_doc, |s, _| {
-            let d = &s.doc()?.doc;
-            let mut out = Vec::new();
-            for st in d.stories.values() {
-                for (at, text) in texts(st) {
-                    for (r, f) in text.runs() {
-                        let kind = match f.over.change {
-                            Some(ChangeMark::Inserted) => "inserted",
-                            Some(ChangeMark::Deleted) => "deleted",
-                            _ => continue,
-                        };
-                        let mut e = json!({"story": st.id.0, "start": r.start, "end": r.end, "kind": kind, "text": text.text[r].to_string()});
-                        match at.map(|a| (a, a.footnote_id())) {
-                            Some((_, Some(n))) => e["footnote"] = json!(n),
-                            Some((a, None)) => e["cell"] = json!(a),
-                            None => {}
-                        }
-                        out.push(e);
-                    }
-                }
-            }
-            Ok(Value::Array(out))
+            Ok(Value::Array(listed(&s.doc()?.doc).into_iter().map(|(.., e)| e).collect()))
         }),
+        cmd!(
+            noundo "changes.next",
+            "Next Change",
+            ["Type", "Track Changes"],
+            None,
+            "{} — selects the change after the selection (story by story: its text, its table cells, its footnotes), round to the first after the last → {story, start, end, kind, text, cell?, footnote?, page: of the change (null: overset), wrapped}",
+            has_doc,
+            |s, _| step(s, true)
+        ),
+        cmd!(
+            noundo "changes.previous",
+            "Previous Change",
+            ["Type", "Track Changes"],
+            None,
+            "{} — selects the change before the selection, round to the last before the first → as changes.next",
+            has_doc,
+            |s, _| step(s, false)
+        ),
         cmd!(
             noundo "view.showDeletedText",
             "Show Deleted Text",
@@ -300,6 +376,54 @@ mod tests {
         marked(&mut s, cell, "old new", "old ", "new");
         s.execute("changes.rejectAll", &json!({})).unwrap();
         assert_eq!(text(&s, cell), "old ");
+    }
+
+    /// Next and Previous Change step through every change in the list's order (a story's text, its
+    /// cells, its footnotes), selecting each and saying its page, and wrap round at the ends.
+    #[test]
+    fn next_and_previous_step_through_every_change() {
+        use designcraft_doc::{CellAddr, ChangeMark, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "One two three"})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 13, "focus": 13})).unwrap();
+        let note = s.execute("footnote.insert", &json!({"text": "Note"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+        let table = *s.doc().unwrap().doc.story(sid).unwrap().tables.keys().next().unwrap();
+        let cell = CellAddr { table, row: 0, col: 1 };
+        s.edit(|d, _| {
+            let st = d.story_mut(sid).unwrap();
+            for word in ["two", "three"] {
+                let i = st.text.find(word).unwrap();
+                st.format_chars(i..i + word.len(), |f| f.over.change = Some(ChangeMark::Deleted));
+            }
+            let c = d.text_story_mut(sid, Some(cell)).unwrap();
+            c.replace(0..0, "3.75");
+            c.format_chars(0..4, |f| f.over.change = Some(ChangeMark::Inserted));
+            let n = d.text_story_mut(sid, Some(CellAddr::footnote(note))).unwrap();
+            n.format_chars(0..4, |f| f.over.change = Some(ChangeMark::Inserted));
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        let step = |s: &mut Session, id: &str| {
+            let r = s.execute(id, &json!({})).unwrap();
+            let t = s.doc().unwrap().selection.text.unwrap();
+            assert_eq!((t.story, t.range().start), (sid, r["start"].as_u64().unwrap() as usize), "{r}");
+            assert_eq!(r["page"], 0, "{r}");
+            (r["text"].as_str().unwrap().to_string(), r["wrapped"] == true)
+        };
+        // From the story's start (Create Table left the caret in its first cell).
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        let forward: Vec<(String, bool)> = (0..5).map(|_| step(&mut s, "changes.next")).collect();
+        let names = |v: &[(String, bool)]| v.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&forward), ["two", "three", "3.75", "Note", "two"], "{forward:?}");
+        assert_eq!(forward.iter().map(|(_, w)| *w).collect::<Vec<_>>(), [false, false, false, false, true]);
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().cell, None);
+        let back: Vec<(String, bool)> = (0..2).map(|_| step(&mut s, "changes.previous")).collect();
+        assert_eq!(names(&back), ["Note", "3.75"]);
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().cell, Some(cell), "in the cell");
     }
 
     /// `text.select` reaches a cell's or footnote's text, as the changes there are addressed.

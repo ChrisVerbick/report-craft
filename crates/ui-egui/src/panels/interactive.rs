@@ -741,6 +741,21 @@ pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No changes.")).size(11.0).color(t.text_dim));
         return;
     }
+    // How many, and Previous / Next Change, which bring each into view.
+    let stories = list.iter().filter_map(|c| c["story"].as_u64()).collect::<std::collections::BTreeSet<_>>().len();
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, egui::RichText::new(crate::menus::changes_summary(&app.ui.language, list.len() as u64, stories as u64)).size(11.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            for (id, label) in [("changes.next", "Next"), ("changes.previous", "Previous")] {
+                if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked()
+                    && let Ok(r) = app.run(id, json!({}))
+                    && let Some(page) = r["page"].as_u64()
+                {
+                    crate::canvas::go_to_page(app, page as usize);
+                }
+            }
+        });
+    });
     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
         for c in &list {
             let (story, start) = (c["story"].clone(), c["start"].clone());
@@ -805,6 +820,36 @@ mod track_changes_panel_tests {
 
     use super::*;
 
+    /// File › Compare with Earlier Version…: the version picked is compared with the document, the
+    /// redline opens, and the status line says what it holds.
+    #[test]
+    fn compare_with_an_earlier_version_opens_the_redline() {
+        let dir = std::env::temp_dir().join(format!("dc-compare-menu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Costs were flat."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let earlier = dir.join("sent.designcraft");
+        app.run("file.saveACopy", json!({"path": earlier.to_string_lossy()})).unwrap();
+        app.session
+            .edit(|d, _| {
+                d.story_mut(sid).unwrap().replace(6..15, "fell");
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        let picked = earlier.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
+        app.run("app.compareWithFile", json!({})).unwrap();
+        let st = app.session.active().unwrap();
+        assert!(st.doc.title.contains("compared with sent.designcraft"), "{}", st.doc.title);
+        assert!(st.path.is_none());
+        assert!(app.session.cache.shows_deleted());
+        assert!(app.ui.status.contains("2 changes in 1 story"), "{}", app.ui.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A change in a table cell is listed by its cell, and Accept acts on that cell's text.
     #[test]
     fn a_cells_change_is_named_and_accepted_in_its_cell() {
@@ -839,6 +884,12 @@ mod track_changes_panel_tests {
         );
         h.run_steps(3);
         h.get_by_label_contains("B2: Deleted");
+        h.get_by_label("2 changes in 1 story");
+        // Next Change selects the first one, in its cell.
+        h.get_by_label("Next").click();
+        h.run_steps(2);
+        let t = h.state().session.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.cell, t.range()), (Some(cell), 0..5));
         h.get_all_by_label("Accept").next().unwrap().click();
         h.run_steps(3);
         let text = h.state().session.doc().unwrap().doc.text_story(sid, Some(cell)).unwrap().text.clone();
