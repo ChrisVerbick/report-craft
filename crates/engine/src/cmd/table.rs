@@ -89,6 +89,24 @@ fn style_specs() -> Vec<CommandSpec> {
             table_style_edit
         ),
         cmd!(
+            "style.table.redefine",
+            "Redefine Table Style",
+            [],
+            None,
+            "{name?: the table's style (checked), story?, table?} — the table's style takes what the table overrides of what it sets: border edges, alternating row and column fills and strokes, space before and after; the tables using it follow → {name, changed: [attributes]}",
+            has_doc,
+            table_style_redefine
+        ),
+        cmd!(
+            "style.cell.redefine",
+            "Redefine Cell Style",
+            [],
+            None,
+            "{name?: the cell's style (checked), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the first target cell; default: the selection)} — the cell's style takes what the cell overrides of what it sets: fill (with its tint), insets, vertical justification, edge strokes, paragraph style; the cells using it follow → {name, changed: [attributes]}",
+            has_doc,
+            cell_style_redefine
+        ),
+        cmd!(
             "style.table.delete",
             "Delete Table Style",
             [],
@@ -1883,19 +1901,155 @@ fn table_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
         let ts =
             d.styles_mut().table.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.table.edit", format!("no table style `{name}`")))?;
         table_style_fields(ts, &p, border);
-        let names = dependent_styles(&name, d.styles.table.iter().map(|ts| (ts.name.as_str(), ts.based_on.as_deref())));
-        let styles: Vec<_> = names.iter().map(|name| d.styles.resolve_table_style(name)).collect();
-        let cells = d.styles.cell.clone();
-        for sid in d.stories.keys().copied().collect::<Vec<_>>() {
-            let Some(st) = d.story_mut(sid) else { continue };
-            for t in st.tables.values_mut() {
-                if let Some(ts) = styles.iter().find(|ts| ts.name == t.style) {
-                    ts.apply_to(std::sync::Arc::make_mut(t), &cells);
-                }
-            }
-            st.rev = st.rev.wrapping_add(1);
-        }
+        reapply_table_styles(d, &name);
         ok()
+    })
+}
+
+/// Re-apply table style `name` and the styles based on it to every table using them (after a
+/// style edit).
+fn reapply_table_styles(d: &mut Document, name: &str) {
+    let names = dependent_styles(name, d.styles.table.iter().map(|ts| (ts.name.as_str(), ts.based_on.as_deref())));
+    let styles: Vec<_> = names.iter().map(|name| d.styles.resolve_table_style(name)).collect();
+    let cells = d.styles.cell.clone();
+    for sid in d.stories.keys().copied().collect::<Vec<_>>() {
+        let Some(st) = d.story_mut(sid) else { continue };
+        for t in st.tables.values_mut() {
+            if let Some(ts) = styles.iter().find(|ts| ts.name == t.style) {
+                ts.apply_to(std::sync::Arc::make_mut(t), &cells);
+            }
+        }
+        st.rev = st.rev.wrapping_add(1);
+    }
+}
+
+/// The target table, and the name of its style (`[Basic Table]` for none).
+fn styled_table<'a>(d: &'a Document, g: &Tgt, cmd: &str) -> Result<(&'a Table, String)> {
+    let t = d.story(g.story).and_then(|st| st.tables.get(&g.table)).ok_or_else(|| bad(cmd, format!("no table {}", g.table)))?;
+    Ok((t, if t.style.is_empty() { designcraft_doc::BASIC_TABLE.to_string() } else { t.style.clone() }))
+}
+
+/// `name`, the style a redefinition is for, checked against the one `p` names.
+fn redefined_name(p: &Value, name: String, what: &str, cmd: &str) -> Result<String> {
+    match str_param(p, "name") {
+        Some(n) if n != name => Err(bad(cmd, format!("the {what}'s style is `{name}`, not `{n}`"))),
+        _ => Ok(name),
+    }
+}
+
+fn table_style_redefine(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "style.table.redefine";
+    let g = target(s, p, ID)?;
+    let d = &s.doc()?.doc;
+    let (t, name) = styled_table(d, &g, ID)?;
+    let name = redefined_name(p, name, "table", ID)?;
+    // What the style gives the table, against what it has: the style takes the difference in
+    // what it sets.
+    let mut styled = t.clone();
+    d.styles.resolve_table_style(&name).apply_to(&mut styled, &d.styles.cell);
+    let mut ts = d.styles.table.iter().find(|x| x.name == name).cloned().ok_or_else(|| bad(ID, format!("no table style `{name}`")))?;
+    let (o, was) = (&t.options, &styled.options);
+    let mut changed = Vec::new();
+    for i in 0..4 {
+        if was.border_for(i) != o.border_for(i) {
+            ts.borders[i] = designcraft_doc::CellStrokeAttrs::from_stroke(o.border_for(i));
+            if !changed.contains(&"border") {
+                changed.push("border");
+            }
+        }
+    }
+    if let (true, Some(a)) = (was.alt_rows != o.alt_rows, &o.alt_rows) {
+        ts.alt_rows = Some(a.clone());
+        ts.row_fills = Default::default();
+        changed.push("altRows");
+    }
+    if let (true, Some(a)) = (was.alt_cols != o.alt_cols, &o.alt_cols) {
+        ts.column_fills = designcraft_doc::AltFillsAttrs::from_fills(a);
+        changed.push("altColumns");
+    }
+    if let (true, Some(a)) = (was.row_strokes != o.row_strokes, &o.row_strokes) {
+        ts.row_strokes = designcraft_doc::AltStrokesAttrs::from_strokes(a);
+        changed.push("rowStrokes");
+    }
+    if let (true, Some(a)) = (was.column_strokes != o.column_strokes, &o.column_strokes) {
+        ts.column_strokes = designcraft_doc::AltStrokesAttrs::from_strokes(a);
+        changed.push("columnStrokes");
+    }
+    if was.space_before != o.space_before {
+        ts.space_before = Some(o.space_before);
+        changed.push("spaceBefore");
+    }
+    if was.space_after != o.space_after {
+        ts.space_after = Some(o.space_after);
+        changed.push("spaceAfter");
+    }
+    if changed.is_empty() {
+        return Ok(json!({"name": name, "changed": changed}));
+    }
+    s.edit(|d, _| {
+        if let Some(x) = d.styles_mut().table.iter_mut().find(|x| x.name == name) {
+            *x = ts;
+        }
+        reapply_table_styles(d, &name);
+        Ok(json!({"name": name, "changed": changed}))
+    })
+}
+
+fn cell_style_redefine(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "style.cell.redefine";
+    let g = target(s, p, ID)?;
+    let d = &s.doc()?.doc;
+    let (t, _) = styled_table(d, &g, ID)?;
+    let (r, c) = t.owner(g.range.r0, g.range.c0);
+    let cell = t.cell(r, c).ok_or_else(|| bad(ID, "no cell"))?;
+    if cell.style.is_empty() || cell.style == designcraft_doc::NO_CELL_STYLE {
+        return Err(bad(ID, "the cell has no cell style to redefine"));
+    }
+    let name = redefined_name(p, cell.style.clone(), "cell", ID)?;
+    let resolved = designcraft_doc::resolve_cell_style(&d.styles.cell, &name);
+    let mut styled = cell.clone();
+    resolved.apply_to(&mut styled);
+    let mut cs = d.styles.cell.iter().find(|x| x.name == name).cloned().ok_or_else(|| bad(ID, format!("no cell style `{name}`")))?;
+    let mut changed = Vec::new();
+    // The fill and its tint go together: a style that sets the fill sets a tint (100% unset).
+    let sets_fill = resolved.fill.is_some() || resolved.fill_tint.is_some();
+    if sets_fill && (styled.fill != cell.fill || resolved.fill_tint.unwrap_or(1.0) != cell.fill_tint) {
+        cs.fill = Some(cell.fill.clone());
+        cs.fill_tint = Some(cell.fill_tint);
+        changed.push("fill");
+    }
+    if styled.insets != cell.insets {
+        cs.insets = Some(cell.insets);
+        cs.inset_overrides = Default::default();
+        changed.push("insets");
+    }
+    if styled.vj != cell.vj {
+        cs.vj = Some(cell.vj);
+        changed.push("vj");
+    }
+    for (i, edge) in ["strokeTop", "strokeLeft", "strokeBottom", "strokeRight"].into_iter().enumerate() {
+        if styled.strokes.get(i) != cell.strokes.get(i)
+            && let Some(st) = cell.strokes.get(i)
+        {
+            cs.strokes[i] = designcraft_doc::CellStrokeAttrs::from_stroke(st);
+            changed.push(edge);
+        }
+    }
+    let first = |c: &designcraft_doc::Cell| c.text.paras.first().map(|p| p.style.clone());
+    if first(&styled) != first(cell) {
+        cs.paragraph_style = first(cell);
+        changed.push("paragraphStyle");
+    }
+    if changed.is_empty() {
+        return Ok(json!({"name": name, "changed": changed}));
+    }
+    s.edit(|d, _| {
+        if let Some(x) = d.styles_mut().cell.iter_mut().find(|x| x.name == name) {
+            *x = cs;
+        }
+        let names = dependent_styles(&name, d.styles.cell.iter().map(|cs| (cs.name.as_str(), cs.based_on.as_deref())));
+        reapply_cell_styles(d, &names);
+        Ok(json!({"name": name, "changed": changed}))
     })
 }
 
@@ -2572,5 +2726,155 @@ mod resize_border_tests {
         assert_eq!(table(&s), before);
         s.execute("object.setFlags", &json!({"ids": [f], "locked": true})).unwrap();
         assert!(s.execute("table.resizeBorder", &json!({"frame": f, "table": t, "axis": "column", "index": 0, "delta": 5})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod redefine_tests {
+    use designcraft_doc::{StoryId, Table};
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    /// A 3×2 table (one header row) styled "Data" (2 pt Black border, rows alternating Black and
+    /// Paper, 6 pt before), its body cells "Body" (Paper fill, 4 pt insets, 1 pt Black stroke).
+    fn setup() -> (Session, u64, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Body", "fill": "[Paper]", "insets": 4, "stroke": {"weight": 1, "color": "[Black]"}}))
+            .unwrap();
+        s.execute(
+            "style.table.create",
+            &json!({"name": "Data", "body": "Body", "border": {"weight": 2, "color": "[Black]"}, "altRows": {"first": 1, "firstColor": "[Black]", "next": 1, "nextColor": "[Paper]"}, "spaceBefore": 6}),
+        )
+        .unwrap();
+        s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
+        let tid = *s.doc().unwrap().doc.story(StoryId(sid)).unwrap().tables.keys().next().unwrap();
+        (s, sid, tid)
+    }
+
+    fn tables(s: &Session, sid: u64) -> Vec<Table> {
+        s.doc().unwrap().doc.story(StoryId(sid)).unwrap().tables.values().map(|t| (**t).clone()).collect()
+    }
+
+    fn at(sid: u64, tid: u64, row: usize, col: usize, more: Value) -> Value {
+        let mut p = json!({"story": sid, "table": tid, "row": row, "col": col});
+        if let (Some(o), Value::Object(m)) = (p.as_object_mut(), more) {
+            o.extend(m);
+        }
+        p
+    }
+
+    /// Redefine Cell Style: the style takes what the picked cell overrides of it, and the cells
+    /// using it follow; what the style doesn't set stays unset.
+    #[test]
+    fn redefining_a_cell_style_takes_the_cells_overrides() {
+        let (mut s, sid, tid) = setup();
+        s.execute(
+            "table.setCell",
+            &at(sid, tid, 1, 0, json!({"fill": "[Black]", "tint": 0.5, "insets": 9, "vj": "center", "stroke": {"weight": 3}})),
+        )
+        .unwrap();
+        let r = s.execute("style.cell.redefine", &at(sid, tid, 1, 0, json!({}))).unwrap();
+        assert_eq!(r["name"], "Body", "{r}");
+        let body = s.doc().unwrap().doc.styles.cell.iter().find(|c| c.name == "Body").unwrap().clone();
+        assert_eq!((body.fill.as_deref(), body.fill_tint), (Some("[Black]"), Some(0.5)));
+        assert_eq!(body.vj, None, "Body didn't set it");
+        let t = &tables(&s, sid)[0];
+        let other = t.cell(2, 1).unwrap();
+        assert_eq!(
+            (other.fill.as_str(), other.fill_tint, other.insets, other.strokes[0].weight),
+            ("[Black]", 0.5, [9.0; 4], 3.0),
+            "its cells follow"
+        );
+        assert_eq!(other.vj, designcraft_doc::VerticalJustification::default());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.cell.iter().find(|c| c.name == "Body").unwrap().fill.as_deref(), Some("[Paper]"));
+        // A cell with no cell style ([None]) has nothing to redefine.
+        s.execute("style.cell.apply", &at(sid, tid, 0, 1, json!({"name": "[None]"}))).unwrap();
+        for (p, why) in [(at(sid, tid, 0, 1, json!({})), "no cell style"), (at(sid, tid, 1, 0, json!({"name": "Other"})), "Body")] {
+            let e = s.execute("style.cell.redefine", &p).unwrap_err().to_string();
+            assert!(e.contains(why), "{p}: {e}");
+        }
+    }
+
+    /// Redefine Table Style: the style takes what the picked table overrides of it (border,
+    /// alternating rows, space before), and the tables using it follow; space after, which the
+    /// style doesn't set, stays unset.
+    #[test]
+    fn redefining_a_table_style_takes_the_tables_overrides() {
+        let (mut s, sid, tid) = setup();
+        let end = s.doc().unwrap().doc.story(StoryId(sid)).unwrap().len();
+        s.execute("text.select", &json!({"story": sid, "anchor": end, "focus": end})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
+        s.execute(
+            "table.options",
+            &json!({"story": sid, "table": tid, "border": {"weight": 4}, "spaceBefore": 12, "spaceAfter": 8, "altRows": {"first": 2, "firstColor": "[Black]", "next": 1, "nextColor": "[Paper]"}}),
+        )
+        .unwrap();
+        let r = s.execute("style.table.redefine", &json!({"story": sid, "table": tid})).unwrap();
+        assert_eq!(r["name"], "Data", "{r}");
+        let data = s.doc().unwrap().doc.styles.resolve_table_style("Data");
+        assert_eq!((data.space_before, data.space_after), (Some(12.0), None));
+        for t in tables(&s, sid) {
+            assert_eq!(
+                (t.options.border_for(0).weight, t.options.space_before, t.options.alt_rows.as_ref().map(|a| a.first)),
+                (4.0, 12.0, Some(2)),
+                "tables follow"
+            );
+        }
+        let e = s.execute("style.table.redefine", &json!({"story": sid, "table": tid, "name": "Other"})).unwrap_err().to_string();
+        assert!(e.contains("Data"), "{e}");
+    }
+
+    /// The plan's check: after Redefine, the style applied to the cell or table as it was gives
+    /// the overridden values, for random overrides of what the style sets.
+    #[test]
+    fn redefine_then_resolve_gives_the_overrides() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let swatches = ["[Black]", "[Paper]", "[Registration]"];
+        let sw = |next: &mut dyn FnMut(u64) -> u64| swatches[next(3) as usize];
+        for _ in 0..30 {
+            let (mut s, sid, tid) = setup();
+            let before = tables(&s, sid).remove(0);
+            let (row, col) = (1 + next(2) as usize, next(2) as usize);
+            let cell = json!({"fill": sw(&mut next), "tint": next(11) as f64 / 10.0, "insets": next(20), "stroke": {"weight": next(8), "color": sw(&mut next)}});
+            s.execute("table.setCell", &at(sid, tid, row, col, cell)).unwrap();
+            let overridden = tables(&s, sid).remove(0).cell(row, col).unwrap().clone();
+            s.execute("style.cell.redefine", &at(sid, tid, row, col, json!({}))).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let mut resolved = before.cell(row, col).unwrap().clone();
+            designcraft_doc::resolve_cell_style(&d.styles.cell, "Body").apply_to(&mut resolved);
+            assert_eq!(
+                (&resolved.fill, resolved.fill_tint, resolved.insets, &resolved.strokes),
+                (&overridden.fill, overridden.fill_tint, overridden.insets, &overridden.strokes)
+            );
+            let alt = json!({"first": 1 + next(3), "firstColor": sw(&mut next), "next": 1 + next(3), "nextColor": sw(&mut next)});
+            let options =
+                json!({"story": sid, "table": tid, "border": {"weight": next(6), "color": sw(&mut next)}, "spaceBefore": next(24), "altRows": alt});
+            s.execute("table.options", &options).unwrap();
+            let overridden = tables(&s, sid).remove(0).options;
+            s.execute("style.table.redefine", &json!({"story": sid, "table": tid})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let mut t = before.clone();
+            d.styles.resolve_table_style("Data").apply_to(&mut t, &d.styles.cell);
+            let edges = |o: &designcraft_doc::TableOptions| (0..4).map(|i| o.border_for(i).clone()).collect::<Vec<_>>();
+            assert_eq!(
+                (edges(&t.options), &t.options.alt_rows, t.options.space_before),
+                (edges(&overridden), &overridden.alt_rows, overridden.space_before),
+                "{options}"
+            );
+        }
     }
 }

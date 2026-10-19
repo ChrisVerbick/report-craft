@@ -373,6 +373,15 @@ pub fn specs() -> Vec<CommandSpec> {
             edit_object
         ),
         cmd!(
+            "style.object.redefine",
+            "Redefine Object Style",
+            [],
+            None,
+            "{name?: the object's style (checked), ids?: [id] (the first; default: the first selected)} — the object's style takes what the object overrides of what it sets: fill, stroke, effects, text frame options; the objects that matched the style follow, one with its own setting keeps it; [None] can't be redefined → {name, changed: [attributes], updated: objects that followed}",
+            has_doc,
+            redefine_object
+        ),
+        cmd!(
             "style.object.delete",
             "Delete Object Style",
             [],
@@ -1660,6 +1669,88 @@ fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
             },
         );
         Ok(json!({"name": to, "updated": updated}))
+    })
+}
+
+fn redefine_object(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "style.object.redefine";
+    let ids = super::targets(s, p)?;
+    let id = *ids.first().ok_or_else(|| bad(ID, "select an object using the style to redefine"))?;
+    let d = &s.doc()?.doc;
+    let it = d.item(id).ok_or_else(|| bad(ID, format!("no object {}", id.0)))?;
+    let name = it.object_style.clone();
+    if name == designcraft_doc::NO_OBJECT_STYLE {
+        return Err(bad(ID, "the object's style is [None], which can't be redefined"));
+    }
+    if let Some(n) = str_param(p, "name").filter(|n| *n != name) {
+        return Err(bad(ID, format!("the object's style is `{name}`, not `{n}`")));
+    }
+    let old = d.styles.object_style(&name).cloned().ok_or_else(|| bad(ID, format!("no object style `{name}`")))?;
+    let mut new = old.clone();
+    let mut changed = Vec::new();
+    if old.fill.as_ref().is_some_and(|f| *f != it.fill) {
+        new.fill = Some(it.fill.clone());
+        changed.push("fill");
+    }
+    if old.stroke.as_ref().is_some_and(|st| *st != it.stroke) {
+        new.stroke = Some(it.stroke.clone());
+        changed.push("stroke");
+    }
+    if old.effects.as_ref().is_some_and(|e| *e != it.effects) {
+        new.effects = Some(it.effects.clone());
+        changed.push("effects");
+    }
+    if let (Some(o), Some(tf)) = (&old.text_frame, it.text_frame())
+        && *o != tf.options
+    {
+        new.text_frame = Some(tf.options.clone());
+        changed.push("textFrame");
+    }
+    if changed.is_empty() {
+        return Ok(json!({"name": name, "changed": changed, "updated": 0}));
+    }
+    s.edit(|d, _| {
+        if let Some(os) = d.styles_mut().object.iter_mut().find(|o| o.name == name) {
+            *os = new.clone();
+        }
+        // Objects that matched the style follow; one with its own setting keeps it.
+        let mut updated = 0;
+        d.update_items(
+            |x| x.object_style == name && x.id != id,
+            |x| {
+                let mut took = false;
+                if let (Some(o), Some(n)) = (&old.fill, &new.fill)
+                    && x.fill == *o
+                    && x.fill != *n
+                {
+                    x.fill = n.clone();
+                    took = true;
+                }
+                if let (Some(o), Some(n)) = (&old.stroke, &new.stroke)
+                    && x.stroke == *o
+                    && x.stroke != *n
+                {
+                    x.stroke = n.clone();
+                    took = true;
+                }
+                if let (Some(o), Some(n)) = (&old.effects, &new.effects)
+                    && x.effects == *o
+                    && x.effects != *n
+                {
+                    x.effects = n.clone();
+                    took = true;
+                }
+                if let (Some(o), Some(n), Some(tf)) = (&old.text_frame, &new.text_frame, x.text_frame_mut())
+                    && tf.options == *o
+                    && tf.options != *n
+                {
+                    tf.options = n.clone();
+                    took = true;
+                }
+                updated += usize::from(took);
+            },
+        );
+        Ok(json!({"name": name, "changed": changed, "updated": updated}))
     })
 }
 
@@ -3809,6 +3900,94 @@ mod object_style_tests {
         ] {
             let e = s.execute("style.object.edit", &p).unwrap_err().to_string();
             assert!(e.contains(why), "{p}: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod object_redefine_tests {
+    use designcraft_doc::ItemId;
+
+    use super::*;
+
+    fn item(s: &Session, id: ItemId) -> Item {
+        s.doc().unwrap().doc.item(id).unwrap().clone()
+    }
+
+    /// "Full" sets the fill, stroke and effects; frames a (to redefine from), b (following) and c
+    /// (with its own fill) use it.
+    fn setup() -> (Session, [ItemId; 3]) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute(
+            "style.object.create",
+            &json!({"name": "Full", "fromSelection": false, "fill": "[Black]", "dropShadow": {"on": true, "opacity": 0.5}}),
+        )
+        .unwrap();
+        s.execute("style.object.edit", &json!({"name": "Full", "stroke": {"swatch": "[Black]", "weight": 1}})).unwrap();
+        let mut ids = [ItemId(0); 3];
+        for (i, id) in ids.iter_mut().enumerate() {
+            *id = ItemId(s.execute("frame.create", &json!({"rect": [36 + 150 * i, 36, 166 + 150 * i, 166]})).unwrap()["id"].as_u64().unwrap());
+        }
+        s.execute("style.object.apply", &json!({"name": "Full", "ids": ids.map(|i| i.0)})).unwrap();
+        s.execute("object.fill", &json!({"ids": [ids[2].0], "swatch": "[Paper]"})).unwrap();
+        (s, ids)
+    }
+
+    /// Redefine Object Style: the style takes what the picked object overrides of it; objects
+    /// that matched the style follow, one with its own setting keeps it.
+    #[test]
+    fn redefining_an_object_style_takes_the_objects_overrides() {
+        let (mut s, [a, b, c]) = setup();
+        s.execute("object.fill", &json!({"ids": [a.0], "swatch": "[Registration]"})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [a.0], "weight": 5})).unwrap();
+        let r = s.execute("style.object.redefine", &json!({"ids": [a.0]})).unwrap();
+        assert_eq!(r["name"], "Full", "{r}");
+        let full = s.doc().unwrap().doc.styles.object_style("Full").cloned().unwrap();
+        assert_eq!(full.fill, Some(designcraft_doc::Fill::swatch("[Registration]")));
+        assert_eq!(full.stroke.map(|st| st.weight), Some(5.0));
+        assert_eq!(item(&s, b).fill, designcraft_doc::Fill::swatch("[Registration]"), "follows");
+        assert_eq!(item(&s, b).stroke.weight, 5.0);
+        assert_eq!(item(&s, c).fill, designcraft_doc::Fill::swatch("[Paper]"), "keeps its own");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.object_style("Full").unwrap().fill, Some(designcraft_doc::Fill::swatch("[Black]")));
+        let none = ItemId(s.execute("frame.create", &json!({"rect": [36, 300, 166, 430]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("style.object.apply", &json!({"name": "[None]", "ids": [none.0]})).unwrap();
+        for (p, why) in [(json!({"ids": [none.0]}), "[None]"), (json!({"ids": [a.0], "name": "Other"}), "Full"), (json!({"ids": []}), "select")] {
+            let e = s.execute("style.object.redefine", &p).unwrap_err().to_string();
+            assert!(e.contains(why), "{p}: {e}");
+        }
+    }
+
+    /// The plan's check for object styles: after Redefine, the style applied to the object as it
+    /// was gives its overridden fill, stroke and effects (random overrides).
+    #[test]
+    fn redefine_then_resolve_gives_the_objects_overrides() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let swatches = ["[Black]", "[Paper]", "[Registration]"];
+        for _ in 0..30 {
+            let (mut s, [a, ..]) = setup();
+            let before = item(&s, a);
+            let (fill, stroke) = (swatches[next(3) as usize], swatches[next(3) as usize]);
+            s.execute("object.fill", &json!({"ids": [a.0], "swatch": fill})).unwrap();
+            s.execute("object.stroke", &json!({"ids": [a.0], "swatch": stroke, "weight": next(12)})).unwrap();
+            let opacity = next(11) as f64 / 10.0;
+            s.edit(|d, _| {
+                d.item_mut(a).unwrap().effects.drop_shadow.opacity = opacity as f32;
+                Ok(())
+            })
+            .unwrap();
+            let overridden = item(&s, a);
+            s.execute("style.object.redefine", &json!({"ids": [a.0]})).unwrap();
+            let mut resolved = before.clone();
+            s.doc().unwrap().doc.styles.object_style("Full").unwrap().apply_to(&mut resolved);
+            assert_eq!((&resolved.fill, &resolved.stroke, &resolved.effects), (&overridden.fill, &overridden.stroke, &overridden.effects));
         }
     }
 }
