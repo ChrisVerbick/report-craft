@@ -563,7 +563,9 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         // The whole update on a copy: the document, its undo history and the links stay as they were.
         return run(&mut (*d).clone());
     }
-    s.edit(|d, _| run(d))
+    let mut r = s.edit(|d, _| run(d))?;
+    super::version::keep_around_update(s, &d, &mut r);
+    Ok(r)
 }
 
 /// Clear Flow Highlights: the marks of the last update off the linked text stories (or `story`),
@@ -1834,6 +1836,40 @@ mod text_link_tests {
     fn story_hash_of_a_story_without_tables_is_unchanged() {
         let st = designcraft_doc::Story::with_text(StoryId(1), "Head\nBody", designcraft_doc::ParaFormat::default());
         assert_eq!(super::story_hash(&st), "5ffd958c8ee493e4");
+    }
+
+    /// A Flow update keeps two versions: the document before it (unless that is the latest
+    /// version already) and after it, with the update's reports, which are what comparing the two
+    /// finds. Undoing the update leaves them.
+    #[test]
+    fn a_flow_update_keeps_versions_whose_changes_are_its_reports() {
+        let (dir, path, mut s, sid) = placed("update-version", "Revenue grew. Costs were flat. Staff held.");
+        revise(&path, "Revenue grew strongly. Costs were flat. Staff rose.");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let v = s.execute("version.list", &json!({})).unwrap();
+        let kinds: Vec<&str> = v.as_array().unwrap().iter().map(|v| v["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["save", "linkUpdate"], "{v}");
+        assert_eq!(v[1]["parent"], v[0]["id"]);
+        assert_eq!(v[1]["reports"], r["reports"]);
+        let st = s.doc().unwrap();
+        let (before, after) = (st.versions.document(1).unwrap(), st.versions.document(2).unwrap());
+        let pair = |c: &Value| (c["before"].as_str().unwrap().to_string(), c["after"].as_str().unwrap().to_string());
+        let reported: Vec<(String, String)> = v[1]["reports"][0]["changes"].as_array().unwrap().iter().map(pair).collect();
+        let changes = designcraft_flow::compare(&before, &after);
+        let text = changes.stories.iter().find(|c| c.story == sid).unwrap().texts.iter().find(|t| t.place == designcraft_flow::Place::Text).unwrap();
+        let shown = |x: &str| designcraft_flow::shown(x).trim().to_string();
+        let compared: Vec<(String, String)> = text.hunks.iter().map(|h| (shown(&text.a[h.old.clone()]), shown(&text.b[h.new.clone()]))).collect();
+        assert_eq!(reported.len(), 2, "{r}");
+        assert_eq!(compared, reported);
+        // Updated again with nothing changed since: only the update's own version.
+        revise(&path, "Revenue grew strongly. Costs fell. Staff rose.");
+        s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        let v = s.execute("version.list", &json!({})).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 3, "{v}");
+        assert_eq!((v[2]["kind"].as_str(), &v[2]["parent"]), (Some("linkUpdate"), &v[1]["id"]));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("version.list", &json!({})).unwrap().as_array().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A workbook with named sheets, each a list of (cell, text): inline strings, or error values

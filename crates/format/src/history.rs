@@ -71,6 +71,9 @@ pub struct VersionInfo {
     pub size: u64,
     /// The format version it was kept in (rebuilding it applies the upgrades since).
     pub format: u32,
+    /// A Flow update's reports (`LinkUpdate`): what it changed in each linked story.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports: Option<Value>,
 }
 
 /// A version to add.
@@ -83,6 +86,7 @@ pub struct NewVersion {
     pub kind: VersionKind,
     /// The version the document was made from; `None`: the latest.
     pub parent: Option<u32>,
+    pub reports: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -149,10 +153,65 @@ impl History {
             full: ops.is_none(),
             size: body.len() as u64,
             format: crate::VERSION,
+            reports: v.reports,
         };
         let assets = compact.assets.values().filter(|a| !a.data.is_empty()).map(|a| (a.id, (a.data.clone(), crate::ext_for(&a.mime)))).collect();
         self.versions.push(Stored { info, body: Arc::new(body), assets });
         Ok(id)
+    }
+
+    /// Whether `doc` is what the latest version holds, as a file would hold it.
+    pub fn is_latest(&self, doc: &Document) -> bool {
+        let Some(last) = self.versions.last() else { return false };
+        let (Ok(compact), Ok(v)) = (crate::saveable(doc), self.value(last.info.id)) else { return false };
+        let same_bytes = compact.assets.values().filter(|a| !a.data.is_empty()).all(|a| last.assets.get(&a.id).is_some_and(|(d, _)| *d == a.data));
+        same_bytes && serde_json::to_value(&compact).is_ok_and(|c| c == v)
+    }
+
+    /// Drop the oldest versions kept on save (`Save`; every kind unless `keep_others`) past the
+    /// newest `keep_last` of them; returns how many went. The versions made from a dropped one
+    /// are kept as they were: as changes from its parent, or whole when it was whole (so no line
+    /// of changes grows past nine).
+    pub fn prune(&mut self, keep_last: usize, keep_others: bool) -> usize {
+        let candidates: Vec<u32> = self.versions.iter().filter(|s| !keep_others || s.info.kind == VersionKind::Save).map(|s| s.info.id).collect();
+        let n = candidates.len().saturating_sub(keep_last);
+        for id in candidates.into_iter().take(n) {
+            self.drop_version(id);
+        }
+        n
+    }
+
+    fn drop_version(&mut self, id: u32) {
+        let Ok(gone) = self.get(id).cloned() else { return };
+        // The versions made from it, rebuilt while it is still there (whole ones need nothing).
+        let children: Vec<(u32, Option<Value>)> = self
+            .versions
+            .iter()
+            .filter(|s| s.info.parent == Some(id))
+            .map(|s| (s.info.id, if s.info.full { None } else { self.value(s.info.id).ok() }))
+            .collect();
+        self.versions.retain(|s| s.info.id != id);
+        for (child, value) in children {
+            let body = value.map(|v| {
+                let base = if gone.info.full { None } else { gone.info.parent.and_then(|p| self.value(p).ok()) };
+                match base {
+                    Some(base) => {
+                        let mut ops = Vec::new();
+                        diff(&base, &v, "", &mut ops);
+                        (serde_json::to_vec(&ops), false)
+                    }
+                    None => (serde_json::to_vec(&v), true),
+                }
+            });
+            let Ok(at) = self.versions.binary_search_by_key(&child, |s| s.info.id) else { continue };
+            let Some(s) = self.versions.get_mut(at) else { continue };
+            s.info.parent = gone.info.parent;
+            if let Some((Ok(body), full)) = body {
+                s.info.full = full;
+                s.info.size = body.len() as u64;
+                s.body = Arc::new(body);
+            }
+        }
     }
 
     /// How many lists of changes rebuilding `id` applies; `None` when it can't be rebuilt.
@@ -722,6 +781,40 @@ mod tests {
         // `assets/` holds only the document's files, as before.
         let names = |f: &[u8]| entries(f).into_iter().map(|(n, _)| n).filter(|n| n.starts_with("assets/")).collect::<Vec<_>>();
         assert_eq!(names(&file), names(&plain));
+    }
+
+    /// Pruning drops the oldest saves past the newest `keep_last` (with manual versions too when
+    /// told), and every version it keeps rebuilds as it was, in the file too: the versions made
+    /// from a dropped one are kept as changes from its parent, or whole when it was whole.
+    #[test]
+    fn pruning_keeps_every_kept_version_as_it_was() {
+        let mut d = start();
+        let mut h = History::default();
+        let mut saved = Vec::new();
+        let mut images = Vec::new();
+        for n in 1..=25 {
+            edit(&mut d, n, &mut images);
+            let kind = if n == 5 || n == 11 { VersionKind::Manual } else { VersionKind::Save };
+            h.commit(&d, NewVersion { kind, ..Default::default() }).unwrap();
+            saved.push(save(&d).unwrap());
+        }
+        assert!(h.is_latest(&d));
+        assert_eq!(h.prune(4, true), 19);
+        let kept: Vec<u32> = h.versions().map(|v| v.id).collect();
+        assert_eq!(kept, [5, 11, 22, 23, 24, 25]);
+        assert_eq!(h.versions().filter(|v| v.full).map(|v| v.id).collect::<Vec<_>>(), [5, 11, 22]);
+        assert_eq!(h.versions().map(|v| v.parent).collect::<Vec<_>>(), [None, Some(5), Some(11), Some(22), Some(23), Some(24)]);
+        let back = load_with_history(&save_with_history(&d, &h, None).unwrap()).unwrap().1.unwrap();
+        for id in kept {
+            assert_eq!(back.document(id).unwrap(), load(&saved[id as usize - 1]).unwrap(), "version {id}");
+        }
+        assert!(h.is_latest(&d));
+        // New bytes for the image, the same JSON: not the latest any more.
+        let a = images[0].0;
+        Arc::make_mut(d.assets.get_mut(&a).unwrap()).data = Arc::new(b"four".to_vec());
+        assert!(!h.is_latest(&d));
+        assert_eq!(h.prune(0, false), 6);
+        assert!(h.is_empty() && !h.is_latest(&d));
     }
 
     fn changes(a: &Value, b: &Value) -> Value {

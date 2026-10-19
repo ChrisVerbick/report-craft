@@ -559,8 +559,9 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
         }
         let Some(document) = s.docs.get_mut(index) else { continue };
         let (doc, meta) = files(dir, document.uid);
-        let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
-            .map_err(|e| EngineError::Other(e.to_string()))?;
+        let bytes =
+            designcraft_format::save_with_history(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()), &document.versions, None)
+                .map_err(|e| EngineError::Other(e.to_string()))?;
         // An entry this run did not write is never replaced, even one made since it checked.
         let replace = access.owns(document.uid);
         publish_recovery_file(&doc, &bytes, replace)?;
@@ -579,7 +580,8 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
 /// Publish a document's recovery entry before its optional metadata.
 fn write_entry(access: &Access, dir: &Path, d: &DocState) -> Result<()> {
     let (doc, meta) = files(dir, d.uid);
-    let bytes = designcraft_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| EngineError::Other(e.to_string()))?;
+    let bytes = designcraft_format::save_with_history(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()), &d.versions, None)
+        .map_err(|e| EngineError::Other(e.to_string()))?;
     let replace = access.owns(d.uid);
     publish_recovery_file(&doc, &bytes, replace)?;
     access.record(d.uid);
@@ -811,14 +813,15 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         validate_recovery_dir(dir)?;
         let (doc, _) = files(dir, uid);
         let Ok(bytes) = std::fs::read(&doc) else { continue };
-        let mut d = match crate::cmd::from_bytes(&bytes) {
-            Ok(d) => d,
+        let (mut d, versions) = match crate::cmd::load_bytes(&bytes) {
+            Ok((d, versions, _)) => (d, versions),
             Err(_) => continue,
         };
         let path = meta.get("path").and_then(Value::as_str).map(str::to_string);
         // Skipped font files are logged; the document opens without them.
         let fonts = path.as_deref().and_then(|p| crate::cmd::load_document_fonts(&mut d, p).0);
         let mut st = DocState::new(d, path);
+        st.versions = versions;
         reserve_uid(&mut st, &mut occupied)?;
         st.recovery_entries.push((dir.to_path_buf(), uid));
         // Recovered, the entry is this run's: Save and Close of its document may remove it.
@@ -834,7 +837,7 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         // clean up every snapshot this document actually owns rather than an unrelated same uid.
         if let Some(state) = s.docs.get_mut(index) {
             let (document, metadata) = files(&destination, state.uid);
-            let published = designcraft_format::save(state.doc.as_ref())
+            let published = designcraft_format::save_with_history(state.doc.as_ref(), &state.versions, None)
                 .map_err(|e| EngineError::Other(e.to_string()))
                 .and_then(|bytes| publish(&document, &bytes));
             match published {

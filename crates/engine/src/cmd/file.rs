@@ -54,12 +54,15 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, history?: false leaves the document's versions out (Save a Copy without History)} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
             let path = with_document_extension(path);
-            let mut copy = (*s.doc()?.doc).clone();
+            let st = s.doc()?;
+            let mut copy = (*st.doc).clone();
             super::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let bytes = to_bytes_with_preview(&copy, &s.cache)?;
+            let none = designcraft_format::History::default();
+            let versions = if p.get("history").and_then(Value::as_bool).unwrap_or(true) { &st.versions } else { &none };
+            let bytes = to_bytes_with_preview(&copy, versions, &s.cache)?;
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
@@ -78,11 +81,11 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = recovery_dir(s, p, FolderAccess::ReadWrite)?;
             Ok(json!({"opened": crate::recovery::open(s, &dir)?}))
         }),
-        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .designcraft file", has_doc, |s, _| {
+        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .designcraft file, with the document's versions", has_doc, |s, _| {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
-            let bytes = to_bytes(doc)?;
+            let bytes = save_bytes(doc, &st.versions, None)?;
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
@@ -161,16 +164,17 @@ thread_local! {
 
 /// The document as `.designcraft` bytes, or an error when it can't be written; never an empty file.
 pub fn to_bytes(d: &Document) -> Result<Vec<u8>> {
-    save_bytes(d, None)
+    save_bytes(d, &designcraft_format::History::default(), None)
 }
 
-/// [`to_bytes`] with `preview` (PNG bytes) stored as the file's first-page picture.
-fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
+/// [`to_bytes`] with the document's `versions`, and `preview` (PNG bytes) stored as the file's
+/// first-page picture.
+fn save_bytes(d: &Document, versions: &designcraft_format::History, preview: Option<&[u8]>) -> Result<Vec<u8>> {
     #[cfg(test)]
     if FAIL_TO_BYTES.with(std::cell::Cell::get) {
         return Err(EngineError::Other("could not write the document: injected failure".into()));
     }
-    designcraft_format::save_with_preview(d, preview).map_err(|e| EngineError::Other(format!("could not write the document: {e}")))
+    designcraft_format::save_with_history(d, versions, preview).map_err(|e| EngineError::Other(format!("could not write the document: {e}")))
 }
 
 /// `path` ending in `.designcraft`: the extension is added when it is missing or another one, so
@@ -199,7 +203,7 @@ const PREVIEW_PX: f64 = 320.0;
 
 /// [`to_bytes`] with a picture of the first page, which the start screen shows next to the file
 /// in its recent files. A page that can't be drawn just leaves the picture out.
-fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Result<Vec<u8>> {
+fn to_bytes_with_preview(d: &Document, versions: &designcraft_format::History, cache: &crate::Cache) -> Result<Vec<u8>> {
     let preview = d.page_loc(0).and_then(|(si, pi)| {
         let b = d.spreads.get(si)?.pages.get(pi)?.bounds();
         let side = b.width().max(b.height());
@@ -207,19 +211,24 @@ fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Result<Vec<u8>> 
     });
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
-    save_bytes(d, png.as_deref())
+    save_bytes(d, versions, png.as_deref())
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
-    load_bytes(b).map(|(d, _)| d)
+    load_bytes(b).map(|(d, ..)| d)
 }
 
-/// Read `.designcraft` bytes and repair what a hand-edited file can get wrong without failing the
-/// open, with a warning for each repair.
-fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
-    let mut d = designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))?;
-    let warnings = d.fix_parent_bases();
-    Ok((d, warnings))
+/// Read `.designcraft` bytes with the document's versions, and repair what a hand-edited file can
+/// get wrong without failing the open, with a warning for each repair. Versions that can't be read
+/// are a warning too: the document opens without them, and saving leaves them out.
+pub(crate) fn load_bytes(b: &[u8]) -> Result<(Document, designcraft_format::History, Vec<String>)> {
+    let (mut d, versions) = designcraft_format::load_with_history(b).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut warnings = d.fix_parent_bases();
+    let versions = versions.unwrap_or_else(|e| {
+        warnings.push(format!("{e}; the document opened without its history, and saving leaves it out"));
+        designcraft_format::History::default()
+    });
+    Ok((d, versions, warnings))
 }
 
 /// The longest saved preset name, and how many presets are kept.
@@ -488,7 +497,7 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if !native && ext != designcraft_format::EXTENSION {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
         }
-        let (mut d, mut warnings) = load_bytes(&bytes)?;
+        let (mut d, versions, mut warnings) = load_bytes(&bytes)?;
         super::interchange::resolve_packaged_links(&mut d, std::path::Path::new(path).parent());
         super::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
@@ -496,6 +505,7 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         warnings.extend(super::style::grep_style_warnings(&d));
         let mut st = DocState::new(d, Some(path.to_string()));
         st.fonts = fonts;
+        st.versions = versions;
         let i = s.add_document(st);
         Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
     }
@@ -553,16 +563,26 @@ fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) || super::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return super::interchange::open_idml(s, p);
     }
-    let (mut d, warnings) = load_bytes(&b)?;
+    let (mut d, versions, warnings) = load_bytes(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         d.title = n.to_string();
     }
-    let i = s.add_document(DocState::new(d, None));
+    let mut st = DocState::new(d, None);
+    st.versions = versions;
+    let i = s.add_document(st);
     Ok(json!({"index": i, "warnings": warnings}))
 }
 
 fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
+    save_document(s, p, None)
+}
+
+/// Save the active document as file.save does, keeping a version of it in the file first:
+/// `manual` (File › Save a Version: its label), else a save when it changed since it was last
+/// saved (see [`super::version::kept_on_save`]).
+pub(super) fn save_document(s: &mut Session, p: &Value, manual: Option<String>) -> Result<Value> {
+    let author = s.prefs.user_name.clone();
     let st = s.doc_mut()?;
     // Saving to the document's own file keeps its name, even one opened without the extension.
     let path = str_param(p, "path")
@@ -576,10 +596,13 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     super::datamerge::refresh_relative_paths(&mut saved, std::path::Path::new(&path));
     let paths_changed = saved.data_merge != st.doc.data_merge;
     let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
-    let bytes = to_bytes_with_preview(&saved, &s.cache)?;
+    // The versions once the file is written: a failed write leaves them as they were.
+    let versions = super::version::kept_on_save(st, &saved, manual, &author)?;
+    let bytes = to_bytes_with_preview(&saved, &versions, &s.cache)?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;
+    st.versions = versions;
     if paths_changed {
         st.doc = saved;
         st.bump_revision();
@@ -1060,11 +1083,12 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     let path = s.doc()?.path.clone().ok_or_else(|| bad("file.revert", "the document has never been saved"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut d = if path.to_ascii_lowercase().ends_with(".idml") {
+        let (mut d, versions) = if path.to_ascii_lowercase().ends_with(".idml") {
             let bytes = crate::io::read_file(&path).map_err(EngineError::Other)?;
-            super::interchange::import_idml_confined(&bytes).map_err(|e| EngineError::Other(e.to_string()))?
+            (super::interchange::import_idml_confined(&bytes).map_err(|e| EngineError::Other(e.to_string()))?, Default::default())
         } else {
-            from_bytes(&crate::io::read_file(&path).map_err(EngineError::Other)?)?
+            let (d, versions, _) = load_bytes(&crate::io::read_file(&path).map_err(EngineError::Other)?)?;
+            (d, versions)
         };
         // As opened again: the fonts beside it now (unchanged files are shared, not read again).
         let (fonts, _, _) = load_document_fonts(&mut d, &path);
@@ -1074,6 +1098,7 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         let mut fresh = DocState::new(d, Some(path.clone()));
         fresh.fonts = fonts;
         fresh.uid = uid;
+        fresh.versions = versions;
         // A new state has a revision no state had before, so caches don't show the old document.
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
         *s.doc_mut()? = fresh;
