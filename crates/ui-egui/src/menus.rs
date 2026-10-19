@@ -83,6 +83,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{} — pick an earlier version of the document (a .designcraft): compare.file opens the redline",
     ),
     (
+        "app.exportChangesPdf",
+        "Export Changes as PDF…",
+        None,
+        "{} — the document's tracked changes (a redline's) as a PDF: compare.exportPdf, a summary page, then the pages with changes",
+    ),
+    (
         "app.placeWithFlow",
         "Place with Flow…",
         None,
@@ -337,6 +343,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.saveCopyDialog",
             "cmd:file.revert",
             "ui:app.compareWithFile",
+            "ui:app.exportChangesPdf",
             "-",
             "ui:app.placeDialog",
             "ui:app.placeWithOptions",
@@ -1049,6 +1056,22 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
         "app.placeDialog" => app.pick_and_open("place"),
+        "app.exportChangesPdf" => {
+            let title = app.session.active().map(|d| d.doc.title.clone()).unwrap_or_default();
+            let name = format!("{} changes.pdf", if title.is_empty() { "Untitled" } else { &title });
+            let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) else { return Some(Ok(Value::Null)) };
+            let r = match app.run("compare.exportPdf", json!({"path": path})) {
+                Ok(r) => r,
+                Err(e) => return Some(Err(e)),
+            };
+            let lang = app.ui.language.clone();
+            app.status(
+                crate::i18n::tr(&lang, "Exported {changes} changes on {pages} pages")
+                    .replace("{changes}", &r["changes"].as_u64().unwrap_or(0).to_string())
+                    .replace("{pages}", &r["pages"].as_u64().unwrap_or(0).to_string()),
+            );
+            Ok(r)
+        }
         "app.compareWithFile" => {
             let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("open")) else { return Some(Ok(Value::Null)) };
             let r = match app.run("compare.file", json!({"path": path})) {

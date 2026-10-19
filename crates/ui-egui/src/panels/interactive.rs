@@ -847,6 +847,12 @@ mod track_changes_panel_tests {
         assert!(st.path.is_none());
         assert!(app.session.cache.shows_deleted());
         assert!(app.ui.status.contains("2 changes in 1 story"), "{}", app.ui.status);
+        // File › Export Changes as PDF…
+        let pdf = dir.join("changes.pdf");
+        let to = pdf.to_string_lossy().to_string();
+        app.services.pick_save = Some(Box::new(move |_| Some(to.clone())));
+        app.run("app.exportChangesPdf", json!({})).unwrap();
+        assert_eq!(designcraft_render::pdf_page_count(&std::fs::read(&pdf).unwrap()), Some(2), "the summary and page 1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

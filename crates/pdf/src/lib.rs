@@ -120,6 +120,9 @@ pub struct PdfOptions {
     pub tagged: bool,
     /// Interactive PDF: placed video and sound are embedded and play in Screen annotations.
     pub media: bool,
+    /// Compare's PDF: tracked changes marked as on screen, added text highlighted and deleted text
+    /// (laid out when the cache shows it) struck through. Off for every other export.
+    pub change_markup: bool,
 }
 
 impl Default for PdfOptions {
@@ -137,6 +140,7 @@ impl Default for PdfOptions {
             created: None,
             tagged: false,
             media: false,
+            change_markup: false,
         }
     }
 }

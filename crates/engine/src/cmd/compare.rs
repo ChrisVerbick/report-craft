@@ -10,15 +10,103 @@ use super::{CommandSpec, bad, cmd, has_doc};
 use crate::{DocState, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![cmd!(
-        noundo "compare.file",
-        "Compare with Earlier Version",
-        [],
-        None,
-        "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (the redline's marked changes and their stories, as changes.list gives them), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
-        has_doc,
-        compare_file
-    )]
+    vec![
+        cmd!(
+            noundo "compare.exportPdf",
+            "Export Changes as PDF…",
+            [],
+            None,
+            "{path} — the active document's tracked changes (a Compare redline's) as a PDF: a summary page listing them by page, then each page with a change, added text highlighted and deleted text struck through (whether or not Show Deleted Text is on) → {path, pages, changes, bytes}",
+            has_doc,
+            export_pdf
+        ),
+        cmd!(
+            noundo "compare.file",
+            "Compare with Earlier Version",
+            [],
+            None,
+            "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (the redline's marked changes and their stories, as changes.list gives them), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
+            has_doc,
+            compare_file
+        ),
+    ]
+}
+
+/// "Show Deleted Text" on until dropped, then as it was (Compare's PDF shows the deleted text).
+struct DeletedShown(std::sync::Arc<designcraft_compose::Cache>, bool);
+
+impl Drop for DeletedShown {
+    fn drop(&mut self) {
+        self.0.set_show_deleted(self.1);
+    }
+}
+
+fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = super::str_param(p, "path").ok_or_else(|| bad("compare.exportPdf", "missing `path`"))?.to_string();
+    let _shown = {
+        let was = s.cache.shows_deleted();
+        s.cache.set_show_deleted(true);
+        DeletedShown(s.cache.clone(), was)
+    };
+    let doc = s.doc()?.doc.clone();
+    let marked = super::changes::listed(&doc);
+    if marked.is_empty() {
+        return Err(bad("compare.exportPdf", "the document has no tracked changes"));
+    }
+    // Each change with its page, and the pages that have any.
+    let lang_page = |p: Option<usize>| p.map_or_else(|| "Overset".to_string(), |p| format!("Page {}", doc.page_name(p)));
+    let lines: Vec<(Option<usize>, String)> = marked
+        .iter()
+        .map(|((sid, ..), at, e)| {
+            let page = super::changes::change_page(s, &doc, designcraft_doc::StoryId(*sid), *at, e["start"].as_u64().unwrap_or(0) as usize);
+            let kind = if e["kind"] == "inserted" { "Added" } else { "Deleted" };
+            let text: String = e["text"].as_str().unwrap_or_default().chars().filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c)).take(60).collect();
+            (page, format!("{}: {kind} “{}”", lang_page(page), text.trim().replace('\n', " ")))
+        })
+        .collect();
+    let mut pages: Vec<usize> = lines.iter().filter_map(|(p, _)| *p).collect();
+    pages.sort_unstable();
+    pages.dedup();
+    // The summary: a page after the last (one before the first would move every page's side),
+    // exported first.
+    let mut d = (*doc).clone();
+    let last = d.page_count().saturating_sub(1);
+    d.insert_pages(Some(last), 1, None)?;
+    let summary = d.page_count().saturating_sub(1);
+    let (si, pi) = d.page_loc(summary).ok_or_else(|| bad("compare.exportPdf", "no summary page"))?;
+    let page = d.spreads.get(si).and_then(|sp| sp.pages.get(pi)).ok_or_else(|| bad("compare.exportPdf", "no summary page"))?;
+    let rect = page.margin_rect();
+    const SHOWN: usize = 40;
+    let stories = marked.iter().map(|((sid, ..), ..)| *sid).collect::<std::collections::BTreeSet<_>>().len();
+    let mut text = format!(
+        "Changes in {}\n{} change{} in {} stor{}",
+        if doc.title.is_empty() { "Untitled" } else { &doc.title },
+        marked.len(),
+        if marked.len() == 1 { "" } else { "s" },
+        stories,
+        if stories == 1 { "y" } else { "ies" }
+    );
+    for (_, l) in lines.iter().take(SHOWN) {
+        text.push('\n');
+        text.push_str(l);
+    }
+    if lines.len() > SHOWN {
+        text.push_str(&format!("\n… and {} more", lines.len() - SHOWN));
+    }
+    let layer = d.default_layer();
+    d.add_text_frame(designcraft_doc::SpreadRef::Doc(si), rect, layer, &text, designcraft_doc::ParaFormat::default())?;
+    let order: Vec<usize> = std::iter::once(summary).chain(pages.iter().copied()).collect();
+    let opts = designcraft_pdf::PdfOptions {
+        pages: Some(order.clone()),
+        change_markup: true,
+        title: Some(format!("Changes in {}", if doc.title.is_empty() { "Untitled" } else { &doc.title })),
+        ..Default::default()
+    };
+    let bytes =
+        designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(&d), &s.cache, &opts).map_err(|e| bad("compare.exportPdf", e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::io::write_file(&path, &bytes).map_err(crate::EngineError::Other)?;
+    Ok(json!({"path": path, "pages": order.len(), "changes": marked.len(), "bytes": bytes.len()}))
 }
 
 fn compare_file(s: &mut Session, p: &Value) -> Result<Value> {
@@ -318,6 +406,34 @@ mod tests {
         assert!(shown(&s), "and the view stays on");
         s.execute("view.showDeletedText", &json!({})).unwrap();
         assert!(!shown(&s), "toggled off");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Compare's PDF: a summary page listing the changes, then each page with a change on it,
+    /// deleted text shown. The redline itself is left as it was, and so is the view.
+    #[test]
+    fn the_changes_export_as_a_pdf_after_a_summary() {
+        let dir = std::env::temp_dir().join(format!("dc-compare-pdf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Costs were flat."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Unchanged.", "spread": 1})).unwrap();
+        let earlier = dir.join("sent.designcraft");
+        s.execute("file.saveACopy", &json!({"path": earlier.to_string_lossy()})).unwrap();
+        set(&mut s, sid, None, "were flat", "fell");
+        s.execute("compare.file", &json!({"path": earlier.to_string_lossy()})).unwrap();
+        s.execute("view.showDeletedText", &json!({"on": false})).unwrap();
+        let out = dir.join("changes.pdf");
+        let r = s.execute("compare.exportPdf", &json!({"path": out.to_string_lossy()})).unwrap();
+        assert_eq!((r["pages"].clone(), r["changes"].clone()), (json!(2), json!(2)), "the summary and page 1: {r}");
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        assert_eq!(designcraft_render::pdf_page_count(&bytes), Some(2));
+        assert_eq!(s.doc().unwrap().doc.page_count(), 2, "the redline keeps its pages");
+        assert!(!s.cache.shows_deleted(), "and the view as it was");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

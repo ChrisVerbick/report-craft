@@ -680,6 +680,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Place with Import Options…", "განთავსება იმპორტის პარამეტრებით…"),
     ("Place with Flow…", "განთავსება ნაკადით…"),
     ("Compare with Earlier Version…", "შედარება ადრინდელ ვერსიასთან…"),
+    ("Export Changes as PDF…", "ცვლილებების ექსპორტი PDF-ში…"),
     ("Polygon Settings…", "მრავალკუთხედის პარამეტრები…"),
     ("Preflight Document", "დოკუმენტის წინასწარი შემოწმება"),
     ("Previous Cell", "წინა უჯრა"),
