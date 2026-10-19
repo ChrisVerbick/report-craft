@@ -368,9 +368,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Object Style Options…",
             [],
             None,
-            "{name, effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects match the style's (no effects, when the style set none) take the new effects, items with their own effects keep them → {name, updated}",
+            "{name, newName?, basedOn?: an object style | null, fill?: a swatch | null, stroke?: {…} | null (fields as object.stroke names them, merged into the style's: swatch, tint, weight 0–1000, type, align, cap, join, …), paragraphStyle?: name | null, effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — Object Style Options. A null: the style no longer sets it (its objects keep theirs). Fill and stroke: objects whose setting is the style's take the new one (every object using the style, when the style didn't set it before); one with its own keeps it. Effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects match the style's (no effects, when the style set none) take the new effects, items with their own effects keep them. Renamed, its objects, the styles based on it and the defaults for new frames follow; built-in names can't be taken → {name, updated: objects that took a change}",
             has_doc,
             edit_object
+        ),
+        cmd!(
+            "style.object.delete",
+            "Delete Object Style",
+            [],
+            None,
+            "{name, replaceWith?: an object style (default [None]), preserveFormatting?: true (false: its objects take the replacement's settings)} — built-in styles ([None], [Basic Graphics Frame], [Basic Text Frame]) stay; its objects take the replacement, the styles based on it are based on the replacement (the replacement on the deleted style's parent), and new frames that would take it take the replacement → {name, replacedWith, items}",
+            has_doc,
+            delete_object
         ),
         cmd!(
             "style.object.clearOverrides",
@@ -1533,35 +1542,154 @@ fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     if name == designcraft_doc::NO_OBJECT_STYLE {
         return Err(bad(CMD, format!("`{name}` can't be edited")));
     }
-    let old = s.doc()?.doc.styles.object_style(&name).cloned().ok_or_else(|| bad(CMD, format!("no object style `{name}`")))?;
-    let effects = if p.get("effects").is_some_and(Value::is_null) {
+    let d = &s.doc()?.doc;
+    let old = d.styles.object_style(&name).cloned().ok_or_else(|| bad(CMD, format!("no object style `{name}`")))?;
+    let mut new = old.clone();
+    if p.get("effects").is_some_and(Value::is_null) {
         if EFFECT_KEYS.iter().any(|k| p.get(k).is_some()) {
             return Err(bad(CMD, "`effects: null` can't be combined with effect settings"));
         }
-        None
-    } else {
-        match effects_param(CMD, p, old.effects.as_ref().unwrap_or(&Effects::default()))? {
-            Some(e) => Some(e),
-            None => return Ok(json!({"name": name, "updated": 0})),
+        new.effects = None;
+    } else if let Some(e) = effects_param(CMD, p, old.effects.as_ref().unwrap_or(&Effects::default()))? {
+        new.effects = Some(e);
+    }
+    match p.get("fill") {
+        None => {}
+        Some(Value::Null) => new.fill = None,
+        Some(Value::String(sw)) => {
+            super::object::known_swatch(d, sw, CMD, "fill")?;
+            new.fill = Some(designcraft_doc::Fill::swatch(sw));
         }
+        Some(_) => return Err(bad(CMD, "`fill` must be a swatch name or null")),
+    }
+    match p.get("stroke") {
+        None => {}
+        Some(Value::Null) => new.stroke = None,
+        Some(v @ Value::Object(_)) => {
+            let mut base =
+                serde_json::to_value(old.stroke.clone().unwrap_or_else(designcraft_doc::Stroke::none)).map_err(|e| bad(CMD, e.to_string()))?;
+            merge_json(&mut base, v.clone(), 0);
+            let mut st: designcraft_doc::Stroke = serde_json::from_value(base).map_err(|e| bad(CMD, format!("stroke: {e}")))?;
+            if !(0.0..=1000.0).contains(&st.weight) {
+                return Err(bad(CMD, format!("stroke weight must be from 0 to 1000 points, not {}", st.weight)));
+            }
+            if !st.tint.is_finite() || !st.miter_limit.is_finite() {
+                return Err(bad(CMD, "stroke: tint and miter limit must be numbers"));
+            }
+            st.tint = st.tint.clamp(0.0, 1.0);
+            st.miter_limit = st.miter_limit.clamp(1.0, 500.0);
+            super::object::known_swatch(d, &st.swatch, CMD, "stroke.swatch")?;
+            new.stroke = Some(st);
+        }
+        Some(_) => return Err(bad(CMD, "`stroke` must be an object or null")),
+    }
+    match p.get("paragraphStyle") {
+        None => {}
+        Some(Value::Null) => new.paragraph_style = None,
+        Some(Value::String(ps)) if d.styles.para(ps).is_some() => new.paragraph_style = Some(ps.clone()),
+        Some(v) => return Err(bad(CMD, format!("no paragraph style `{}`", v.as_str().unwrap_or_default()))),
+    }
+    match p.get("basedOn") {
+        None => {}
+        Some(Value::Null) => new.based_on = None,
+        Some(Value::String(b)) => {
+            if d.styles.object_style(b).is_none() {
+                return Err(bad(CMD, format!("no object style `{b}`")));
+            }
+            // Not on itself, nor on a style based on it.
+            if super::table::dependent_styles(&name, d.styles.object.iter().map(|o| (o.name.as_str(), o.based_on.as_deref()))).iter().any(|n| n == b)
+            {
+                return Err(bad(CMD, format!("`{name}` would be based on itself (through `{b}`)")));
+            }
+            new.based_on = Some(b.clone());
+        }
+        Some(_) => return Err(bad(CMD, "`basedOn` must be an object style or null")),
+    }
+    let renamed = match str_param(p, "newName").map(str::trim) {
+        None => None,
+        Some(n) if n == name => None,
+        Some("") => return Err(bad(CMD, "`newName` is empty")),
+        Some(n) if n.starts_with('[') => return Err(bad(CMD, format!("`{n}`: built-in style names can't be taken"))),
+        Some(n) if d.styles.object_style(n).is_some() => return Err(bad(CMD, format!("an object style is already called `{n}`"))),
+        Some(n) => Some(n.to_string()),
     };
-    if effects == old.effects {
+    if new == old && renamed.is_none() {
         return Ok(json!({"name": name, "updated": 0}));
     }
+    let to = renamed.clone().unwrap_or_else(|| name.clone());
+    new.name = to.clone();
     s.edit(|d, _| {
-        let Some(os) = d.styles_mut().object.iter_mut().find(|o| o.name == name) else {
+        let st = d.styles_mut();
+        let Some(os) = st.object.iter_mut().find(|o| o.name == name) else {
             return Err(bad(CMD, format!("no object style `{name}`")));
         };
-        os.effects = effects.clone();
-        // An item follows the style while its effects are the style's. When the style didn't set
-        // effects before, only items without effects of their own follow (the default styles are
-        // on most frames).
-        let follows = old.effects.clone().unwrap_or_default();
-        let updated = match &effects {
-            Some(new) => d.update_items(|it| it.object_style == name && it.effects == follows, |it| it.effects = new.clone()),
-            None => 0,
-        };
-        Ok(json!({"name": name, "updated": updated}))
+        *os = new.clone();
+        if renamed.is_some() {
+            for o in st.object.iter_mut().filter(|o| o.based_on.as_deref() == Some(name.as_str())) {
+                o.based_on = Some(to.clone());
+            }
+            for slot in [&mut st.default_text_frame, &mut st.default_graphic_frame] {
+                if *slot == name {
+                    *slot = to.clone();
+                }
+            }
+        }
+        // An object follows a setting the style makes while it has the style's; a setting the style
+        // didn't make before, every object using it takes. Effects keep their own rule: an object
+        // follows while its effects are the style's (none, when the style set none: the default
+        // styles are on most frames).
+        let follows_effects = old.effects.clone().unwrap_or_default();
+        let mut updated = 0;
+        d.update_items(
+            |it| it.object_style == name,
+            |it| {
+                it.object_style = to.clone();
+                let before = (it.fill.clone(), it.stroke.clone(), it.effects.clone());
+                if let Some(f) = new.fill.as_ref().filter(|f| old.fill.as_ref().is_none_or(|o| *o == it.fill) && **f != it.fill) {
+                    it.fill = f.clone();
+                }
+                if let Some(st) = new.stroke.as_ref().filter(|st| old.stroke.as_ref().is_none_or(|o| *o == it.stroke) && **st != it.stroke) {
+                    it.stroke = st.clone();
+                }
+                if let Some(e) = new.effects.as_ref().filter(|_| new.effects != old.effects && it.effects == follows_effects) {
+                    it.effects = e.clone();
+                }
+                if before != (it.fill.clone(), it.stroke.clone(), it.effects.clone()) {
+                    updated += 1;
+                }
+            },
+        );
+        Ok(json!({"name": to, "updated": updated}))
+    })
+}
+
+fn delete_object(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "style.object.delete";
+    let (name, repl) = super::table::delete_params(p, ID, designcraft_doc::NO_OBJECT_STYLE)?;
+    let preserve = p.get("preserveFormatting").and_then(Value::as_bool).unwrap_or(true);
+    s.edit(|d, _| {
+        let parent = d.styles.object_style(&name).ok_or_else(|| bad(ID, format!("no object style `{name}`")))?.based_on.clone();
+        let to = d.styles.object_style(&repl).cloned().ok_or_else(|| bad(ID, format!("no object style `{repl}`")))?;
+        let st = d.styles_mut();
+        for o in st.object.iter_mut().filter(|o| o.based_on.as_deref() == Some(name.as_str())) {
+            o.based_on = super::table::rebased(&o.name, parent.as_deref(), &repl);
+        }
+        st.object.retain(|o| o.name != name);
+        for slot in [&mut st.default_text_frame, &mut st.default_graphic_frame] {
+            if *slot == name {
+                *slot = repl.clone();
+            }
+        }
+        let items = d.update_items(
+            |it| it.object_style == name,
+            |it| {
+                it.object_style = repl.clone();
+                if !preserve {
+                    to.apply_to(it);
+                }
+            },
+        );
+        Ok(json!({"name": name, "replacedWith": repl, "items": items}))
     })
 }
 
@@ -3568,3 +3696,119 @@ mod gradient_stroke_tests {
 #[cfg(test)]
 #[path = "text_color_tests.rs"]
 mod text_color_tests;
+
+#[cfg(test)]
+mod object_style_tests {
+    use designcraft_doc::ItemId;
+
+    use super::*;
+
+    /// A document with object styles "Callout" (black fill) and "Boxed" (based on it, a 2 pt
+    /// stroke), and two frames styled "Callout"; the second has its own fill.
+    fn setup() -> (Session, ItemId, ItemId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.object.create", &json!({"name": "Callout", "fromSelection": false, "fill": "[Black]"})).unwrap();
+        s.execute("style.object.create", &json!({"name": "Boxed", "fromSelection": false})).unwrap();
+        s.execute("style.object.edit", &json!({"name": "Boxed", "basedOn": "Callout", "stroke": {"swatch": "[Black]", "weight": 2}})).unwrap();
+        let id = |r: Value| ItemId(r["id"].as_u64().unwrap());
+        let a = id(s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap());
+        let b = id(s.execute("frame.create", &json!({"rect": [236, 36, 400, 200]})).unwrap());
+        s.execute("style.object.apply", &json!({"name": "Callout", "ids": [a.0, b.0]})).unwrap();
+        s.execute("object.fill", &json!({"ids": [b.0], "swatch": "[Paper]"})).unwrap();
+        (s, a, b)
+    }
+
+    fn item(s: &Session, id: ItemId) -> Item {
+        s.doc().unwrap().doc.item(id).unwrap().clone()
+    }
+
+    fn style(s: &Session, name: &str) -> Option<ObjectStyle> {
+        s.doc().unwrap().doc.styles.object_style(name).cloned()
+    }
+
+    /// Delete Object Style: its objects take the replacement (keeping their look unless told not
+    /// to), the styles based on it are based on the replacement, and the defaults for new frames
+    /// follow; built-in styles stay.
+    #[test]
+    fn deleting_an_object_style_replaces_it_where_it_is_used() {
+        let (mut s, a, b) = setup();
+        s.edit(|d, _| {
+            d.styles_mut().default_text_frame = "Callout".into();
+            Ok(())
+        })
+        .unwrap();
+        let before = (item(&s, a), item(&s, b));
+        let r = s.execute("style.object.delete", &json!({"name": "Callout"})).unwrap();
+        assert_eq!(r["items"], 2, "{r}");
+        assert!(style(&s, "Callout").is_none());
+        for (id, was) in [(a, &before.0), (b, &before.1)] {
+            let it = item(&s, id);
+            assert_eq!(it.object_style, designcraft_doc::NO_OBJECT_STYLE);
+            assert_eq!(it.fill, was.fill, "kept its look");
+        }
+        assert_eq!(style(&s, "Boxed").unwrap().based_on.as_deref(), Some(designcraft_doc::NO_OBJECT_STYLE));
+        assert_eq!(s.doc().unwrap().doc.styles.default_text_frame, designcraft_doc::NO_OBJECT_STYLE);
+        // Undone, everything is back.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!((item(&s, a), item(&s, b)), before);
+        assert_eq!(s.doc().unwrap().doc.styles.default_text_frame, "Callout");
+        // Replaced by Boxed without keeping their look: they take Boxed's stroke.
+        s.execute("style.object.delete", &json!({"name": "Callout", "replaceWith": "Boxed", "preserveFormatting": false})).unwrap();
+        let it = item(&s, a);
+        assert_eq!((it.object_style.as_str(), it.stroke.weight), ("Boxed", 2.0));
+        assert_eq!(style(&s, "Boxed").unwrap().based_on, None, "the replacement takes the deleted style's parent");
+        for (p, why) in [
+            (json!({"name": "[Basic Text Frame]"}), "built-in"),
+            (json!({"name": "[None]"}), "built-in"),
+            (json!({"name": "Nope"}), "no object style"),
+            (json!({"name": "Boxed", "replaceWith": "Nope"}), "no object style `Nope`"),
+            (json!({"name": "Boxed", "replaceWith": "Boxed"}), "can't be the deleted style"),
+        ] {
+            let e = s.execute("style.object.delete", &p).unwrap_err().to_string();
+            assert!(e.contains(why), "{p}: {e}");
+        }
+    }
+
+    /// Object Style Options: the fill, stroke, paragraph style, name and Based On. Objects that
+    /// follow the style take a change (all of them, for a setting it didn't make before); one with
+    /// its own setting keeps it.
+    #[test]
+    fn object_style_options_set_fill_stroke_name_and_based_on() {
+        let (mut s, a, b) = setup();
+        let r = s
+            .execute(
+                "style.object.edit",
+                &json!({"name": "Callout", "fill": "[Registration]", "stroke": {"swatch": "[Black]", "weight": 3}, "paragraphStyle": "[Basic Paragraph]", "newName": "Note", "basedOn": "[Basic Graphics Frame]"}),
+            )
+            .unwrap();
+        assert_eq!(r["name"], "Note", "{r}");
+        let (ia, ib) = (item(&s, a), item(&s, b));
+        assert_eq!((ia.object_style.as_str(), ib.object_style.as_str()), ("Note", "Note"));
+        assert_eq!(ia.fill, designcraft_doc::Fill::swatch("[Registration]"), "follows the style");
+        assert_eq!(ib.fill, designcraft_doc::Fill::swatch("[Paper]"), "its own fill stays");
+        assert_eq!((ia.stroke.weight, ib.stroke.weight), (3.0, 3.0));
+        let note = style(&s, "Note").unwrap();
+        assert_eq!(note.based_on.as_deref(), Some("[Basic Graphics Frame]"));
+        assert_eq!(note.paragraph_style.as_deref(), Some("[Basic Paragraph]"));
+        assert_eq!(style(&s, "Boxed").unwrap().based_on.as_deref(), Some("Note"), "styles based on it follow the new name");
+        // Null: the style no longer sets it.
+        s.execute("style.object.edit", &json!({"name": "Note", "fill": null, "basedOn": null})).unwrap();
+        let note = style(&s, "Note").unwrap();
+        assert_eq!((note.fill, note.based_on), (None, None));
+        for (p, why) in [
+            (json!({"name": "Note", "newName": "Boxed"}), "already"),
+            (json!({"name": "Note", "newName": "[None]"}), "built-in"),
+            (json!({"name": "Note", "basedOn": "Boxed"}), "based on itself"),
+            (json!({"name": "Note", "basedOn": "Nope"}), "no object style `Nope`"),
+            (json!({"name": "Note", "fill": "No Such Swatch"}), "No Such Swatch"),
+            (json!({"name": "Note", "paragraphStyle": "Nope"}), "no paragraph style `Nope`"),
+            (json!({"name": "Note", "stroke": {"weight": -1}}), "weight"),
+            (json!({"name": "Note", "stroke": {"weight": 1e300}}), "weight"),
+            (json!({"name": "Note", "stroke": "thick"}), "`stroke` must be an object or null"),
+        ] {
+            let e = s.execute("style.object.edit", &p).unwrap_err().to_string();
+            assert!(e.contains(why), "{p}: {e}");
+        }
+    }
+}

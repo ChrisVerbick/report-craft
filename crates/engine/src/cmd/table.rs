@@ -1673,7 +1673,7 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
 }
 
 /// Include descendants when editing an inherited style, with the resolver's depth limit.
-fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
+pub(super) fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
     let styles: Vec<_> = styles.collect();
     styles
         .iter()
@@ -1706,7 +1706,7 @@ fn cell_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// `name` and `replaceWith` (default `default`) of a style deletion, checked.
-fn delete_params(p: &Value, cmd: &str, default: &str) -> Result<(String, String)> {
+pub(super) fn delete_params(p: &Value, cmd: &str, default: &str) -> Result<(String, String)> {
     let name = str_param(p, "name").filter(|n| !n.is_empty()).ok_or_else(|| bad(cmd, "missing name"))?.to_string();
     let repl = str_param(p, "replaceWith").unwrap_or(default).to_string();
     if name.starts_with('[') {
@@ -1720,7 +1720,7 @@ fn delete_params(p: &Value, cmd: &str, default: &str) -> Result<(String, String)
 
 /// What a style that was based on a deleted style is based on afterwards: the replacement, or
 /// for the replacement itself the deleted style's parent (a style is never based on itself).
-fn rebased(style: &str, deleted_parent: Option<&str>, repl: &str) -> Option<String> {
+pub(super) fn rebased(style: &str, deleted_parent: Option<&str>, repl: &str) -> Option<String> {
     if style == repl { deleted_parent.filter(|b| *b != repl).map(str::to_string) } else { Some(repl.to_string()) }
 }
 
