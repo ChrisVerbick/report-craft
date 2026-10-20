@@ -1,9 +1,9 @@
 # DesignCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, pending a ~1 h re-test of the Primary Text Frame flow (#165 closed 2026-10-17); beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
+**Stage: alpha** (since 2026-10-20: every core workflow of the alpha gate works end to end on macOS) · next: beta, ~28 points and ~420–750 h away
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-20 · **Change:** minor (docs re-checked against InDesign 2026's feature list and the code; alpha waits on a re-test (#165 closed); Milestones section repaired; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-20 · **Change:** minor (stage alpha: the core-workflow gate passes (re-test on macOS 2026-10-20); docs re-checked against InDesign 2026's feature list and the code; alpha waits on a re-test (#165 closed); Milestones section repaired; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
@@ -232,13 +232,11 @@ The milestone table, the alpha gate and the current focus are in
 | Mainstream practitioner | ~42% | 500–850 (~65% parallel) | INDD and IDML real-file corpus, composition fidelity, weekly-area depth, PDF/X-1a and printing |
 | Essentials user | ~54% | 135–250 (~50% parallel) | start-up robustness, context menus and copy/paste, threading, fonts, Windows printing |
 
-**Why pre-alpha:** it fails one of InDesign's core workflows, the alpha gate in
-[docs/roadmap.md](docs/roadmap.md#alpha-gate). Text threads by hand (click a port, then click or
-draw a frame; thread and unthread commands), and the Primary Text Frame
-autoflow issue (#165, pages users can't delete) was closed on 2026-10-17, with upstream #1169
-removing the empty pages autoflow left. Everything else in the gate works end to end on macOS
-(document setup, styles, images, object editing, PDF export, save and reopen), and ready for real
-work (~47%) is above the alpha bar, so a re-test of that one row is the whole distance to alpha.
+**Why alpha:** every core workflow of the alpha gate in
+[docs/roadmap.md](docs/roadmap.md#alpha-gate) works end to end on macOS: document setup, flowing
+a long story (threading by hand, autoflow, and the Primary Text Frame flow, re-tested on 2026-10-20
+after #165 closed and upstream #1169 landed), styles, images, object editing, PDF export, save and
+reopen. Ready for real work (~47%) is above the alpha bar.
 Beyond that, beta needs INDD and IDML proven on real files, composition compared with
 InDesign's, and basic editing fixed on Windows and Linux. Details:
 [docs/target-app-parity.md](docs/target-app-parity.md).
@@ -338,6 +336,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-20** · **Alpha.** The core-workflow gate passes: its one failing row, flowing a long story with a Primary Text Frame (#165), passed a re-test in the macOS release app through the control channel (12 checks: #1165's steps give InDesign's 5 pages, deleting pages or frames adds none, emptied pages delete and stay deleted, Smart Text Reflow off deletes a page with text, threading by hand, autoflow, save and reopen), and a regression test pins #165. Gap 0 closed. No readiness percentage change.
 - **2026-10-20** · Docs re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added to [docs/gaps.md](docs/gaps.md) (tools that do nothing, mixed inks and Lab colour, preflight profiles, Find/Change and Glyphs depth, object style categories, interactive PDF and EPUB depth, Type on a Path effects) and gaps 9, 15, 16, 19 and 24 extended; closed issues taken off the lists (#169, #289, #337, #188, #338, #339, #340, #544 and duplicates; gap 11 closed); the alpha gate's one failing row (#165) is closed and waits on a re-test; the broken Milestones section points to docs/roadmap.md. No readiness percentage change.
 - **2026-10-19** · Styles, completed (Stage 6): Window ▸ Styles gains Object Styles, Table Styles and Cell Styles panels (apply, Alt-click to clear overrides, Redefine Style, Break Link to Style, Delete); Redefine Style, Clear Overrides on apply and Break Link to Style work for object, table and cell styles; Load Styles brings object, table and cell styles (only when named), with what they use; Word import maps styles by rules (name patterns, attributes, kind) and saved import presets, kept on linked files for Update. No readiness percentage change.
 - **2026-10-19** · History can be kept out of saved files: Preferences ▸ File Handling ▸ Keep Earlier Versions in Saved Files sets it for every document, and the History panel's Keep Earlier Versions in This File for one document (saved with it; it wins over the preference). A document keeps a setting of its own only while it differs from the preference, and the panel says when it has one, so turning the preference off reaches every document that hasn't been set otherwise. Off, saving drops the file's versions, and copies, the serialized file and recovery data carry none. No readiness percentage change.
@@ -619,6 +618,7 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Stage alpha: the alpha gate passes after the threading row's re-test on macOS (12 checks) and a #165 regression test |
 | 2026-10-20 | minor | Docs re-check: gaps 28–34, closed issues off the lists, alpha waits on a re-test (#165 closed), Milestones section repaired |
 | 2026-10-12 | minor | Manual text threading landed; alpha distance 15–25 h → 5–7 h (Primary Text Frame page fixes, #165) |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; readiness estimates unchanged |

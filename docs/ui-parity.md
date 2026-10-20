@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (re-checked against the code and issue tracker: threading row to ~ (works by hand; Primary Text Frame re-test); rows for #337, #188, #289/#23 and Dock Quit (#544) to ✓; copy/paste and context-menu rows list only open issues; Story Editor row corrected; Navigator dropped (not an InDesign 2026 panel); tally 17 ✓ / 12 ~ / 0 ✗; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (threading row ✓ after the alpha re-test on macOS; tally 18 ✓ / 11 ~ / 0 ✗; re-checked against the code and issue tracker: threading row to ~ (works by hand; Primary Text Frame re-test); rows for #337, #188, #289/#23 and Dock Quit (#544) to ✓; copy/paste and context-menu rows list only open issues; Story Editor row corrected; Navigator dropped (not an InDesign 2026 panel); tally 17 ✓ / 12 ~ / 0 ✗; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -38,7 +38,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Document views: scrollbars (each split pane), Hand tool by Space, middle drag, or Alt while editing text | ✓ | ✓ | ✓ | `canvas.rs` `scrollbar_tests` |
 | Gridify while drawing, Gap tool, Live Distribute | ✓ | ✓ | ✓ | |
 | Type tool: caret, selection, double/triple click, drag-and-drop text | ✓ | ✓ | ✓ | formatting at a caret (#289) and editing reports (#23) fixed; #174 closed upstream on 2026-10-20 |
-| Threading: click out port, load text cursor, click frame | ✓ | ✓ ports, loaded text cursor, thread and unthread commands; Primary Text Frame and autoflow on Place | ~ | #140 fixed; #352, #194 closed as duplicates; #165 closed 2026-10-17 and upstream #1169 removes the empty pages autoflow left: re-test before the alpha gate |
+| Threading: click out port, load text cursor, click frame | ✓ | ✓ ports, loaded text cursor, thread and unthread commands; Primary Text Frame and autoflow on Place | ✓ | re-tested 2026-10-20 in the macOS app (the alpha gate's threading row); #140 and #165 fixed, #352 and #194 closed as duplicates |
 | Copy / cut / paste objects and text, Paste Into / in Place | ✓ | ✓ on macOS | ~ | open: Paste in Place onto the selected page (#348), RTF text paste (#212); fixed: #185, #201; closed upstream on 2026-10-20, after this fork's last sync: #312, #164; #351 closed as a duplicate |
 | Context menus (canvas, panels, rulers) | ✓ everywhere | 9 context-menu sites, ruler units by right-click | ~ | not opening for some users (#187); #238 and #160 closed as duplicates |
 | IME text input on the canvas | ✓ | ✓ | ~ | not checked by hand with a system IME (#322) |
@@ -56,7 +56,7 @@ basics of editing fail for too many users on Windows and Linux.
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |
 | Window controls, full screen | ✓ | ~ | ~ | misaligned on macOS (#333) |
 
-Counted 2026-10-20: 29 rows, 17 ✓, 12 ~, 0 ✗ → **79% presence**, scoring ✓ = 1, ~ = 0.5. Ready
+Counted 2026-10-20: 29 rows, 18 ✓, 11 ~, 0 ✗ → **81% presence**, scoring ✓ = 1, ~ = 0.5. Ready
 for real work (~45%, not re-assessed) is lower because two of the ~ rows (copy/paste, context
 menus) are things a layout artist does every minute, and their remaining failures stop work.
 
@@ -122,6 +122,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Threading row ✓ (alpha re-test 2026-10-20); tally 18 ✓ / 11 ~ / 0 ✗ = 81% |
 | 2026-10-20 | minor | Re-checked against the code and issue tracker: threading ~, five rows to ✓ on fixed issues, open issues only; tally 17 ✓ / 12 ~ / 0 ✗ = 79% |
 | 2026-10-11 | minor | Live corners row to ✓: widget, diamonds, drag, Shift-drag, Alt-click shape cycling (#186) |
 | 2026-10-11 | minor | Added held Cmd+Space / Cmd+Alt+Space Zoom navigation and canvas input regression tests |

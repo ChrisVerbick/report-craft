@@ -6,7 +6,7 @@ verified: 0.7.1
 
 DesignCraft is a page layout and publishing app. It is an open-source alternative to Adobe InDesign, built from scratch by the ArtCraft team. If you know InDesign's tools, menus and panels, you will find them here.
 
-It has spreads and parent pages, text frames that thread from one to the next, paragraph and character styles, swatches and text wrap. It opens and saves InDesign Markup (IDML) files and exports PDF, PNG and EPUB. It is free, with no subscription, licence server or telemetry. The project is in pre-alpha, so expect gaps.
+It has spreads and parent pages, text frames that thread from one to the next, paragraph and character styles, swatches and text wrap. It opens and saves InDesign Markup (IDML) files and exports PDF, PNG and EPUB. It is free, with no subscription, licence server or telemetry. The project is in alpha, so expect gaps.
 
 ## Start here
 

@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (issue references re-checked against the tracker (closed: #165, #169, #289, #337, #338, #339, #340 and duplicates); the stage waits on a re-test of the alpha gate's threading row; catalogue size 277; Navigator dropped (not an InDesign 2026 panel); percentages not re-assessed; Word import style mapping rules and import presets; Load Styles for object, table and cell styles; Object Styles, Table Styles and Cell Styles panels; Clear Overrides on apply and Break Link to Style for every kind of style; Redefine Style for object, table and cell styles; object styles: Delete Object Style, and fill, stroke, paragraph style, Based On and name in `style.object.edit`; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (stage alpha: the core-workflow gate passes (threading row re-tested on macOS 2026-10-20); percentages unchanged; issue references re-checked against the tracker (closed: #165, #169, #289, #337, #338, #339, #340 and duplicates); the stage waits on a re-test of the alpha gate's threading row; catalogue size 277; Navigator dropped (not an InDesign 2026 panel); percentages not re-assessed; Word import style mapping rules and import presets; Load Styles for object, table and cell styles; Object Styles, Table Styles and Cell Styles panels; Clear Overrides on apply and Break Link to Style for every kind of style; Redefine Style for object, table and cell styles; object styles: Delete Object Style, and fill, stroke, paragraph style, Based On and name in `style.object.edit`; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -16,7 +16,7 @@ presence checklist is [parity-checklist.md](parity-checklist.md) (`cargo xtask p
 | Essentials user (flyers, newsletters: the core only) | **~54%** | 135–250 h to ~95%; estimated, [method below](#essentials-user-54) |
 | Remaining effort to **beta** (~75% ready, main format reliable; 28 points away) | **420–750 Opus 5.5 agent-hours** | estimated |
 | Remaining effort to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
-| Stage | **pre-alpha** until a re-test of the core-workflow gate's threading row (#165, Primary Text Frame pages, closed 2026-10-17); ~1 h to alpha if it passes | see [roadmap.md](roadmap.md#alpha-gate) |
+| Stage | **alpha** (the core-workflow gate passes since 2026-10-20: its threading row passed a re-test on macOS) | see [roadmap.md](roadmap.md#alpha-gate) |
 
 ## How breadth was measured
 
@@ -77,7 +77,7 @@ standard: 25×55 + 15×45 + 20×40 + 15×45 + 10×45 + 5×65 + 3×45 + 3×55 + 2
 today applied a further ×0.9 for cross-cutting core-path failures and reported 42%. That
 multiplicative step was dropped to match the standard (discounts belong only to the mainstream
 and essentials numbers). Those failures are already in the UI/UX (45%) and Stability (45%) rows,
-and a re-test of the Primary Text Frame flow (#165, closed 2026-10-17) is what holds the stage at pre-alpha through the gate.
+and the core-workflow gate, passed on 2026-10-20, sets the stage: alpha.
 
 ## Mainstream practitioner and essentials user
 
@@ -108,7 +108,7 @@ twice.
 | Area | Weight | Depth | Evidence |
 |---|---|---|---|
 | Document setup: pages, margins, columns, parents, sections | 10% | 65% | features area table |
-| Text frames: type, select, edit, thread, autoflow | 15% | 45% | threading by hand, autoflow; Primary Text Frame flow to re-test (#165 closed, upstream #1169) |
+| Text frames: type, select, edit, thread, autoflow | 15% | 45% | threading by hand, autoflow, the Primary Text Frame flow (re-tested 2026-10-20) |
 | Typography: composer, H&J, OpenType, tabs, lists, keeps | 15% | 65% | typography-parity.md: 18 ✓ / 19 ~; InDesign-identical breaks counted under exchange |
 | Paragraph, character and object styles | 10% | 65% | dialogs, based-on, nested/GREP, Quick Apply |
 | Frames, shapes, transform, arrange, align | 10% | 70% | full tool set; copy/paste problems counted under interaction |
@@ -211,7 +211,7 @@ table is the one summed.
 | Fill, stroke, colour | 100% | 60% | 20–35 | hex entry (#323); Assign Profiles / Convert to Profile; color-managed proofing depth; Adobe Color Themes OOS |
 | Effects & transparency | 100% | 50% | 20–30 | effects fidelity vs InDesign unmeasured; Clear Effects / Clear All Transparency; flattener depth |
 | Placing & links | 93% | 55% | 20–35 | EPS is preview-only (no PostScript interpreter); Edit Original; placed PDF layer visibility; INDD page place |
-| Type & text frames | 99% | 45% | 40–60 | Primary Text Frame flow to re-test (alpha gate, #165 closed); autoflow doesn't fill existing pages; Notes/Track Changes menus; frame grids |
+| Type & text frames | 99% | 45% | 40–60 | autoflow doesn't fill existing pages; Notes/Track Changes menus; frame grids |
 | Typography | 100% | 45% | (typography dimension) | see [typography-parity.md](typography-parity.md) |
 | Styles | 100% | 60% | 15–25 | style options depth (Paragraph Styles edit/delete, #169, fixed 2026-10-15) |
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Diagonal Lines, Edit Header/Footer |
@@ -462,6 +462,7 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Stage alpha: the alpha gate passes after the threading row's re-test on macOS |
 | 2026-10-20 | minor | Issue references brought up to date (many closed); stage note waits on the alpha re-test; 277 catalogue rows; percentages unchanged |
 | 2026-10-13 | minor | `.indd` and `.indt` open through storytold/indd-utils; INDD remaining work 10–30 h (real-file corpus); readiness unchanged until it is measured |
 | 2026-10-12 | minor | Text threads by hand; stage note and distance to alpha follow the gate (5–7 h, #165); percentages unchanged |

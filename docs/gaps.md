@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added (tools that do nothing, mixed inks and Lab colour, preflight profiles, Find/Change and Glyphs depth, object style categories, interactive PDF and EPUB depth, Type on a Path effects); gaps 9, 15, 16, 19 and 24 extended; gap 11 closed (#169 fixed); gap 0 waits on a re-test (#165 closed); gaps 1 and 3 shrunk to their open issues; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (gap 0 closed: the Primary Text Frame flow passed its re-test on macOS (2026-10-20), so the alpha gate passes; gap 26 notes the reflow cleanup the re-test found; re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added (tools that do nothing, mixed inks and Lab colour, preflight profiles, Find/Change and Glyphs depth, object style categories, interactive PDF and EPUB depth, Type on a Path effects); gaps 9, 15, 16, 19 and 24 extended; gap 11 closed (#169 fixed); gap 0 waits on a re-test (#165 closed); gaps 1 and 3 shrunk to their open issues; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -11,20 +11,6 @@ ROADMAP progress log and update the timestamps.
 
 Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · **H** hardware ·
 **L** localization · **P** performance · **S** stability · **E** ecosystem · **A** AI.
-
-## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
-
-### 0. Primary Text Frame autoflow: re-test before the alpha gate (F) · **ALPHA BLOCKER**
-- **Missing:** a re-test on macOS that a long story in a Primary Text Frame document no longer
-  leaves pages the designer can't delete. #165 was closed on 2026-10-17 (its reporter confirms
-  text chains work in 0.8.0), and upstream #1169 (in this fork since the 2026-10-19 sync) removes
-  the empty pages autoflow left in a primary frame. Threading by hand works (ports, loaded text
-  cursor, `text.thread` / `text.unthread` / `text.removeFromThread`). Close this gap and pass the
-  alpha gate when the re-test passes.
-- **Evidence:** #165 (closed), upstream #1169.
-- **Impact:** until re-tested, the stage stays pre-alpha.
-- **Estimate:** ~1 h (the re-test; fixes only if it fails).
-- **Doc:** [ui-parity.md](ui-parity.md)
 
 ## Blocking (beta can't be declared while these are open)
 
@@ -220,6 +206,11 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   the existing pages that follow, then adds pages at the end of the document.
 - **Impact:** autoflowing into a document that already has pages inserts new pages in the
   middle of it instead of using the empty pages.
+- **Related (found by the 2026-10-20 alpha re-test):** Smart Text Reflow removes emptied pages
+  only from the end of the document. Delete a frame of the primary story and its page stays,
+  frameless, and ends up last when reflow adds a page for the text; shortening the story later
+  keeps the emptied pages before it (they delete by hand). InDesign's default keeps empty pages
+  too (Delete Empty Pages is off).
 - **Estimate:** 4–8 h.
 
 ### 28. Tools that do nothing (U)
@@ -306,6 +297,7 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Gap 0 closed: the alpha re-test passed (12 checks on macOS; #165 regression test); gap 26 notes emptied pages behind a frameless last page |
 | 2026-10-20 | minor | Re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added; gaps 9, 15, 16, 19, 24 extended; gap 11 closed (#169); gap 0 now a re-test (#165 closed, upstream #1169); gaps 1 and 3 list only their open issues |
 | 2026-10-16 | minor | Gap 27 closed: the loaded text cursor threads into a text frame inside a group (#1075) |
 | 2026-10-16 | trivial | Gap 13 shrunk: Greek hyphenates, so five languages do (#1077) |
