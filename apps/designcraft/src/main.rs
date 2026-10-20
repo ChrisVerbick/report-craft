@@ -195,6 +195,8 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             name: "Graphics",
             extensions: &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"],
         }],
+        // A linked text file relinks to another text file or workbook.
+        "relinkText" => &[OpenFilter { name: "Text (Word, RTF, plain, Excel)", extensions: &["docx", "rtf", "txt", "md", "xlsx"] }],
         "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
         "place" => &[
             OpenFilter {
@@ -564,6 +566,16 @@ mod tests {
             assert!(exts.contains(&ext), "{ext} is missing from the relink dialog: {exts:?}");
         }
         assert!(!exts.contains(&"designcraft") && !exts.contains(&"idml"));
+    }
+
+    #[test]
+    fn relink_open_dialog_for_a_text_file_lists_text_files() {
+        let filters = super::open_filters("relinkText");
+        let exts: Vec<&str> = filters.iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
+        for ext in ["docx", "rtf", "txt", "md", "xlsx"] {
+            assert!(exts.contains(&ext), "{ext} is missing from the text relink dialog: {exts:?}");
+        }
+        assert!(!exts.contains(&"png") && !exts.contains(&"designcraft"));
     }
 
     #[test]

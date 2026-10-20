@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Compare with Earlier Version",
             [],
             None,
-            "{path | base64, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft): opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (the redline's marked changes and their stories, as changes.list gives them), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
+            "{path? | base64?, name?} — the active document compared with an earlier version of it saved at `path` (a .designcraft), or with neither, with its last save: opens the redline, a new unsaved document where the earlier version's lost text is back, marked deleted, and the new text marked inserted, word by word, in stories, table cells and footnotes, for Track Changes to list, accept and reject; turns on Show Deleted Text → {redline: its document index, changes, stories (the redline's marked changes and their stories, as changes.list gives them), deletedStories: [story ids only the earlier version has, not shown], tables: [{story, table, status: reshaped|inserted|deleted}]}",
             has_doc,
             compare_file
         ),
@@ -119,6 +119,16 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn compare_file(s: &mut Session, p: &Value) -> Result<Value> {
+    // No file: the document as last saved, kept in memory (what a job compares an update with).
+    if super::str_param(p, "path").is_none() && super::str_param(p, "base64").is_none() {
+        let st = s.doc()?;
+        if st.path.is_none() {
+            return Err(bad("compare.file", "the document has never been saved: give the `path` of an earlier version"));
+        }
+        let (a, b) = (st.saved_doc.clone(), st.doc.clone());
+        let title = format!("{} compared with its last save", st.title());
+        return open_redline(s, "compare.file", (&a, "The last save"), (&b, "This document"), title);
+    }
     let (bytes, name, _) = super::file::read_source(p)?;
     let a = designcraft_format::load(&bytes).map_err(|e| bad("compare.file", format!("{name}: {e}")))?;
     let b = s.doc()?.doc.clone();
@@ -435,6 +445,34 @@ mod tests {
         assert!(shown(&s), "and the view stays on");
         s.execute("view.showDeletedText", &json!({})).unwrap();
         assert!(!shown(&s), "toggled off");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With no file, the document is compared with its last save, as the headless job does after
+    /// Update Link; a document never saved has none to compare with.
+    #[test]
+    fn with_no_file_the_document_is_compared_with_its_last_save() {
+        let dir = std::env::temp_dir().join(format!("dc-compare-saved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Revenue grew. Costs were flat."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let e = s.execute("compare.file", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("never been saved"), "{e}");
+        s.execute("file.save", &json!({"path": dir.join("report.designcraft").to_string_lossy()})).unwrap();
+        set(&mut s, sid, None, "grew", "rose");
+        s.execute("file.save", &json!({})).unwrap();
+        set(&mut s, sid, None, "were flat", "fell");
+        let compared = s.active_index();
+        let r = s.execute("compare.file", &json!({})).unwrap();
+        assert_ne!(s.active_index(), compared, "the redline is a new document: {r}");
+        let listed = s.execute("changes.list", &json!({})).unwrap();
+        let mut got: Vec<(String, String)> =
+            listed.as_array().unwrap().iter().map(|c| (c["kind"].as_str().unwrap().into(), c["text"].as_str().unwrap().into())).collect();
+        got.sort();
+        assert_eq!(got, [("deleted".into(), "were flat".into()), ("inserted".into(), "fell".into())], "only the change since the second save");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

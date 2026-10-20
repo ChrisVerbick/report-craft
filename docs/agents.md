@@ -77,6 +77,13 @@ appended pages to the template, is an error). It uses the linked source, or inli
 echo 'data.merge {"path": "people.csv", "records": "range", "range": "1-20"}' | designcraft-cli script - --in template.designcraft --save merged.designcraft
 ```
 
+## Linked Word and Excel files (Flow)
+
+`file.place {path, link: true}` keeps a Word, Excel or text file linked. `links.update {}` merges its new
+versions in (the layout's own edits are kept and reported), `compare.file {}` compares the result with the
+last save, and `compare.exportPdf {path}` writes what changed. [flow.md](flow.md) has the steps in the app and
+the whole update-all job.
+
 ## The running app
 
 ```sh

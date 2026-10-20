@@ -2439,7 +2439,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             p
         };
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
+            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick(if is_text { "relinkText" } else { "relink" }))
         {
             let _ = app.run("links.relink", with("path", json!(path)));
         }
@@ -2453,7 +2453,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             update.on_hover_ui(|ui| {
                 crate::rtl::label(
                     ui,
-                    crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced"),
+                    crate::i18n::tr(&app.ui.language, "This story was edited in the layout: an update replaces those edits (Flow shows it first)"),
                 );
             })
         } else {
@@ -3097,8 +3097,8 @@ mod tests {
 
     /// A document with `story.txt` placed linked from a temporary folder: the folder, the file, the
     /// app and the story.
-    fn linked_story() -> (std::path::PathBuf, std::path::PathBuf, DesignApp, u64) {
-        let dir = std::env::temp_dir().join(format!("dc-links-last-update-{}", std::process::id()));
+    fn linked_story(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, DesignApp, u64) {
+        let dir = std::env::temp_dir().join(format!("dc-links-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("story.txt");
@@ -3127,7 +3127,7 @@ mod tests {
     /// in Flow opens the Flow panel on it. Before any update, it says so.
     #[test]
     fn links_panel_shows_a_linked_text_files_last_update() {
-        let (dir, path, app, sid) = linked_story();
+        let (dir, path, app, sid) = linked_story("last-update");
         let mut h = links_harness(app, 360.0);
         h.get_by_label("story.txt").click();
         h.run_steps(3);
@@ -3146,6 +3146,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Relink… on a linked text file offers text files (the graphics list left Word and Excel files
+    /// out of reach) and imports the one picked into the story.
+    #[test]
+    fn relink_on_a_linked_text_file_picks_a_text_file() {
+        let (dir, _, mut app, sid) = linked_story("relink");
+        let moved = dir.join("moved.txt");
+        std::fs::write(&moved, "The moved file's text.").unwrap();
+        let picked = moved.to_string_lossy().to_string();
+        app.services.pick_open = Some(Box::new(move |purpose| (purpose == "relinkText").then(|| picked.clone())));
+        let mut h = links_harness(app, 360.0);
+        h.get_by_label("story.txt").click();
+        h.run_steps(3);
+        h.get_by_label("Relink…").click();
+        h.run_steps(3);
+        let text = h.state().session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
+        assert_eq!(text, "The moved file's text.");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// F7.1's screenshot (`plan/shots/f7.1-links.png`): the Links panel with a linked text file's
     /// last update.
     #[test]
@@ -3153,7 +3172,7 @@ mod tests {
     fn render_links_panel_last_update() {
         let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
         std::fs::create_dir_all(&shots).unwrap();
-        let (dir, path, mut app, sid) = linked_story();
+        let (dir, path, mut app, sid) = linked_story("last-update-shot");
         update_with_a_conflict(&mut app, &path, sid);
         let mut ready = false;
         let mut h = Harness::builder().with_size(vec2(360.0, 420.0)).wgpu().build_ui_state(

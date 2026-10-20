@@ -929,12 +929,15 @@ pub(super) fn place_text(
     };
     let autoflow_on = p.get("autoflow").and_then(Value::as_bool).unwrap_or(false);
     let st = s.doc()?;
-    let caret = st.selection.text.filter(|t| t.cell.is_none());
-    let frame = super::id_param(p, "frame").or_else(|| {
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Text(_))))
-    });
     let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1));
     let rect = super::rect_param(p, "rect");
+    // A `rect` or `page` asks for a new frame there, whatever is selected.
+    let fresh = rect.is_some() || page.is_some();
+    let caret = st.selection.text.filter(|t| t.cell.is_none() && !fresh);
+    let frame = super::id_param(p, "frame").or_else(|| {
+        let mut selected = st.selection.items.iter().copied().filter(|_| !fresh);
+        selected.find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Text(_))))
+    });
     let mut warnings = imp.warnings.clone();
     warnings.extend(imp.problems.iter().map(designcraft_textimport::Problem::message));
     if too_large {
@@ -1008,6 +1011,32 @@ pub(super) fn place_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A text file placed at `rect` or on `page` gets a new frame there, whatever is selected: the
+    /// frame the last place left selected, or an insertion point, keeps its story. (A script
+    /// placing two linked files in a row lost the first one's text and its link.)
+    #[test]
+    fn a_rect_or_page_places_text_in_a_new_frame_whatever_is_selected() {
+        let dir = std::env::temp_dir().join(format!("dc-place-rect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "Text of a.").unwrap();
+        std::fs::write(&b, "Text of b.").unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let ra = s.execute("file.place", &json!({"path": a.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
+        let rb = s.execute("file.place", &json!({"path": b.to_string_lossy(), "link": true, "rect": [72, 300, 300, 400]})).unwrap();
+        assert_ne!(ra["story"], rb["story"], "a new frame, not the one selected");
+        s.execute("text.select", &json!({"story": ra["story"], "anchor": 0, "focus": 0})).unwrap();
+        let rc = s.execute("file.place", &json!({"path": b.to_string_lossy(), "page": 1})).unwrap();
+        assert_ne!(rc["story"], ra["story"], "not at the insertion point");
+        let d = &s.doc().unwrap().doc;
+        let story = |r: &Value| d.story(StoryId(r["story"].as_u64().unwrap())).unwrap();
+        assert_eq!((story(&ra).text.as_str(), story(&rb).text.as_str()), ("Text of a.", "Text of b."));
+        assert!(story(&ra).file_link.is_some() && story(&rb).file_link.is_some(), "both still linked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn place_text_file_with_autoflow() {
