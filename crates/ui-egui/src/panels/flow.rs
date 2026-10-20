@@ -712,7 +712,7 @@ fn hover(sid: u64, kind: Kind, e: &Value, before: bool, table: Option<u64>) -> O
 
 /// Go to a line's place: select the text (as it is now, while reviewing) or the cell, and show
 /// its page.
-fn go_to(app: &mut DesignApp, sid: u64, e: &Value, before: bool) {
+pub(crate) fn go_to(app: &mut DesignApp, sid: u64, e: &Value, before: bool) {
     if let Some(c) = e.get("cell").filter(|c| c.is_object()) {
         let (row, col) = (c["row"].as_u64().unwrap_or(0), c["col"].as_u64().unwrap_or(0));
         let table = c["table"].as_u64().or_else(|| first_table(app, sid));
