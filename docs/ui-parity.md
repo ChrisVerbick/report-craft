@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (re-checked against the code and issue tracker: threading row to ~ (works by hand; Primary Text Frame re-test); rows for #337, #188, #289/#23 and Dock Quit (#544) to ✓; copy/paste and context-menu rows list only open issues; Story Editor row corrected; Navigator dropped (not an InDesign 2026 panel); tally 17 ✓ / 12 ~ / 0 ✗; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -29,36 +29,36 @@ basics of editing fail for too many users on Windows and Linux.
 | Chrome: app bar, Control panel, Tools panel, dock, doc tabs, status bar | Medium Dark, measured sizes | measured look | ✓ | 11-observed-ui.md |
 | Properties panel and Contextual Task Bar | per selection | ✓, task bar movable (#143) | ✓ | |
 | Selection tool: click, marquee, move, Alt-duplicate, resize handles, rotate from corners | ✓ | ✓ | ✓ | Cmd/Ctrl held with another tool borrows the selection tool used last (Selection or Direct Selection) for one gesture, #919 |
-| Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | moving reference point "0" fails (#337) |
+| Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ✓ | moving the reference point works (#337, fixed 2026-10-16) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
-| Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
+| Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ✓ | vertical smart spacing between two rectangles fixed (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
 | Document views: scrollbars (each split pane), Hand tool by Space, middle drag, or Alt while editing text | ✓ | ✓ | ✓ | `canvas.rs` `scrollbar_tests` |
 | Gridify while drawing, Gap tool, Live Distribute | ✓ | ✓ | ✓ | |
-| Type tool: caret, selection, double/triple click, drag-and-drop text | ✓ | ✓ | ~ | formatting at a caret discarded (#289); text editing complaints (#23, #174) |
-| Threading: click out port, load text cursor, click frame | ✓ | ✗ ports drawn only; no thread/unthread command; Primary Text Frame and autoflow on Place | ✗ | **alpha blocker** (#352, #194, #165, #140) |
-| Copy / cut / paste objects and text, Paste Into / in Place | ✓ | ✓ on macOS | ~ | **failing on Windows/Linux** (#351, #348, #312, #185, #164, #201, #212) |
-| Context menus (canvas, panels, rulers) | ✓ everywhere | 9 context-menu sites, ruler units by right-click | ~ | **not opening for several users** (#238, #187, #160) |
+| Type tool: caret, selection, double/triple click, drag-and-drop text | ✓ | ✓ | ✓ | formatting at a caret (#289) and editing reports (#23) fixed; #174 closed upstream on 2026-10-20 |
+| Threading: click out port, load text cursor, click frame | ✓ | ✓ ports, loaded text cursor, thread and unthread commands; Primary Text Frame and autoflow on Place | ~ | #140 fixed; #352, #194 closed as duplicates; #165 closed 2026-10-17 and upstream #1169 removes the empty pages autoflow left: re-test before the alpha gate |
+| Copy / cut / paste objects and text, Paste Into / in Place | ✓ | ✓ on macOS | ~ | open: Paste in Place onto the selected page (#348), RTF text paste (#212); fixed: #185, #201; closed upstream on 2026-10-20, after this fork's last sync: #312, #164; #351 closed as a duplicate |
+| Context menus (canvas, panels, rulers) | ✓ everywhere | 9 context-menu sites, ruler units by right-click | ~ | not opening for some users (#187); #238 and #160 closed as duplicates |
 | IME text input on the canvas | ✓ | ✓ | ~ | not checked by hand with a system IME (#322) |
 | Font menu: search, preview, favourites, type-ahead, filters (class, recently added), styles per family, sample text and size, recently used, similar fonts | ✓ | ✓ | ~ | search field focus on macOS (#335, #86); Adobe Fonts (Find More, activated) out of scope |
 | Keyboard shortcuts: InDesign defaults, editor, sets | ✓ | ✓ editor; defaults from 09-shortcuts.md | ✓ | |
 | Quick Apply | ✓ | ✓ | ✓ | |
 | Numeric fields: units, arithmetic, scrubbing | ✓ | 21 pt spinner fields with arithmetic | ✓ | |
 | Colour fields: hex, picker from any swatch field | ✓ | ✓ | ~ | hex entry and picker issues (#323, #190) |
-| Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info, Tabs | ✓ | all present | ~ | Navigator, Trap Presets, Animation, Timing missing; pull-down panels can't scroll on Linux (#267) |
+| Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info, Tabs | ✓ | all present | ~ | Trap Presets, Animation, Timing missing (InDesign 2026 has no Navigator panel); pull-down panels can't scroll on Linux (#267) |
 | Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | generated command dialogs fill the long tail; depth varies |
 | Workspaces | Essentials, Essentials Classic, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Review, Typography, Touch | ✓ named workspaces (Essentials Classic: Control panel and iconic panel groups) + custom; Window › Workspace; no Review or Touch | ~ | tab bar overlaps menus in Book/Advanced (#182) |
-| Story Editor | ✓ | ✓ | ~ | style-name column, depth ruler missing |
+| Story Editor | ✓ | ✓ style-name column, overset marker | ~ | depth ruler missing; tracked changes, notes, tables and footnotes not shown inline |
 | Undo granularity (a drag = one step) | ✓ | ✓ (Begin/Preview/Commit) | ✓ | |
-| Closing with unsaved changes asks | ✓ | ✓ File › Close and window/menu quit (#146, #545) | ✓ | macOS Dock Quit still bypasses the prompt (#544) |
+| Closing with unsaved changes asks | ✓ | ✓ File › Close and window/menu quit (#146, #545) | ✓ | macOS Dock Quit asks too (#544, fixed 2026-10-12) |
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |
 | Window controls, full screen | ✓ | ~ | ~ | misaligned on macOS (#333) |
 
-Counted 2026-10-11: 28 rows, 12 ✓, 14 ~, 2 ✗ → **68% presence**, scoring ✓ = 1, ~ = 0.5. Ready
-for real work is lower, ~45%, because threading is missing and three of the ~ rows (copy/paste,
-context menus, typing at a caret) are things a layout artist does every minute, and their failures stop work.
+Counted 2026-10-20: 29 rows, 17 ✓, 12 ~, 0 ✗ → **79% presence**, scoring ✓ = 1, ~ = 0.5. Ready
+for real work (~45%, not re-assessed) is lower because two of the ~ rows (copy/paste, context
+menus) are things a layout artist does every minute, and their remaining failures stop work.
 
 Navigation also supports held Space as Hand and held Cmd+Space as Zoom (Ctrl+Space on
 Windows/Linux), with Alt-click zooming out. Releasing restores the previous tool and its state.
@@ -111,9 +111,9 @@ changing the document. Fully captured default attributes do not overwhelm the su
 covers checking the sampled and redefined settings in the styles tutorial (2:45 and 5:15).
 | Work | Opus 5.5 h |
 |---|---|
-| Copy/paste, context menus, threading clicks, caret formatting on every platform, with control-channel regression tests | 30–50 |
+| Paste in Place, RTF paste and context menus on every platform, with control-channel regression tests | 15–30 |
 | Canvas IME: checks by hand with system IMEs, and fixes | 10–20 |
-| Missing menu items (~150) and panels (Tabs, Navigator, Trap Presets) | 40–70 |
+| Missing menu items (~150) and panels (Trap Presets, Animation, Timing) | 40–70 |
 | Handle/tool feel fixes (#188, #337), font search focus | 10–20 |
 | Dialog depth pass against 07-dialogs.md | 30–40 |
 | **Total** | **120–180** (overlaps gaps 1, 8, 16) |
@@ -122,6 +122,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Re-checked against the code and issue tracker: threading ~, five rows to ✓ on fixed issues, open issues only; tally 17 ✓ / 12 ~ / 0 ✗ = 79% |
 | 2026-10-11 | minor | Live corners row to ✓: widget, diamonds, drag, Shift-drag, Alt-click shape cycling (#186) |
 | 2026-10-11 | minor | Added held Cmd+Space / Cmd+Alt+Space Zoom navigation and canvas input regression tests |
 | 2026-10-10 | minor | Threading row corrected to ✗ after checking the code (no out-port interaction, no thread command) |

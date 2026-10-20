@@ -1,9 +1,9 @@
 # DesignCraft roadmap
 
-**Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
+**Stage: pre-alpha** · next: alpha, pending a ~1 h re-test of the Primary Text Frame flow (#165 closed 2026-10-17); beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-20 · **Change:** minor (docs re-checked against InDesign 2026's feature list and the code; alpha waits on a re-test (#165 closed); Milestones section repaired; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
@@ -185,7 +185,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 
 ## How far from full parity (estimate, 2026-10-04)
 
-**Breadth: ~99% weighted** (P0 core 99%, P1 100%, P2 97%) over the 275 features of the InDesign catalogue, scored
+**Breadth: ~99% weighted** (P0 core 99%, P1 100%, P2 97%) over the 277 features of the InDesign catalogue, scored
 row by row in [docs/parity-checklist.md](docs/parity-checklist.md) (`cargo xtask parity` recomputes it). Many features scored done still
 lack some of InDesign's options or dialog details, so **overall parity including depth is about 83%**.
 
@@ -212,25 +212,14 @@ same references), and from the app's JSON control channel. See [docs/agents.md](
 
 ## Milestones
 
-| # | Milestone | State |
-**Stage: pre-alpha** · next: alpha, ~0% and ~15–25 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
-
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (A0, A1 and A2 poster presets) · **Target:** Adobe InDesign 2026
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (text threads by hand; the alpha gate waits on Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (parent canvas refresh) · **Target:** Adobe InDesign 2026
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (bounded control click/drag input) · **Target:** Adobe InDesign 2026
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (text stroke behind fill) · **Target:** Adobe InDesign 2026
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Links source paths) · **Target:** Adobe InDesign 2026
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (table anchors keep their own paragraphs) · **Target:** Adobe InDesign 2026
-
-DesignCraft aims at full Adobe InDesign parity, and to be better: faster, open (documented JSON
-format + IDML), scriptable by agents (MCP), and available on the web.
+The milestone table, the alpha gate and the current focus are in
+[docs/roadmap.md](docs/roadmap.md#milestones).
 
 ## Headline numbers
 
 | | Value | Kind |
 |---|---|---|
-| **Feature breadth** | **~80%** (69% of InDesign 21.6's in-scope menu items matched; 99% of our 275-row checklist) | measured bounds, estimate between |
+| **Feature breadth** | **~80%** (69% of InDesign 21.6's in-scope menu items matched; 99% of our 277-row checklist) | measured bounds, estimate between |
 | **Ready for real work** | **~47%** (range 42–52%) | estimated: weighted sum over the dimensions below |
 | Mainstream practitioner | **~42%** (weekly core 60.7% × 0.88 interaction × 0.92 stability × 0.85 file exchange) | estimated |
 | Essentials user | **~54%** (core features 72% × 0.90 launch × 0.88 discoverability × 0.95 files received) | estimated |
@@ -245,10 +234,11 @@ format + IDML), scriptable by agents (MCP), and available on the web.
 
 **Why pre-alpha:** it fails one of InDesign's core workflows, the alpha gate in
 [docs/roadmap.md](docs/roadmap.md#alpha-gate). Text threads by hand (click a port, then click or
-draw a frame; thread and unthread commands), but Primary Text Frame autoflow adds pages users
-can't delete (#165). Everything else in the gate works end to end on macOS (document setup,
-styles, images, object editing, PDF export, save and reopen), and ready for real work (~47%) is
-above the alpha bar, so the Primary Text Frame page fixes are the whole distance to alpha.
+draw a frame; thread and unthread commands), and the Primary Text Frame
+autoflow issue (#165, pages users can't delete) was closed on 2026-10-17, with upstream #1169
+removing the empty pages autoflow left. Everything else in the gate works end to end on macOS
+(document setup, styles, images, object editing, PDF export, save and reopen), and ready for real
+work (~47%) is above the alpha bar, so a re-test of that one row is the whole distance to alpha.
 Beyond that, beta needs INDD and IDML proven on real files, composition compared with
 InDesign's, and basic editing fixed on Windows and Linux. Details:
 [docs/target-app-parity.md](docs/target-app-parity.md).
@@ -348,6 +338,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-20** · Docs re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added to [docs/gaps.md](docs/gaps.md) (tools that do nothing, mixed inks and Lab colour, preflight profiles, Find/Change and Glyphs depth, object style categories, interactive PDF and EPUB depth, Type on a Path effects) and gaps 9, 15, 16, 19 and 24 extended; closed issues taken off the lists (#169, #289, #337, #188, #338, #339, #340, #544 and duplicates; gap 11 closed); the alpha gate's one failing row (#165) is closed and waits on a re-test; the broken Milestones section points to docs/roadmap.md. No readiness percentage change.
 - **2026-10-19** · Styles, completed (Stage 6): Window ▸ Styles gains Object Styles, Table Styles and Cell Styles panels (apply, Alt-click to clear overrides, Redefine Style, Break Link to Style, Delete); Redefine Style, Clear Overrides on apply and Break Link to Style work for object, table and cell styles; Load Styles brings object, table and cell styles (only when named), with what they use; Word import maps styles by rules (name patterns, attributes, kind) and saved import presets, kept on linked files for Update. No readiness percentage change.
 - **2026-10-19** · History can be kept out of saved files: Preferences ▸ File Handling ▸ Keep Earlier Versions in Saved Files sets it for every document, and the History panel's Keep Earlier Versions in This File for one document (saved with it; it wins over the preference). A document keeps a setting of its own only while it differs from the preference, and the panel says when it has one, so turning the preference off reaches every document that hasn't been set otherwise. Off, saving drops the file's versions, and copies, the serialized file and recovery data carry none. No readiness percentage change.
 - **2026-10-18** · History: a document's versions are kept in its file (saving a changed document, File ▸ Save a Version…, and around each Flow update); Window ▸ Editorial ▸ History lists them, restores one (undoably, keeping the history), compares one with the document as a redline or exports one as a file of its own; File ▸ Save a Copy without History… leaves them out. The file format version stays upstream's: older builds open the file and drop its history when they save. No readiness percentage change.
@@ -628,6 +619,7 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Docs re-check: gaps 28–34, closed issues off the lists, alpha waits on a re-test (#165 closed), Milestones section repaired |
 | 2026-10-12 | minor | Manual text threading landed; alpha distance 15–25 h → 5–7 h (Primary Text Frame page fixes, #165) |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; readiness estimates unchanged |
 | 2026-10-10 | minor | Full number 42% → 47% (method aligned with the standard: plain weighted sum, no new evidence); readiness table with hours per audience |

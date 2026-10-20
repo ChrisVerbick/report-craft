@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (tally recounted: 37 rows, 18 ✓ / 19 ~ = 74%; the Tabs panel is no longer counted as remaining work; Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -8,7 +8,7 @@ document tracks both: does the attribute exist, and does it compose like InDesig
 detail lives in [cjk-typography.md](cjk-typography.md), [cjk.md](cjk.md) and
 [arabic-typography.md](arabic-typography.md). Overall numbers: [target-app-parity.md](target-app-parity.md).
 
-**Dimension score: ~45% ready (estimated), 120–200 h to parity.** Presence is high (76% scored below, nothing absent); fidelity
+**Dimension score: ~45% ready (estimated), 120–200 h to parity.** Presence is high (74% scored below, nothing absent); fidelity
 against InDesign is **unmeasured**, which is the main gap.
 
 ## Fidelity: how we'd know
@@ -70,8 +70,8 @@ Fidelity: **unmeasured** unless stated.
 | Installed fonts | every activated font, picked up as installed or changed | system font folders; on macOS also fonts that font managers and Adobe Fonts activate; user folders not always found; fonts installed, edited or removed while running found by Type › Reload Fonts, not automatically | ~ | #161, #110, #107, #327, #261, #328 |
 | Composition highlights | H&J, keeps, custom tracking/kerning, substituted fonts | ✓ | ✓ | |
 
-Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scoring ✓ = 1 and ~ = 0.5:
-**76%**. Every row exists in some form; the ~ rows are where InDesign users will see a difference.
+Recounted from the table above (2026-10-20): 37 rows, 18 ✓, 19 ~, 0 ✗, scoring ✓ = 1 and ~ = 0.5:
+**74%** (the table grew from 34 rows since the first count). Every row exists in some form; the ~ rows are where InDesign users will see a difference.
 
 ## Remaining effort
 
@@ -83,12 +83,13 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Fixing composer differences the harness finds (weights, penalties, glyph-scaling order) | 40–70 |
 | Hyphenation patterns for the top 15 InDesign languages (permissive sources) | 20–35 |
 | Spelling dictionaries beyond English (licence review per language) | 10–20 (+ owner review) |
-| Tabs panel, list conversion commands | 8–15 |
+| List conversion commands (the Tabs panel exists, #343) | 2–5 |
 | **Total** | **120–200** |
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Tally recounted (37 rows, 74%); remaining work: the Tabs panel exists |
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
