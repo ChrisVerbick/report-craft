@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (Word import style mapping rules and import presets; Load Styles for object, table and cell styles; Object Styles, Table Styles and Cell Styles panels; Clear Overrides on apply and Break Link to Style for every kind of style; Redefine Style for object, table and cell styles; object styles: Delete Object Style, and fill, stroke, paragraph style, Based On and name in `style.object.edit`; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (stage alpha: the core-workflow gate passes (threading row re-tested on macOS 2026-10-20); percentages unchanged; issue references re-checked against the tracker (closed: #165, #169, #289, #337, #338, #339, #340 and duplicates); the stage waits on a re-test of the alpha gate's threading row; catalogue size 277; Navigator dropped (not an InDesign 2026 panel); percentages not re-assessed; Word import style mapping rules and import presets; Load Styles for object, table and cell styles; Object Styles, Table Styles and Cell Styles panels; Clear Overrides on apply and Break Link to Style for every kind of style; Redefine Style for object, table and cell styles; object styles: Delete Object Style, and fill, stroke, paragraph style, Based On and name in `style.object.edit`; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -16,7 +16,7 @@ presence checklist is [parity-checklist.md](parity-checklist.md) (`cargo xtask p
 | Essentials user (flyers, newsletters: the core only) | **~54%** | 135–250 h to ~95%; estimated, [method below](#essentials-user-54) |
 | Remaining effort to **beta** (~75% ready, main format reliable; 28 points away) | **420–750 Opus 5.5 agent-hours** | estimated |
 | Remaining effort to **full parity** | **1,150–1,950 Opus 5.5 agent-hours** | estimated |
-| Stage | **pre-alpha** (fails the core-workflow gate: Primary Text Frame adds pages users can't delete, #165); ~5–7 h to alpha | see [roadmap.md](roadmap.md#alpha-gate) |
+| Stage | **alpha** (the core-workflow gate passes since 2026-10-20: its threading row passed a re-test on macOS) | see [roadmap.md](roadmap.md#alpha-gate) |
 
 ## How breadth was measured
 
@@ -58,10 +58,10 @@ they receive, setting type exactly, and basic editing that never fails.
 
 | Dimension | Weight | Ready | Remaining (Opus 5.5 h) | Evidence | Doc |
 |---|---|---|---|---|---|
-| Features (depth of each area) | 25% | 55% | 250–400 | 275 catalogue rows exist; many lack options (e.g. Books is 258 lines of engine code, Liquid Layout 329); see the area table | this file |
+| Features (depth of each area) | 25% | 55% | 250–400 | 277 catalogue rows exist; many lack options (e.g. Books is 258 lines of engine code, Liquid Layout 329); see the area table | this file |
 | Typography and composition fidelity | 15% | 45% | 120–200 | Knuth–Plass composer, keeps, grids, CJK, Arabic all exist; no comparison with InDesign's line breaks; optical kerning falls back to metrics (#181); overset rule differs (#180); hyphenation patterns for English, Spanish, Portuguese, Norwegian and Greek only | [typography-parity.md](typography-parity.md) |
-| File formats | 20% | 40% | 150–250 (+10–30 for an INDD corpus) | INDD and INDT open through indd-utils, measured on synthetic bytes only (#21); IDML both ways and verified in InDesign 2026, but real-file bugs open (#193, #338, #339, #340); PDF export strong; PDF/X-4 only | [file-format-parity.md](file-format-parity.md) |
-| UI/UX fidelity | 15% | 45% | 120–180 | Measured InDesign 2026 look; but users report object copy/paste (#351, #348, #185, #164), right-click menus (#238, #187, #160), out-port threading (#352, #194, #165) failing | [ui-parity.md](ui-parity.md) |
+| File formats | 20% | 40% | 150–250 (+10–30 for an INDD corpus) | INDD and INDT open through indd-utils, measured on synthetic bytes only (#21); IDML both ways and verified in InDesign 2026, but a real-file bug is open (#193; #338, #339, #340 fixed 2026-10-16); PDF export strong; PDF/X-4 only | [file-format-parity.md](file-format-parity.md) |
+| UI/UX fidelity | 15% | 45% | 120–180 | Measured InDesign 2026 look; but users report Paste in Place (#348), RTF paste (#212) and right-click menus (#187) failing; earlier copy/paste and threading reports are fixed or closed as duplicates | [ui-parity.md](ui-parity.md) |
 | Stability | 10% | 45% | 60–100 | Never-crash rules and last-resort guards; startup failures on some GPUs and machines (#334, #273, #220, #192, #167, #166); no CI runs the tests on pull requests | [gaps.md](gaps.md) |
 | Performance | 5% | 65% | 40–80 | 300k characters compose in ~38 ms warm; typing repaints in < 1 ms (damage regions); no incremental composition; nothing benchmarked against InDesign; no large real documents | [gaps.md](gaps.md) |
 | Localization | 3% | 45% | 120–180 | 9 translations beyond English; Japanese 95%, most others 83–85%, pt-BR 61%; Hindi, Indonesian, Korean, Vietnamese none | [localization-parity.md](localization-parity.md) |
@@ -77,7 +77,7 @@ standard: 25×55 + 15×45 + 20×40 + 15×45 + 10×45 + 5×65 + 3×45 + 3×55 + 2
 today applied a further ×0.9 for cross-cutting core-path failures and reported 42%. That
 multiplicative step was dropped to match the standard (discounts belong only to the mainstream
 and essentials numbers). Those failures are already in the UI/UX (45%) and Stability (45%) rows,
-and the Primary Text Frame page fixes (#165) are what hold the stage at pre-alpha through the gate.
+and the core-workflow gate, passed on 2026-10-20, sets the stage: alpha.
 
 ## Mainstream practitioner and essentials user
 
@@ -108,8 +108,8 @@ twice.
 | Area | Weight | Depth | Evidence |
 |---|---|---|---|
 | Document setup: pages, margins, columns, parents, sections | 10% | 65% | features area table |
-| Text frames: type, select, edit, thread, autoflow | 15% | 45% | threading by hand, autoflow; Primary Text Frame adds pages users can't delete (#165) |
-| Typography: composer, H&J, OpenType, tabs, lists, keeps | 15% | 65% | typography-parity.md: 18 ✓ / 16 ~; InDesign-identical breaks counted under exchange |
+| Text frames: type, select, edit, thread, autoflow | 15% | 45% | threading by hand, autoflow, the Primary Text Frame flow (re-tested 2026-10-20) |
+| Typography: composer, H&J, OpenType, tabs, lists, keeps | 15% | 65% | typography-parity.md: 18 ✓ / 19 ~; InDesign-identical breaks counted under exchange |
 | Paragraph, character and object styles | 10% | 65% | dialogs, based-on, nested/GREP, Quick Apply |
 | Frames, shapes, transform, arrange, align | 10% | 70% | full tool set; copy/paste problems counted under interaction |
 | Colour, swatches, stroke | 8% | 60% | hex entry, CMS depth |
@@ -125,9 +125,9 @@ Discounts (multiplicative):
 
 | Discount | Factor | Evidence |
 |---|---|---|
-| Interaction fidelity | ×0.88 | right-click menus fail for some macOS users (#160, #238) and on Linux (#354); Paste in Place lands on page 1 (#348); formatting at a caret discarded (#289); font search focus (#335, #86) |
+| Interaction fidelity | ×0.88 | right-click menus fail for some users (#187; #160, #238 closed as duplicates) and on Linux (#354); Paste in Place lands on page 1 (#348); font search focus (#335, #86) |
 | Stability on real machines | ×0.92 | start-up failures on Intel Mac Metal (#334) and Windows drivers (#167, #273, #220, #192, #166); no CI on pull requests; macOS on Apple silicon is solid |
-| File exchange with InDesign users | ×0.85 | `.indd` opens through indd-utils but is unmeasured on real files (#21); IDML import/export bugs (#193, #338, #339, #340, #211); opened text reflows: optical kerning (#181), overset rule (#180). Harsher than VectorCraft's ×0.92 because InDesign pros receive and send native files daily |
+| File exchange with InDesign users | ×0.85 | `.indd` opens through indd-utils but is unmeasured on real files (#21); an IDML import bug (#193); opened text reflows: optical kerning (#181), overset rule (#180). Harsher than VectorCraft's ×0.92 because InDesign pros receive and send native files daily |
 
 60.7% × 0.88 × 0.92 × 0.85 = 41.8% → **~42%**. It is lower than the full number (47%)
 because the full number spreads weight over dimensions DesignCraft does relatively well
@@ -143,7 +143,7 @@ features), exchange edge cases, and everything excluded above.
 | Core feature | Weight | Depth | Evidence |
 |---|---|---|---|
 | Launch, welcome screen, new document from a preset | 10% | 80% | presets incl. A6 (#248) |
-| Type text in a frame, select and edit it | 15% | 65% | caret formatting (#289), double-click selection in fields (#189) |
+| Type text in a frame, select and edit it | 15% | 65% | caret formatting (#289) fixed; double-click selection in fields (#189) closed as a duplicate |
 | Font, size, colour, alignment | 15% | 65% | installed fonts not always found (#161, #110, #107) |
 | Place an image and fit it | 10% | 75% | place gun, fitting |
 | Draw shapes and lines, fill and stroke | 10% | 80% | |
@@ -206,20 +206,20 @@ table is the one summed.
 | Application shell & workspace | 99% | 55% | 40–60 | context menus not opening on some systems; window controls (#333); System theme (#237); New Window/Arrange; Help menu |
 | Documents, pages, spreads | 100% | 65% | 20–35 | Layout ▸ Pages submenu items, Page Attributes / Color Label, Go Back/Forward, layout grid (CJK) |
 | Layers | 100% | 75% | 5–10 | IDML layer order fixed 2026-10-09; Layer panel options depth |
-| Frames, shapes & paths | 100% | 60% | 25–40 | object copy/paste failures, reference point relocation (#337), Join/Reverse Path/Convert Point menu |
+| Frames, shapes & paths | 100% | 60% | 25–40 | object copy/paste reports (#348); Join Path and Convert Point are in the Pathfinder panel, not the Object menu (Reverse Path is) |
 | Transform | 100% | 70% | 10–20 | Rotate 180°; transform panel depth |
 | Fill, stroke, colour | 100% | 60% | 20–35 | hex entry (#323); Assign Profiles / Convert to Profile; color-managed proofing depth; Adobe Color Themes OOS |
 | Effects & transparency | 100% | 50% | 20–30 | effects fidelity vs InDesign unmeasured; Clear Effects / Clear All Transparency; flattener depth |
 | Placing & links | 93% | 55% | 20–35 | EPS is preview-only (no PostScript interpreter); Edit Original; placed PDF layer visibility; INDD page place |
-| Type & text frames | 99% | 45% | 40–60 | Primary Text Frame pages users can't delete (alpha blocker, #165); autoflow doesn't fill existing pages; no threading into grouped frames with the loaded cursor; caret formatting discarded (#289); Notes/Track Changes menus; frame grids |
+| Type & text frames | 99% | 45% | 40–60 | autoflow doesn't fill existing pages; Notes/Track Changes menus; frame grids |
 | Typography | 100% | 45% | (typography dimension) | see [typography-parity.md](typography-parity.md) |
-| Styles | 100% | 60% | 15–25 | Paragraph Styles edit/delete reported failing (#169); style options depth |
+| Styles | 100% | 60% | 15–25 | style options depth (Paragraph Styles edit/delete, #169, fixed 2026-10-15) |
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Diagonal Lines, Edit Header/Footer |
 | Long documents | 100% | 45% | 30–50 | Books are shallow (sync, book pagination, book PDF/TOC/index); Table of Contents Styles |
 | Interactivity & digital | 100% | 40% | 30–50 | HTML export basic (#314); fixed-layout EPUB is page images; no animation, timing, media playback |
 | Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), no PDF/print presets or `.joboptions`, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
 | XML & automation | 100% | 35% | (ecosystem dimension) | no ExtendScript/UXP; XML structure depth |
-| View & navigation | 100% | 65% | 10–20 | Navigator, display badges, Show/Hide extras (content grabber, live corners) |
+| View & navigation | 100% | 65% | 10–20 | display badges, Show/Hide extras (content grabber, live corners) |
 | Undo, history, saving | 100% | 70% | 5–10 | Undo/Redo name the action |
 | Accessibility | 100% | 50% | 15–25 | tagged PDF exists; PDF/UA validation, reading order depth, screen-reader support in the UI |
 
@@ -462,6 +462,8 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Stage alpha: the alpha gate passes after the threading row's re-test on macOS |
+| 2026-10-20 | minor | Issue references brought up to date (many closed); stage note waits on the alpha re-test; 277 catalogue rows; percentages unchanged |
 | 2026-10-13 | minor | `.indd` and `.indt` open through storytold/indd-utils; INDD remaining work 10–30 h (real-file corpus); readiness unchanged until it is measured |
 | 2026-10-12 | minor | Text threads by hand; stage note and distance to alpha follow the gate (5–7 h, #165); percentages unchanged |
 | 2026-10-11 | minor | Spring-loaded Zoom navigation added to the working feature inventory (DC-1); readiness estimates unchanged |

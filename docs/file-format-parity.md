@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-20 · **Change:** minor (Excel sheet, range, header rows and table style choice listed; #338, #339, #340 fixed; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -53,7 +53,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | Text Only / RTF / Tagged Text | `.txt`, `.rtf` | ✓ | ✓ (`file.exportText` txt, rtf, tagged) | | 1% |
 | XML | `.xml` | ✓ | ✓ export and import, DTD validate | depth unmeasured | 1% |
 | Print / PostScript | | ✓ printers, PPDs, separations | ~ PDF to CUPS/Windows (craft-print; no PostScript) | | 3% |
-| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | | 2% |
+| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (the IDML inside links relative to the package; #340 fixed) | | 2% |
 
 ## Placed and imported content
 
@@ -68,7 +68,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | HEIC | `.heic` | ✓ | ✗ | | <1% |
 | Word | `.docx` | ✓ styles, footnotes, tables, track changes, options | ✓ styles by name, footnotes, tables, tabs, breaks, moved text (#257), bullets and numbering from `numbering.xml` (#626; levels become list levels, parent numbers in a label level references), style mapping and conflicts | `.doc` not supported (InDesign reads it) | 2% |
 | RTF | `.rtf` | ✓ | ✓ | | <1% |
-| Excel | `.xlsx`, `.xls` | ✓ | ~ `.xlsx` first sheet's used range | cached numbers keep their precision and formula strings stay text; no sheet/range options; `.xls` ✗ | <1% |
+| Excel | `.xlsx`, `.xls` | ✓ | ~ `.xlsx`: a chosen sheet, cell range, header rows and table style (`file.place`, Place with Flow), kept on a linked workbook for Update | cached numbers keep their precision and formula strings stay text; `.xls` ✗ | <1% |
 | Plain text, Markdown | `.txt`, `.md` | ✓ (txt) | ✓ | | <1% |
 | InDesign Tagged Text | `.txt` | ✓ | ✓ import and export | | <1% |
 | CSV / TSV (Data Merge) | | ✓ | ✓ (+ Excel) | | <1% |
@@ -102,7 +102,7 @@ up to 30 points.
 | Work | Opus 5.5 h |
 |---|---|
 | INDD real-file corpus, metric, fixes (#21, #114) | 10–30 |
-| IDML real-file corpus, metric, fixes (#193, #338, #339, #340) | 60–100 |
+| IDML real-file corpus, metric, fixes (#193) | 60–100 |
 | PDF/X-1a and X-3 (transparency flattener), PDF presets and `.joboptions`, external validator | 40–70 |
 | Print fidelity, PostScript level 3 output and print presets | 25–45 |
 | ICML story import, IDMS snippets | 15–25 |
@@ -114,6 +114,7 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Excel options (sheet, range, header rows, table style) listed; #338, #339, #340 fixed |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |
 | 2026-10-13 | minor | `.indd` and `.indt` read through storytold/indd-utils; INDD remaining work is a real-file corpus (10–30 h); score unchanged until it is measured |

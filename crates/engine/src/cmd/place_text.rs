@@ -1279,6 +1279,46 @@ mod reflow_tests {
         assert_eq!(s.doc().unwrap().doc.page_count(), 1);
     }
 
+    /// #165: deleting the pages or frames of a primary story doesn't make more pages. A page the
+    /// text still needs comes back once, as with InDesign's Smart Text Reflow; a frame's page stays,
+    /// empty, and one page comes for the text the frame held; pages the text no longer needs delete
+    /// by hand and stay deleted; with Smart Text Reflow off, a page with text deletes and the story
+    /// oversets.
+    #[test]
+    fn deleting_pages_or_frames_of_a_primary_story_adds_no_pages() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "Letter", "pages": 1, "primaryTextFrame": true})).unwrap();
+        let sid = s.doc().unwrap().doc.settings.primary_story.expect("primary story");
+        let words = "Words keep coming and the page fills up quickly with them. ".repeat(250);
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("text.insert", &json!({"text": words})).unwrap();
+        let pages = |s: &Session| s.doc().unwrap().doc.page_count();
+        let overset = |s: &Session| designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default()).overset_at.is_some();
+        let n = pages(&s);
+        assert!(n >= 3, "{n} pages");
+        s.execute("layout.pages.delete", &json!({"pages": [n - 1]})).unwrap();
+        assert_eq!((pages(&s), overset(&s)), (n, false), "the last page");
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!((pages(&s), overset(&s)), (n, false), "a middle page");
+        let last = *s.doc().unwrap().doc.story(sid).unwrap().frames.last().unwrap();
+        s.execute("edit.clear", &json!({"ids": [last.0]})).unwrap();
+        assert_eq!((pages(&s), overset(&s)), (n + 1, false), "the last frame");
+        let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 400, "focus": len})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        let emptied = pages(&s);
+        s.execute("layout.pages.delete", &json!({"pages": (1..emptied).collect::<Vec<_>>()})).unwrap();
+        s.execute("frame.create", &json!({"rect": [100, 650, 300, 700]})).unwrap();
+        assert_eq!((pages(&s), overset(&s)), (1, false), "the emptied pages stay deleted");
+        s.doc().unwrap().doc.check().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 400, "focus": 400})).unwrap();
+        s.execute("text.insert", &json!({"text": words})).unwrap();
+        let n = pages(&s);
+        s.execute("prefs.set", &json!({"smartTextReflow": false})).unwrap();
+        s.execute("layout.pages.delete", &json!({"pages": [n - 1]})).unwrap();
+        assert_eq!((pages(&s), overset(&s)), (n - 1, true), "Smart Text Reflow off");
+    }
+
     /// Placing text into the primary frame adds only the pages the text needs, also when a wrap
     /// leaves page 1 little room or the text ends at a page boundary (#1165).
     #[test]
