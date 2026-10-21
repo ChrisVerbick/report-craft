@@ -2638,7 +2638,7 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         return;
     }
     let p = if params.is_null() { json!({}) } else { params.clone() };
-    // Update Link asks before replacing edits made to linked text in the layout.
+    // Update Link opens a linked text file's review in Flow before anything changes.
     if id == "links.update" {
         crate::panels::properties::update_links(app, p);
         return;
