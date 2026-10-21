@@ -2466,6 +2466,10 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("links.embed", target.clone());
         }
     });
+    // A linked text file: what its last update did, from the Flow merge.
+    if let Some(row) = rows.iter().find(|r| r.get("story").is_some() && r["story"].as_u64() == chosen) {
+        last_update(app, ui, &t, row);
+    }
     ui.horizontal(|ui| {
         // Choose any file in the folder: missing links are looked up there by name.
         if ui
@@ -2483,6 +2487,69 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// A linked text file's last update (`lastUpdate` in `links.list`), as the Links panel shows it:
+/// when, and how many sentences changed, layout edits were kept and conflicts arose; each conflict
+/// as a line that goes to its place; Review in Flow for the whole report.
+fn last_update(app: &mut DesignApp, ui: &mut egui::Ui, t: &Tokens, row: &Value) {
+    let lang = app.ui.language.clone();
+    let Some(sid) = row["story"].as_u64() else { return };
+    ui.add_space(6.0);
+    match row.get("lastUpdate").filter(|l| l.is_object()) {
+        None => {
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Not updated since it was placed")).color(t.text_dim).size(11.0));
+        }
+        Some(rec) => {
+            let report = &rec["report"];
+            let some = |n: usize, one: &str, many: &str| format!("{n} {}", crate::i18n::tr(&lang, if n == 1 { one } else { many }));
+            let parts: Vec<String> = if report["replaced"] == true {
+                vec![crate::i18n::tr(&lang, "the story was replaced").to_string()]
+            } else {
+                let count = |k: &str| report[k].as_array().map_or(0, Vec::len);
+                [
+                    (count("changes"), "change", "changes"),
+                    (count("deviations"), "layout edit kept", "layout edits kept"),
+                    (count("conflicts"), "conflict", "conflicts"),
+                ]
+                .into_iter()
+                .filter(|(n, _, _)| *n > 0)
+                .map(|(n, one, many)| some(n, one, many))
+                .collect()
+            };
+            let what = if parts.is_empty() { crate::i18n::tr(&lang, "nothing changed").to_string() } else { parts.join(", ") };
+            let when = crate::panels::flow::ago(rec["at"].as_i64().unwrap_or(0), &lang);
+            let head = crate::i18n::tr(&lang, "Last update");
+            let line = if when.is_empty() { format!("{head}: {what}") } else { format!("{head} {when}: {what}") };
+            crate::rtl::label(ui, egui::RichText::new(line).size(11.0));
+            let errors = rec["errors"].as_array().map_or(0, Vec::len);
+            if errors > 0 {
+                let text = some(errors, "error in the linked files", "errors in the linked files");
+                crate::rtl::label(ui, egui::RichText::new(text).size(11.0).color(egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)));
+            }
+            // Each conflict: the file's text, which won; the layout's version is in a Flow note.
+            for c in report["conflicts"].as_array().into_iter().flatten() {
+                let file = c["file"].as_str().unwrap_or("");
+                let mut quote: String = file.chars().take(60).collect();
+                if file.chars().count() > 60 {
+                    quote.push('…');
+                }
+                let line =
+                    egui::Button::new(egui::RichText::new(format!("{}: “{quote}”", crate::i18n::tr(&lang, "Conflict"))).size(11.0)).frame(false);
+                if ui
+                    .add(line)
+                    .on_hover_text(crate::i18n::tr(&lang, "Go to this conflict: the file's text won, the layout's is in a Flow note"))
+                    .clicked()
+                {
+                    crate::panels::flow::go_to(app, sid, c, false);
+                }
+            }
+        }
+    }
+    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Review in Flow"))).clicked() {
+        app.ui.flow_request = Some(sid);
+        app.ui.open_panel = Some("flow".into());
+    }
 }
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
@@ -3026,6 +3093,86 @@ mod tests {
         let st = h.state().app.session.active().unwrap();
         assert_eq!((h.state().app.session.tool_id(), st.selection.page), ("selection", None));
         let _ = h.get_by_label("Edit Page");
+    }
+
+    /// A document with `story.txt` placed linked from a temporary folder: the folder, the file, the
+    /// app and the story.
+    fn linked_story() -> (std::path::PathBuf, std::path::PathBuf, DesignApp, u64) {
+        let dir = std::env::temp_dir().join(format!("dc-links-last-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("story.txt");
+        std::fs::write(&path, "First sentence. Second sentence. Third sentence.").unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let placed = app.run("file.place", json!({"path": path.to_string_lossy(), "link": true, "rect": [72, 72, 300, 200]})).unwrap();
+        let sid = placed["story"].as_u64().unwrap();
+        (dir, path, app, sid)
+    }
+
+    /// The layout rewrites the third sentence; the file rewrites it too and changes the first. Then
+    /// the link is updated: one change, one conflict.
+    fn update_with_a_conflict(app: &mut DesignApp, path: &std::path::Path, sid: u64) {
+        let text = app.session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
+        let at = text.find("Third sentence.").unwrap();
+        app.run("text.select", json!({"story": sid, "anchor": at, "focus": at + "Third sentence.".len()})).unwrap();
+        app.run("text.insert", json!({"text": "Layout version."})).unwrap();
+        std::fs::write(path, "First sentence changed. Second sentence. File version.").unwrap();
+        app.run("links.update", json!({"story": sid})).unwrap();
+        app.run("edit.deselectAll", json!({})).unwrap();
+    }
+
+    /// F7.1: a linked text file chosen in the Links panel shows its last update: when, what changed
+    /// and what the layout kept, then each conflict, which goes to its place when clicked; Review
+    /// in Flow opens the Flow panel on it. Before any update, it says so.
+    #[test]
+    fn links_panel_shows_a_linked_text_files_last_update() {
+        let (dir, path, app, sid) = linked_story();
+        let mut h = links_harness(app, 360.0);
+        h.get_by_label("story.txt").click();
+        h.run_steps(3);
+        h.get_by_label("Not updated since it was placed");
+        update_with_a_conflict(h.state_mut(), &path, sid);
+        h.run_steps(3);
+        h.get_by_label("Last update just now: 1 change, 1 conflict");
+        h.get_by_label_contains("File version.").click();
+        h.run_steps(3);
+        let sel = h.state().session.active().unwrap().selection.text.expect("the conflict's text is selected");
+        let text = h.state().session.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
+        assert!(text.get(sel.range()).is_some_and(|t| t.contains("File version.")), "{:?}", text.get(sel.range()));
+        h.get_by_label("Review in Flow").click();
+        h.run_steps(3);
+        assert_eq!((h.state().ui.flow_request, h.state().ui.open_panel.as_deref()), (Some(sid), Some("flow")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F7.1's screenshot (`plan/shots/f7.1-links.png`): the Links panel with a linked text file's
+    /// last update.
+    #[test]
+    #[ignore]
+    fn render_links_panel_last_update() {
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plan/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        let (dir, path, mut app, sid) = linked_story();
+        update_with_a_conflict(&mut app, &path, sid);
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(360.0, 420.0)).wgpu().build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                egui::Frame::NONE.fill(Tokens::get(ui.ctx()).panel).inner_margin(10.0).show(ui, |ui| links_panel(app, ui));
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("story.txt").click();
+        h.run_steps(4);
+        h.render().unwrap().save(shots.join("f7.1-links.png")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
