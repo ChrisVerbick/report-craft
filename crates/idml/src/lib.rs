@@ -25,13 +25,11 @@
 //! characters and breaks, text threading, ruler and liquid guides, and stored page liquid rules.
 //!
 //! ## TODO (ignored on import / not written on export)
-//! - Tables, footnotes, anchored/inline objects, notes, tracked changes, hyperlinks, index and
-//!   cross-reference markers, text variables, conditions, XML structure (`XML/*` parts).
+//! - Notes (skipped on import), endnotes (not written on export), XML structure (`XML/*` parts).
 //! - Page-item overrides of parent items (only the page's `OverrideList` is read),
 //!   parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid object constraints.
-//! - Nested/GREP/line styles, bullets & numbering details (bullet glyph, number format), OpenType
-//!   feature flags, paragraph borders, grid alignment, custom dashed stroke styles; column rule
-//!   stroke type and overprint.
+//! - OpenType feature flags, grid alignment, custom dashed stroke styles; column rule stroke type
+//!   and overprint.
 //! - Mixed inks, gradient stop opacity, gradient feather stops between the first and last, its
 //!   midpoints and highlight, directional feather angle, noise, choke and shape mode, other effects
 //!   than drop shadow and the feathers, stroke/fill/content transparency, EPS/PDF/AI placed graphics (imported as images when the data is available),

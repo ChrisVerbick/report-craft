@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** minor (gap 0 closed: the Primary Text Frame flow passed its re-test on macOS (2026-10-20), so the alpha gate passes; gap 26 notes the reflow cleanup the re-test found, and gap 16 the Pages panel's missing page selection; re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added (tools that do nothing, mixed inks and Lab colour, preflight profiles, Find/Change and Glyphs depth, object style categories, interactive PDF and EPUB depth, Type on a Path effects); gaps 9, 15, 16, 19 and 24 extended; gap 11 closed (#169 fixed); gap 0 waits on a re-test (#165 closed); gaps 1 and 3 shrunk to their open issues; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -12,31 +12,21 @@ ROADMAP progress log and update the timestamps.
 Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · **H** hardware ·
 **L** localization · **P** performance · **S** stability · **E** ecosystem · **A** AI.
 
-## Alpha blocker (the core-workflow gate in [roadmap.md](roadmap.md#alpha-gate))
-
-### 0. Primary Text Frame autoflow adds pages users can't delete (F) · **ALPHA BLOCKER**
-- **Missing:** fixes to Smart Text Reflow on the Primary Text Frame, which users report adding
-  pages they can't delete (#165). Threading by hand works (ports, loaded text cursor, `text.thread` / `text.unthread` /
-  `text.removeFromThread`).
-- **Evidence:** #165.
-- **Impact:** a long story in a Primary Text Frame document can leave pages the designer can't
-  remove.
-- **Estimate:** 5–7 h.
-- **Doc:** [ui-parity.md](ui-parity.md)
-
 ## Blocking (beta can't be declared while these are open)
 
-### 1. Basic editing fails for many users (U, S)
-- **Missing:** object copy/paste on Windows and Linux (#351, #348, #312, #185, #164, #201, text RTF
-  paste #212); Paste in Place onto the selected page (#348); right-click context menus that don't
-  open (#238, #187, #160, #312); double-click word selection in fields
-  (#189); character formatting set at a caret is discarded (#289).
-- **Evidence:** 16 issues from 2026-10-05 to 2026-10-10, mostly against the 0.4/0.5 release builds.
+### 1. Basic editing fails for some users (U, S)
+- **Missing:** Paste in Place onto the selected page, and object copy/paste reports (#348); RTF
+  text paste (#212); right-click context menus that don't open for some users (#187).
+- **Closed since 2026-10-10:** fixed: #185, #201 (copy/paste), #289 (formatting at a caret);
+  closed as duplicates: #351, #238, #160, #189; closed upstream on 2026-10-20, after this fork's
+  last sync: #312, #164.
+- **Evidence:** 16 issues from 2026-10-05 to 2026-10-10, mostly against the 0.4/0.5 release builds;
+  three remain open (issue states checked 2026-10-20).
 - **Safety:** control-channel clicks and drags reject invalid or over-budget counts before
   queuing input (#732), including combined drag steps, repeated clicks and already pending events.
 - **Impact:** a layout artist can't finish the simplest job. This dominates the
   ready-for-real-work number.
-- **Estimate:** 30–50 h (reproduce per platform through the control channel, regression tests).
+- **Estimate:** 15–30 h (reproduce per platform through the control channel, regression tests).
 - **Doc:** [ui-parity.md](ui-parity.md)
 
 ### 2. INDD opening isn't measured on real files (FF)
@@ -55,9 +45,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 3. IDML round-trip isn't proven on real files (FF)
 - **Missing:** a corpus test of real InDesign-authored IDML (via `storytold/photocraft-corpus` or
-  a sibling) measuring what survives import → export → reopen in InDesign. Open bugs: frames not
-  rendered without a warning (#193), `$ID/` font names reported missing (#338), no
-  `PDFAttribute` on export (#339), drag-drop open of IDML on the app icon (#211).
+  a sibling) measuring what survives import → export → reopen in InDesign. Open bug: frames not
+  rendered without a warning (#193). Fixed 2026-10-16: `$ID/` font names reported missing (#338),
+  no `PDFAttribute` on export (#339); drag-drop open on the app icon (#211) closed as a duplicate.
 - **Evidence:** importer coverage is broad (styles, tables, footnotes, xrefs, index, CJK, Arabic,
   verified in InDesign 2026 with synthetic files), but nothing is measured on real documents.
 - **Impact:** IDML is the main interchange format until INDD lands, and the only one that goes
@@ -118,10 +108,12 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 ### 9. PDF output presets and standards (FF)
 - **Missing:** PDF/X-1a and PDF/X-3 (no flattener to PDF 1.3/1.4), Adobe PDF Presets and
   `.joboptions` load/save, output-intent choice beyond the built-in profile, PDF/UA validation;
-  #159, #32.
+  #159, #32. Also (found 2026-10-20): overprint written to the PDF (Overprint Preview shows it on
+  screen, but export warns "overprint is not exported yet"), layers as optional content, security
+  (passwords and permissions), and image compression and downsampling settings.
 - **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/A-2b, tagged PDF, CMYK and
   spot, marks and bleed, the options dialog with remembered settings (#196).
-- **Estimate:** 40–70 h. **Doc:** [file-format-parity.md](file-format-parity.md)
+- **Estimate:** 55–95 h. **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 10. Printing (H, F)
 - **Missing:** PostScript, a printer-driver options UI, separations to device, print presets, or trapping.
@@ -129,12 +121,6 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   craft-print: CUPS on macOS/Linux and the Windows PDF raster spooler. Physical printer fidelity
   remains a hardware check.
 - **Estimate:** 25–45 h. **Doc:** [hardware-parity.md](hardware-parity.md)
-
-### 11. Paragraph and character style editing reliability (F)
-- **Missing:** saving edits and deleting a paragraph style reported failing (#169).
-- **Have:** the Tabs panel (Type › Tabs: a ruler over the text column, alignment, leader and
-  Align On) and a Tabs section in Paragraph Style Options (#343).
-- **Estimate:** 10–20 h. **Doc:** [ui-parity.md](ui-parity.md)
 
 ### 12. Tables in depth (F)
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
@@ -157,7 +143,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 ## Medium
 
 ### 15. Long documents in depth (F)
-- **Missing:** book-wide TOC and index; Table of Contents Styles and deeper production workflows.
+- **Missing:** book-wide TOC and index; Table of Contents Styles and deeper production workflows;
+  condition sets (conditional text has conditions only).
 - **Present:** basic style synchronization, continuous book numbering and merged PDF export.
   Chapter updates prepare the full batch and write only closed native chapters; IDML is a
   read-only source. Each file is atomic, but a later I/O failure can leave completed chapters;
@@ -168,14 +155,22 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** 151 of 482 in-scope items of InDesign 21.6's menu dump have no match (measured 2026-10-10; some exist under other labels): Type ▸ Notes
   and Track Changes submenus (the panels and commands exist), hyperlink and cross-reference
   update commands, Convert Bullets/Numbering to Text, Convert Variable to Text, Object ▸ Clear
-  Effects / Clear All Transparency / Rotate 180° / Reverse Path, Layout ▸ Go Back/Forward,
+  Effects / Clear All Transparency / Rotate 180° (Reverse Path is in Object ▸ Paths; Join Path and
+  Convert Point are in the Pathfinder panel), Layout ▸ Go Back/Forward,
   Window ▸ Arrange (2-up … 6-up), Trap Presets, Overlays, Edit ▸ Assign Profiles / Convert to
   Profile / Edit Original, File ▸ File Info / Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
   Convert Columns, Object ▸ Interactive ▸ Convert to (form fields),
   View ▸ Extras badges and Story Editor options. Pages panel ▸ Parent Options (Based on Parent is
   the `layout.parents.options` command only); overriding a base parent's items on a parent spread
-  itself (overrides work on document pages only).
+  itself (overrides work on document pages only); selecting several pages (Shift-click a range,
+  Cmd-click to add): a click only turns to that page, and the trash and + act on the current page
+  (`layout.pages.delete` takes several). File ▸ Print…: `file.print` and Cmd+P work, but
+  the File menu doesn't list it. Newer InDesign additions with no counterpart: hide spreads
+  (19.0–20.0), Align to Bleed (20.4), export/import user settings (19.3), keyboard shortcut search
+  (21.5), a History panel of undo states (19.5; the `document.history` query exists); Adjust
+  Layout's options (font scaling with limits, locked content: it is on or off today); named
+  keyboard shortcut sets; coloured menu items.
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
 - **Doc:** [ui-parity.md](ui-parity.md)
 
@@ -195,7 +190,8 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   frame, Threshold/Tolerance/Inset Frame preview, picking an alpha channel or a path saved in a
   TIFF/PSD); Text Wrap › Same As Clipping following an imported clipping path; Edit Original / Edit With; PDF placed as editable vectors (#227, #24);
   QuarkXPress import (#73); applying a swatch to a selected greyscale or bitmap image (Direct
-  Selection + Swatches). A swatch already on the image (IDML `<Image FillColor>`) colours it on
+  Selection + Swatches); File ▸ Open PDF and Illustrator files as editable documents (InDesign
+  21.0); placing HEIC (18.0), PSB, DCS and WMF/EMF. A swatch already on the image (IDML `<Image FillColor>`) colours it on
   screen and in PDF and IDML export (#1094).
 - **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
 
@@ -212,7 +208,54 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   the existing pages that follow, then adds pages at the end of the document.
 - **Impact:** autoflowing into a document that already has pages inserts new pages in the
   middle of it instead of using the empty pages.
+- **Related (found by the 2026-10-20 alpha re-test):** Smart Text Reflow removes emptied pages
+  only from the end of the document. Delete a frame of the primary story and its page stays,
+  frameless, and ends up last when reflow adds a page for the text; shortening the story later
+  keeps the emptied pages before it (they delete by hand). InDesign's default keeps empty pages
+  too (Delete Empty Pages is off).
 - **Estimate:** 4–8 h.
+
+### 28. Tools that do nothing (U)
+- **Missing:** Free Transform, Measure, Note and Vertical Type on a Path are in the Tools panel
+  (`crates/tools/src/catalog.rs`), but `tools::create` gives them a `NoopTool`
+  (`crates/tools/src/lib.rs`): choosing one does nothing. Measure also needs its Info panel
+  readout; Notes themselves work (Notes panel, `note.*`).
+- **Impact:** an InDesign user picks Free Transform from habit and nothing happens.
+- **Estimate:** 10–20 h (Free Transform 4–8, Measure 2–4, Note 1–2, Vertical Type on a Path 3–6).
+
+### 29. Mixed inks and Lab colour (F)
+- **Missing:** mixed ink swatches and mixed ink groups (the IDML importer lists them as
+  unhandled); Lab colours (the colour model is RGB, CMYK or Gray only, `crates/color/src/lib.rs`),
+  so Lab swatches and Lab ink values can't be kept.
+- **Impact:** packaging and two-colour work that relies on mixed inks, and Lab-defined brand
+  colours, don't carry over.
+- **Estimate:** 20–35 h (model, swatch UI, rendering, PDF DeviceN, IDML).
+
+### 30. Preflight profiles (F)
+- **Missing:** preflight profiles: defining rules, choosing them per document and per book,
+  embedding them, import/export (`.idpp`). Preflight runs 9 built-in checks with `minPpi` as its
+  only setting.
+- **Estimate:** 15–25 h.
+
+### 31. Find/Change and Glyphs depth (F, T)
+- **Missing:** Find/Change's Glyph, Color and Transliterate tabs; formatting criteria for find
+  and change; saved queries. The dialog has Text, GREP and Object tabs. The Glyphs panel has no
+  glyph sets, no alternates for the selected character and no way to insert unencoded glyphs.
+- **Estimate:** 20–35 h.
+
+### 32. Object styles cover five of InDesign's categories (F)
+- **Missing:** an object style holds fill, stroke, paragraph style, text frame options and
+  effects (`crates/doc/src/styles.rs`); InDesign's also cover text wrap, anchored object options,
+  frame fitting, corner options, export options (alt text, tags, EPUB/HTML), size and position,
+  baseline and auto-size options. No Object Style Options dialog.
+- **Estimate:** 20–35 h.
+
+### 33. Interactive PDF and EPUB depth (F)
+- **Missing:** button appearances for Rollover and Click; button actions beyond page navigation
+  and URL (show/hide, go to state, video and sound, open file, print, submit and clear form);
+  radio buttons; multi-state objects in exported PDF and EPUB (only the active state is drawn).
+  Animation and Timing are gap 17.
+- **Estimate:** 20–35 h.
 
 ## Lower
 
@@ -232,12 +275,19 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 24. AI features (A)
 - **Missing:** InDesign 2026's Generative Expand, Text to Image and Auto Style equivalents; local
-  generative vector requested (#232). **Owner decision** on openly licensed models.
+  generative vector requested (#232). Also in InDesign: Content-Aware Fit, Generative Fill (beta
+  since 20.3), Rewrite (21.4), AI alt text, one image or in bulk (21.2–21.5), and text wrap around
+  a detected subject. **Owner decision** on openly licensed models.
 - **Estimate:** 60–120 h.
 
 ### 25. Accessibility of the app itself (U)
 - **Missing:** screen-reader exposure of panels and dialogs (egui AccessKit coverage unverified);
   PDF/UA validation of exports. **Estimate:** 15–25 h.
+
+### 34. Type on a Path effects (T)
+- **Missing:** the Rainbow, Skew, 3D Ribbon, Stair Step and Gravity effects, spacing and
+  align-to-path options (`type.pathOptions` has start, end, flip and align).
+- **Estimate:** 8–15 h.
 
 ## Out of scope (by design)
 
@@ -249,6 +299,8 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | minor | Gap 0 closed: the alpha re-test passed (12 checks on macOS; #165 regression test); gap 26 notes emptied pages behind a frameless last page |
+| 2026-10-20 | minor | Re-checked against InDesign 2026 21.6's feature list and the code: gaps 28–34 added; gaps 9, 15, 16, 19, 24 extended; gap 11 closed (#169); gap 0 now a re-test (#165 closed, upstream #1169); gaps 1 and 3 list only their open issues |
 | 2026-10-16 | minor | Gap 27 closed: the loaded text cursor threads into a text frame inside a group (#1075) |
 | 2026-10-16 | trivial | Gap 13 shrunk: Greek hyphenates, so five languages do (#1077) |
 | 2026-10-13 | minor | Gap 16: Parent Options dialog and overrides of base items on a parent spread |
