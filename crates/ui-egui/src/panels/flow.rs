@@ -178,7 +178,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                     ui.horizontal(|ui| {
                         recheck = ui.button(tr("Check again")).clicked();
-                        let primary = egui::Button::new(RichText::new(tr("Update")).color(Color32::WHITE)).fill(t.accent_strong);
+                        let primary = egui::Button::new(RichText::new(tr("Update")).color(t.on_accent)).fill(t.accent_strong);
                         update = ui.add_enabled(blocking == 0 || state.allow == Some(sid), primary).clicked();
                     });
                 }

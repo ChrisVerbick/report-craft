@@ -139,7 +139,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                     ui.horizontal(|ui| {
                                                         let (r, row) = ui.allocate_exact_size(vec2(210.0, 24.0), Sense::click());
                                                         if row.hovered() {
-                                                            ui.painter().rect_filled(r, 2.0, t.hover);
+                                                            ui.painter().rect_filled(r, t.corner(2.0), t.hover);
                                                         }
                                                         icons::paint(
                                                             ui.painter(),
@@ -546,7 +546,7 @@ fn tool_button(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::
         let well = egui::Rect::from_center_size(r.center(), egui::vec2(28.0, 20.0));
         ui.painter().rect(well, 2.0, t.well, Stroke::new(1.0, t.well_rim), StrokeKind::Outside);
     } else if resp.hovered() {
-        ui.painter().rect_filled(egui::Rect::from_center_size(r.center(), egui::vec2(28.0, 20.0)), 2.0, t.hover);
+        ui.painter().rect_filled(egui::Rect::from_center_size(r.center(), egui::vec2(28.0, 20.0)), t.corner(2.0), t.hover);
     }
     icons::paint(ui.painter(), egui::Rect::from_center_size(r.center(), egui::vec2(17.0, 17.0)), icon, if active { t.text_strong } else { t.icon });
     let enabled = ui.is_enabled();

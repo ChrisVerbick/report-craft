@@ -109,7 +109,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let menu_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 24.0, strip.min.y + 4.0), vec2(18.0, 18.0));
                 let menu = ui.interact(menu_r, ui.id().with("dock-menu"), Sense::click());
                 if menu.hovered() {
-                    ui.painter().rect_filled(menu_r, 3.0, t.hover);
+                    ui.painter().rect_filled(menu_r, t.corner(3.0), t.hover);
                 }
                 icons::paint(ui.painter(), menu_r, "menu", t.icon);
                 let tab = app.ui.dock_tab.clone();
@@ -149,9 +149,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let on = app.ui.open_panel.as_deref() == Some(id) || app.ui.floating.iter().any(|(p, _)| p == id);
                         let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
                         if on {
-                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.tool_active);
+                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), t.corner(3.0), t.tool_active);
                         } else if response.hovered() {
-                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.hover);
+                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), t.corner(3.0), t.hover);
                         }
                         icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(8.0, 4.0), vec2(18.0, 18.0)), icon, t.icon);
                         crate::rtl::paint(
@@ -491,14 +491,6 @@ mod visual_regressions {
         }
     }
 
-    fn luminance(c: Color32) -> f32 {
-        let linear = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-        };
-        0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
-    }
-
     #[test]
     fn selected_dock_tab_has_readable_rendered_contrast_in_every_theme() {
         for brightness in crate::theme::Brightness::ALL {
@@ -524,9 +516,7 @@ mod visual_regressions {
                         })
                         .expect("the active Properties tab is painted");
                     let color = text.galley.job.sections.first().expect("tab text has a format").format.color;
-                    let a = luminance(color);
-                    let b = luminance(tokens.panel);
-                    let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                    let contrast = crate::theme::contrast(color, tokens.panel);
                     assert!(contrast >= 4.5, "{brightness:?} at {width}: selected tab contrast is {contrast:.2}");
                 }
             }

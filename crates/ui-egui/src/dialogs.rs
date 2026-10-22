@@ -287,12 +287,13 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › ")))
         .chain(crate::menus::UI_COMMANDS.iter().map(|c| (c.0.to_string(), c.1.to_string(), String::new())))
         .filter(|(id, l, _)| ql.is_empty() || l.to_lowercase().contains(&ql) || id.to_lowercase().contains(&ql))
+        .filter(|(id, _, _)| !crate::identity::hidden(id, app.edition))
         .collect();
     rows.sort_by(|a, b| a.1.cmp(&b.1));
     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
         egui::Grid::new("shortcuts").num_columns(3).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
             for (id, label, menu) in &rows {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')))
+                crate::rtl::label(ui, crate::identity::named(crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')), app.edition))
                     .on_hover_text(format!("{id}{}", if menu.is_empty() { String::new() } else { format!("  ({menu})") }));
                 let cur = crate::menus::shortcut_of(app, id).map(|s| crate::menus::shortcut_text(&s)).unwrap_or_else(|| "—".into());
                 let text = if recording == *id { crate::i18n::tr(&app.ui.language, "Press keys…").to_string() } else { cur };
@@ -1112,7 +1113,7 @@ fn group_box(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.vertical(|ui| {
         crate::rtl::label(ui, egui::RichText::new(title).font(semibold(12.0)));
-        egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::same(8)).corner_radius(2.0).show(ui, add);
+        egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::same(8)).corner_radius(t.corner(2.0)).show(ui, add);
     });
 }
 
@@ -1316,11 +1317,14 @@ fn setup_row<R>(ui: &mut egui::Ui, rtl: bool, add: impl FnOnce(&mut egui::Ui) ->
 /// An outlined group of options.
 fn setup_group(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     let t = crate::theme::Tokens::get(ui.ctx());
-    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(3.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 6.0;
-        add(ui);
-    });
+    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(t.corner(3.0)).inner_margin(egui::Margin::symmetric(12, 8)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            add(ui);
+        },
+    );
 }
 
 /// The link beside a group's four edges: keeps them equal (linking makes them the first's).
@@ -1518,7 +1522,9 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
             crate::rtl::label(ui, tr("Adjust page elements to document changes"));
             let layout = if rtl { egui::Layout::left_to_right(egui::Align::Center) } else { egui::Layout::right_to_left(egui::Align::Center) };
             ui.with_layout(layout, |ui| {
-                let button = egui::Button::new(crate::rtl::widget(ui, tr("Adjust Layout"))).corner_radius(12.0).min_size(egui::vec2(120.0, 24.0));
+                let button = egui::Button::new(crate::rtl::widget(ui, tr("Adjust Layout")))
+                    .corner_radius(crate::theme::Tokens::get(ui.ctx()).corner(12.0))
+                    .min_size(egui::vec2(120.0, 24.0));
                 if ui.add(button).on_hover_text(tr("Apply the changes; objects follow the new page size and margins")).clicked() {
                     adjust = true;
                 }
@@ -2880,7 +2886,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 if ui
                     .add_enabled(
                         ok_enabled,
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(ok_label).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(ok_label).color(crate::theme::Tokens::get(ui.ctx()).on_accent)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()

@@ -17,6 +17,7 @@ pub mod dock;
 pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
+pub mod identity;
 pub mod menus;
 mod modal_drag;
 mod new_document;
@@ -362,7 +363,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
-            brightness: theme::Brightness::MediumDark,
+            brightness: if designcraft_edition::current().is_some() { theme::Brightness::Edition } else { theme::Brightness::MediumDark },
             screen_mode: ScreenMode::Normal,
             presentation_return: ScreenMode::Normal,
             presentation_view: None,
@@ -599,6 +600,8 @@ pub struct DesignApp {
     /// The installed CJK faces are among the UI fonts (false while the system fonts are still
     /// being cataloged: the fonts are installed again when they are).
     fonts_system: bool,
+    /// The edition this build carries (`designcraft_edition::current()`); tests set their own.
+    pub edition: Option<&'static designcraft_edition::Edition>,
     pub restyle: bool,
     fonts_ready: bool,
     /// Files the operating system asked to open (macOS Finder, Dock, Open With), opened once the
@@ -690,6 +693,7 @@ impl DesignApp {
             styled: false,
             fonts_lang: String::new(),
             fonts_system: false,
+            edition: designcraft_edition::current(),
             restyle: false,
             fonts_ready: false,
             os_documents: Vec::new(),
@@ -1167,13 +1171,13 @@ impl DesignApp {
             // The UI scale is a preference (applied above); egui's own Cmd+Plus/Minus/0 would rescale the
             // whole window instead of the canvas, only to be reset next frame.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
+            self.fonts_system = theme::install_fonts_for(ctx, &self.ui.language, self.edition);
             self.fonts_lang = self.ui.language.clone();
             self.styled = true;
             self.restyle = true;
         } else {
             if self.fonts_lang != self.ui.language || (!self.fonts_system && theme::system_fonts_ready()) {
-                self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
+                self.fonts_system = theme::install_fonts_for(ctx, &self.ui.language, self.edition);
                 self.fonts_lang = self.ui.language.clone();
             }
             self.fonts_ready = true;
@@ -1183,7 +1187,7 @@ impl DesignApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         if self.restyle {
-            theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
+            theme::apply(ctx, &theme::Tokens::resolve(self.ui.brightness, self.edition));
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);

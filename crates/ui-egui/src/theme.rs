@@ -14,6 +14,9 @@ pub enum Brightness {
     Light,
     /// Accessibility: black chrome, white text, yellow selection and focus.
     HighContrast,
+    /// The compiled-in edition's own colours (`designcraft_edition`). Medium Dark in a build
+    /// without one, so a setting an edition saved still reads.
+    Edition,
 }
 
 impl Brightness {
@@ -25,6 +28,7 @@ impl Brightness {
             Brightness::MediumLight => "Medium Light",
             Brightness::Light => "Light",
             Brightness::HighContrast => "High Contrast",
+            Brightness::Edition => designcraft_edition::current().map_or("Edition", |e| e.name),
         }
     }
     pub fn id(self) -> &'static str {
@@ -34,11 +38,17 @@ impl Brightness {
             Brightness::MediumLight => "mediumLight",
             Brightness::Light => "light",
             Brightness::HighContrast => "highContrast",
+            Brightness::Edition => "edition",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|b| b.id().eq_ignore_ascii_case(s) || b.label().eq_ignore_ascii_case(s))
+        Self::ALL.into_iter().chain([Brightness::Edition]).find(|b| b.id().eq_ignore_ascii_case(s) || b.label().eq_ignore_ascii_case(s))
     }
+}
+
+/// The levels the Interface Color Theme menu offers: the edition's first when the build has one.
+pub fn available(edition: Option<&designcraft_edition::Edition>) -> Vec<Brightness> {
+    edition.map(|_| Brightness::Edition).into_iter().chain(Brightness::ALL).collect()
 }
 
 /// Every colour the UI uses. Widgets never hard-code colours.
@@ -96,10 +106,38 @@ pub struct Tokens {
     /// The Windows caption Close button when hovered, and its glyph.
     pub caption_close: Color32,
     pub caption_close_text: Color32,
+    /// Text and glyphs on accent fills (primary buttons, a hovered swatch row).
+    pub on_accent: Color32,
+    /// The Pages panel: the selected page's number badge (and the drop target's outline), the tint
+    /// multiplied over the selected thumbnail, the number on the badge, and the other pages' numbers.
+    pub selection_badge: Color32,
+    pub selection_tint: Color32,
+    pub badge_text: Color32,
+    pub page_number: Color32,
+    /// The Preflight dots: no errors, errors.
+    pub status_ok: Color32,
+    pub status_error: Color32,
+    /// Links statuses: modified, too large to check or low resolution; missing or failed.
+    pub link_warn: Color32,
+    pub link_error: Color32,
+    /// A number field while it is typed in.
+    pub focus_bg: Color32,
+    pub focus_text: Color32,
+    pub focus_border: Color32,
+    /// Corner radius of windows and menus.
+    pub frame_radius: u8,
+    /// The fill behind selected tabs, labels, buttons and text, under `text`.
+    pub selection_fill: Color32,
 }
 
 fn hex(s: u32) -> Color32 {
     Color32::from_rgb((s >> 16) as u8, (s >> 8) as u8, s as u8)
+}
+
+/// `c` at alpha `a`, flattened over `bg`.
+fn over(c: [u8; 3], a: f32, bg: [u8; 3]) -> Color32 {
+    let mix = |c: u8, bg: u8| (f32::from(c) * a + f32::from(bg) * (1.0 - a)).round() as u8;
+    Color32::from_rgb(mix(c[0], bg[0]), mix(c[1], bg[1]), mix(c[2], bg[2]))
 }
 
 impl Tokens {
@@ -146,11 +184,27 @@ impl Tokens {
             live_corner: hex(0xffe500),
             caption_close: hex(0xc42b1c),
             caption_close_text: Color32::WHITE,
+            on_accent: Color32::WHITE,
+            selection_badge: hex(0x2f73e0),
+            selection_tint: hex(0x88c7fb),
+            badge_text: Color32::WHITE,
+            page_number: Color32::WHITE,
+            status_ok: Color32::from_rgb(60, 200, 90),
+            status_error: Color32::from_rgb(235, 50, 50),
+            link_warn: hex(0xe8b32c),
+            link_error: hex(0xe54b4b),
+            focus_bg: Color32::WHITE,
+            focus_text: Color32::from_gray(20),
+            focus_border: hex(0x45a0f5),
+            frame_radius: 4,
+            // Each level's accent_strong (below).
+            selection_fill: hex(0x1473e6),
         };
-        match b {
+        let level = match b {
             Brightness::Dark => dark,
-            // Measured from InDesign 2026 (plan/indesign/11-observed-ui.md §1).
-            Brightness::MediumDark => Tokens {
+            // Measured from InDesign 2026 (plan/indesign/11-observed-ui.md §1). An edition's level
+            // needs the edition (`resolve`); without one it is Medium Dark.
+            Brightness::MediumDark | Brightness::Edition => Tokens {
                 app_bar: hex(0x535353),
                 panel: hex(0x535353),
                 panel_darker: hex(0x424242),
@@ -285,6 +339,79 @@ impl Tokens {
                 flow_ok: hex(0x4be06e),
                 ..dark
             },
+        };
+        Tokens { selection_fill: level.accent_strong, ..level }
+    }
+
+    /// An edition's theme by role (`docs/editions.md`): its background, raised and hover fills,
+    /// its text at its alphas, its accent and its success and error colours. Canvas overlays and
+    /// fixed signals keep Dark's.
+    pub fn from_edition(t: &designcraft_edition::Theme) -> Tokens {
+        let dark = Tokens::for_brightness(Brightness::Dark);
+        let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+        let text = |a: f32| over(t.text, a, t.bg);
+        let (bg, raised) = (rgb(t.bg), rgb(t.raised));
+        Tokens {
+            dark: true,
+            app_bar: bg,
+            panel: bg,
+            panel_darker: bg,
+            tab_strip: bg,
+            tab_inactive: bg,
+            ruler: bg,
+            input: raised,
+            button: raised,
+            well: raised,
+            tool_active: raised,
+            pasteboard: raised,
+            hover: rgb(t.hover),
+            divider: text(t.hairline),
+            border: text(t.hairline),
+            section_divider: text(t.hairline),
+            well_rim: text(t.hairline),
+            input_border: text(t.faint),
+            field_border: text(t.faint),
+            text_disabled: text(t.faint),
+            text: rgb(t.text),
+            text_strong: rgb(t.text),
+            text_dim: text(t.secondary),
+            icon: text(t.secondary),
+            ruler_text: text(t.secondary),
+            ruler_tick: text(t.muted),
+            accent: rgb(t.accent),
+            accent_strong: rgb(t.accent),
+            flow_file: rgb(t.accent),
+            row_selected: over(t.accent, 0.16, t.bg),
+            flow_ok: rgb(t.success),
+            flow_error: rgb(t.error),
+            radius: t.radius,
+            on_accent: rgb(t.on_accent),
+            selection_badge: rgb(t.accent),
+            selection_tint: rgb(t.accent),
+            badge_text: rgb(t.on_accent),
+            page_number: rgb(t.text),
+            status_ok: rgb(t.success),
+            status_error: rgb(t.error),
+            // Flow's amber: a link to update, like the layout's kept edits.
+            link_warn: dark.flow_yours,
+            link_error: rgb(t.error),
+            // A field being typed in stays dark, ringed in the accent.
+            focus_bg: raised,
+            focus_text: rgb(t.text),
+            focus_border: rgb(t.accent),
+            frame_radius: t.radius,
+            // egui sets selected widgets' text in `text`: the accent, darkened, keeps it readable.
+            selection_fill: over(t.accent, 0.65, t.bg),
+            ..dark
+        }
+    }
+
+    /// The tokens for `b`: the edition's own for [`Brightness::Edition`], Medium Dark when the
+    /// build has no edition (a setting an edition saved, read by a plain build).
+    pub fn resolve(b: Brightness, edition: Option<&designcraft_edition::Edition>) -> Tokens {
+        match (b, edition) {
+            (Brightness::Edition, Some(e)) => Tokens::from_edition(&e.theme),
+            _ => Tokens::for_brightness(b),
         }
     }
 }
@@ -294,8 +421,16 @@ impl Tokens {
 /// installed without waiting, and the caller installs again once they are (see
 /// [`system_fonts_ready`]) to add the installed faces for the scripts they lack.
 pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
+    install_fonts_for(ctx, lang, None)
+}
+
+/// [`install_fonts`] with the edition's typeface, when it has one, in front of the UI faces.
+pub fn install_fonts_for(ctx: &egui::Context, lang: &str, edition: Option<&designcraft_edition::Edition>) -> bool {
     let craft = designcraft_fonts::CRAFT_FONTS;
     let mut defs = font_definitions(craft, lang);
+    if let Some(fonts) = edition.and_then(|e| e.fonts.as_ref()) {
+        add_edition_fonts(&mut defs, fonts);
+    }
     let system = system_ui_fonts(craft);
     if let Some(system) = system {
         add_system_fallbacks(&mut defs, system, lang);
@@ -488,6 +623,8 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);
+    // The wordmark's weight: an edition's Bold when it has one (`add_edition_fonts`).
+    fonts.families.insert(FontFamily::Name("bold".into()), vec!["ui-semibold".into(), "ui".into()]);
     // Flow quotes a report's own words in the report's face: the bundled Source Serif 4.
     let serif = match designcraft_fonts::bundled().get(SERIF) {
         Some(bytes) => {
@@ -514,7 +651,7 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     // Han characters take the forms of the interface language: Chinese faces first for Chinese.
     let zh = matches!(cjk_script(lang), "Hans" | "Hant");
     for (family, stack) in fonts.families.iter_mut() {
-        let bold = *family == FontFamily::Name("semibold".into());
+        let bold = matches!(family, FontFamily::Name(n) if matches!(n.as_ref(), "semibold" | "bold"));
         let mut ja = japanese.clone();
         if bold {
             ja.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Bold"));
@@ -530,6 +667,25 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
         fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
     }
     fonts
+}
+
+/// The edition's typeface in front of the UI faces: Regular for the interface, Semibold for its
+/// headings, Bold (else Semibold) for the wordmark. Every other face stays, as their fallbacks.
+pub(crate) fn add_edition_fonts(fonts: &mut FontDefinitions, edition: &designcraft_edition::Fonts) {
+    for (name, data, family) in [
+        ("edition-ui", edition.regular, FontFamily::Proportional),
+        ("edition-ui-semibold", edition.semibold, FontFamily::Name("semibold".into())),
+        ("edition-ui-bold", edition.bold.unwrap_or(edition.semibold), FontFamily::Name("bold".into())),
+    ] {
+        // epaint parses every face when the fonts load and stops the app on one it can't read, and
+        // the build checks only a font's first bytes: such a face is left out, for the bundled ones.
+        if designcraft_fonts::line_metrics(data, 0).is_none() {
+            log::warn!("the edition's {name} face isn't a font egui can read; using the bundled faces");
+            continue;
+        }
+        fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
+        fonts.families.entry(family).or_default().insert(0, name.into());
+    }
 }
 
 /// Source Serif 4 Regular in [`designcraft_fonts::bundled`].
@@ -561,9 +717,9 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.extreme_bg_color = t.input;
     v.faint_bg_color = t.panel_darker;
     v.window_stroke = Stroke::new(1.0, t.divider);
-    v.window_corner_radius = CornerRadius::same(4);
-    v.menu_corner_radius = CornerRadius::same(4);
-    v.selection.bg_fill = t.accent_strong;
+    v.window_corner_radius = CornerRadius::same(t.frame_radius);
+    v.menu_corner_radius = CornerRadius::same(t.frame_radius);
+    v.selection.bg_fill = t.selection_fill;
     v.selection.stroke = Stroke::new(1.0, t.text_strong);
     v.hyperlink_color = t.accent;
     v.override_text_color = Some(t.text);
@@ -592,10 +748,30 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
 }
 
 impl Tokens {
+    /// A widget's, frame's or painted well's corner radius `r`, or none in a square theme (an
+    /// edition's `radius = 0`: sharp everywhere).
+    pub fn corner(&self, r: f32) -> f32 {
+        if self.radius == 0 { 0.0 } else { r }
+    }
+
     /// Tokens stored by [`apply`].
     pub fn get(ctx: &egui::Context) -> Tokens {
         ctx.data(|d| d.get_temp::<Tokens>(egui::Id::NULL)).unwrap_or_else(|| Tokens::for_brightness(Brightness::Dark))
     }
+}
+
+/// The WCAG contrast ratio of two colours, from 1 to 21.
+#[cfg(test)]
+pub(crate) fn contrast(a: Color32, b: Color32) -> f32 {
+    let luminance = |c: Color32| {
+        let linear = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 #[cfg(test)]
@@ -849,5 +1025,224 @@ mod russian_font_tests {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::{Brightness, Tokens};
+    use egui::Color32;
+
+    /// The chrome colours that were literals in the panels are tokens now, and every upstream level
+    /// keeps today's values, so a plain build looks exactly as before.
+    #[test]
+    fn upstream_levels_keep_todays_chrome_colours() {
+        for b in Brightness::ALL {
+            let t = Tokens::for_brightness(b);
+            assert_eq!(t.selection_badge, Color32::from_rgb(0x2f, 0x73, 0xe0), "{b:?}");
+            assert_eq!(t.selection_tint, Color32::from_rgb(0x88, 0xc7, 0xfb), "{b:?}");
+            assert_eq!(t.badge_text, Color32::WHITE, "{b:?}");
+            assert_eq!(t.page_number, Color32::WHITE, "{b:?}");
+            assert_eq!(t.status_ok, Color32::from_rgb(60, 200, 90), "{b:?}");
+            assert_eq!(t.status_error, Color32::from_rgb(235, 50, 50), "{b:?}");
+            assert_eq!(t.link_warn, Color32::from_rgb(0xe8, 0xb3, 0x2c), "{b:?}");
+            assert_eq!(t.link_error, Color32::from_rgb(0xe5, 0x4b, 0x4b), "{b:?}");
+            assert_eq!(t.focus_bg, Color32::WHITE, "{b:?}");
+            assert_eq!(t.focus_text, Color32::from_gray(20), "{b:?}");
+            assert_eq!(t.focus_border, Color32::from_rgb(0x45, 0xa0, 0xf5), "{b:?}");
+            assert_eq!(t.on_accent, Color32::WHITE, "{b:?}");
+            assert_eq!(t.frame_radius, 4, "{b:?}");
+            assert_eq!(t.selection_fill, t.accent_strong, "{b:?}");
+            assert_eq!(t.corner(16.0), 16.0, "{b:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod edition_tests {
+    use super::{Brightness, Tokens, over};
+    use designcraft_edition::{Edition, Fonts, Theme};
+    use egui::{Color32, FontFamily};
+
+    /// Task 1's fixture (`crates/edition/tests/fixture/edition.toml`).
+    const FIXTURE: Theme = crate::identity::FIXTURE_EDITION.theme;
+
+    fn edition() -> Edition {
+        crate::identity::FIXTURE_EDITION
+    }
+
+    fn rgb(c: [u8; 3]) -> Color32 {
+        Color32::from_rgb(c[0], c[1], c[2])
+    }
+
+    /// Every token takes its role's colour from the edition (the spec's mapping table).
+    #[test]
+    fn edition_tokens_follow_the_roles() {
+        let t = Tokens::from_edition(&FIXTURE);
+        let at = |a| over(FIXTURE.text, a, FIXTURE.bg);
+        // #e8ecf0 at 18% over #101418, worked by hand.
+        assert_eq!(at(0.18), Color32::from_rgb(0x37, 0x3b, 0x3f));
+        assert_eq!((over(FIXTURE.text, 1.0, FIXTURE.bg), over(FIXTURE.text, 0.0, FIXTURE.bg)), (rgb(FIXTURE.text), rgb(FIXTURE.bg)));
+        for c in [t.app_bar, t.panel, t.panel_darker, t.tab_strip, t.tab_inactive, t.ruler] {
+            assert_eq!(c, rgb(FIXTURE.bg));
+        }
+        for c in [t.input, t.button, t.well, t.tool_active, t.pasteboard, t.focus_bg] {
+            assert_eq!(c, rgb(FIXTURE.raised));
+        }
+        assert_eq!(t.hover, rgb(FIXTURE.hover));
+        for c in [t.divider, t.border, t.section_divider, t.well_rim] {
+            assert_eq!(c, at(0.18));
+        }
+        for c in [t.input_border, t.field_border, t.text_disabled] {
+            assert_eq!(c, at(0.32));
+        }
+        for c in [t.text, t.text_strong, t.page_number, t.focus_text] {
+            assert_eq!(c, rgb(FIXTURE.text));
+        }
+        for c in [t.text_dim, t.icon, t.ruler_text] {
+            assert_eq!(c, at(0.72));
+        }
+        assert_eq!(t.ruler_tick, at(0.52));
+        for c in [t.accent, t.accent_strong, t.flow_file, t.selection_badge, t.selection_tint, t.focus_border] {
+            assert_eq!(c, rgb(FIXTURE.accent));
+        }
+        assert_eq!(t.row_selected, over(FIXTURE.accent, 0.16, FIXTURE.bg));
+        assert_eq!((t.badge_text, t.on_accent), (rgb(FIXTURE.on_accent), rgb(FIXTURE.on_accent)));
+        assert_eq!(t.selection_fill, over(FIXTURE.accent, 0.65, FIXTURE.bg));
+        // Sharp everywhere: a square theme (radius 0) drops the explicit round corners too.
+        assert_eq!((t.corner(16.0), t.corner(3.0)), (0.0, 0.0));
+        for c in [t.flow_ok, t.status_ok] {
+            assert_eq!(c, rgb(FIXTURE.success));
+        }
+        for c in [t.flow_error, t.status_error, t.link_error] {
+            assert_eq!(c, rgb(FIXTURE.error));
+        }
+        // Canvas overlays and fixed signals keep Dark's; a link's warning is Flow's amber.
+        let dark = Tokens::for_brightness(Brightness::Dark);
+        assert_eq!(t.link_warn, dark.flow_yours);
+        for (ours, darks) in [
+            (t.smart_guide, dark.smart_guide),
+            (t.live_corner, dark.live_corner),
+            (t.flow_error_fill, dark.flow_error_fill),
+            (t.flow_yours, dark.flow_yours),
+            (t.measure_bg, dark.measure_bg),
+            (t.measure_text, dark.measure_text),
+            (t.caption_close, dark.caption_close),
+            (t.caption_close_text, dark.caption_close_text),
+        ] {
+            assert_eq!(ours, darks);
+        }
+        assert_eq!((t.radius, t.frame_radius), (0, 0));
+        assert!(t.dark);
+    }
+
+    /// Text stays readable on the edition's fills (WCAG AA, 4.5:1).
+    #[test]
+    fn edition_tokens_meet_contrast() {
+        let t = Tokens::from_edition(&FIXTURE);
+        for (what, fg, bg) in [
+            ("text on panel", t.text, t.panel),
+            ("text on input", t.text, t.input),
+            ("dim text on panel", t.text_dim, t.panel),
+            ("dim text on input", t.text_dim, t.input),
+            ("badge", t.badge_text, t.selection_badge),
+            ("text on the selection", t.text, t.selection_fill),
+        ] {
+            let ratio = super::contrast(fg, bg);
+            assert!(ratio >= 4.5, "{what}: {ratio:.2}");
+        }
+    }
+
+    /// A setting saved by an edition ("edition") and read by a plain build gives Medium Dark.
+    #[test]
+    fn edition_brightness_without_an_edition_is_medium_dark() {
+        let plain = Tokens::resolve(Brightness::Edition, None);
+        let medium = Tokens::for_brightness(Brightness::MediumDark);
+        assert_eq!((plain.panel, plain.text), (medium.panel, medium.text));
+        assert_eq!(Brightness::parse("edition"), Some(Brightness::Edition));
+        let saved = serde_json::to_string(&Brightness::Edition).unwrap();
+        assert_eq!(saved, "\"Edition\"");
+        assert_eq!(serde_json::from_str::<Brightness>(&saved).unwrap(), Brightness::Edition);
+        // With an edition the level is its own, and the upstream levels ignore it.
+        assert_eq!(Tokens::resolve(Brightness::Edition, Some(&edition())).panel, rgb(FIXTURE.bg));
+        assert_eq!(Tokens::resolve(Brightness::Light, Some(&edition())).panel, Tokens::for_brightness(Brightness::Light).panel);
+    }
+
+    #[test]
+    fn available_lists_the_edition_first() {
+        assert_eq!(super::available(None), Brightness::ALL.to_vec());
+        let with = super::available(Some(&edition()));
+        assert_eq!(with.len(), 6);
+        assert_eq!(with[0], Brightness::Edition);
+        assert_eq!(&with[1..], &Brightness::ALL[..]);
+    }
+
+    /// The build checks only a font's first bytes: a face that starts like one but won't parse is
+    /// left out (epaint would stop the app at every launch), and the bundled faces stand in.
+    #[test]
+    fn an_edition_face_that_will_not_parse_is_left_out() {
+        // A truncated file: the header check passes, the parse epaint runs fails.
+        let broken: &'static [u8] = b"OTTO\x00\x05";
+        let serif: &'static [u8] = include_bytes!("../../../assets/fonts/SourceSerif4-Regular.ttf");
+        let mut defs = super::font_definitions(&[], "en");
+        super::add_edition_fonts(&mut defs, &Fonts { regular: broken, semibold: serif, bold: None });
+        assert!(!defs.font_data.contains_key("edition-ui"));
+        assert_eq!(defs.families[&FontFamily::Proportional].first().map(String::as_str), Some("ui"));
+        assert_eq!(defs.families[&FontFamily::Name("semibold".into())].first().map(String::as_str), Some("edition-ui-semibold"));
+        // And the fonts load.
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("Loads");
+        });
+        output.textures_delta.clear();
+    }
+
+    /// The edition's typeface goes in front of the UI faces, and every face a plain build falls
+    /// back to (the built-in CJK and Arabic faces, the installed ones) stays, in the same order.
+    #[test]
+    fn edition_fonts_keep_every_fallback() {
+        // Source Serif 4 stands in for the edition's typeface.
+        let serif: &'static [u8] = include_bytes!("../../../assets/fonts/SourceSerif4-Regular.ttf");
+        let fonts = Fonts { regular: serif, semibold: serif, bold: None };
+        let face = |family: &str, script| {
+            super::SystemFont::new(script, family.into(), designcraft_fonts::testing::font_with(family, &['日', 'ก']).unwrap(), 0)
+        };
+        let system = [face("DC Ja", "Jpan"), face("DC Thai", "Thai")];
+        let build = |edition: Option<&Fonts>| {
+            let mut defs = super::font_definitions(&[], "ja");
+            // Stand-ins for the built-in CJK and Arabic faces (craft-fonts may be absent in this build).
+            for stack in defs.families.values_mut() {
+                stack.extend(["craft-Stand-in-Jpan".to_string(), "craft-Stand-in-Arab".to_string()]);
+            }
+            if let Some(f) = edition {
+                super::add_edition_fonts(&mut defs, f);
+            }
+            super::add_system_fallbacks(&mut defs, &system, "ja");
+            defs
+        };
+        let (plain, with) = (build(None), build(Some(&fonts)));
+        let starts = |defs: &egui::FontDefinitions, family: FontFamily, names: &[&str]| {
+            let stack = &defs.families[&family];
+            assert!(stack.len() >= names.len() && stack.iter().zip(names).all(|(a, b)| a == b), "{family:?}: {stack:?}");
+        };
+        starts(&with, FontFamily::Proportional, &["edition-ui", "ui"]);
+        starts(&with, FontFamily::Name("semibold".into()), &["edition-ui-semibold", "ui-semibold", "ui"]);
+        starts(&with, FontFamily::Name("bold".into()), &["edition-ui-bold", "ui-semibold", "ui"]);
+        starts(&plain, FontFamily::Name("bold".into()), &["ui-semibold", "ui"]);
+        assert_eq!(with.families.len(), plain.families.len());
+        for (family, stack) in &plain.families {
+            let first = match family {
+                FontFamily::Proportional => Some("edition-ui"),
+                FontFamily::Name(n) if n.as_ref() == "semibold" => Some("edition-ui-semibold"),
+                FontFamily::Name(n) if n.as_ref() == "bold" => Some("edition-ui-bold"),
+                _ => None,
+            };
+            let expected: Vec<String> = first.map(String::from).into_iter().chain(stack.iter().cloned()).collect();
+            assert_eq!(with.families[family], expected, "{family:?}");
+        }
+        // Without a Bold, the wordmark's family sets the Semibold.
+        assert_eq!(with.font_data["edition-ui-bold"].font, with.font_data["edition-ui-semibold"].font);
+        assert!(plain.font_data.keys().all(|k| !k.starts_with("edition-")));
     }
 }

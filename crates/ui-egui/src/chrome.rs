@@ -138,7 +138,7 @@ fn search_field(app: &mut DesignApp, ui: &mut egui::Ui) {
                             b = b.shortcut_text(crate::menus::shortcut_text(sc));
                         }
                         if k == st.highlight {
-                            ui.painter().rect_filled(egui::Rect::from_min_size(ui.cursor().min, size), 2.0, t.hover);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(ui.cursor().min, size), t.corner(2.0), t.hover);
                         }
                         let enabled = crate::menus::menu_enabled(app, &it.id);
                         // The button aligns its label by the layout it's in: left, like the menus.
@@ -178,6 +178,15 @@ fn search_field(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// area and shows a needless scroll bar. Never narrower than the controls themselves.
 fn tools_slot_width(available: f32, tools_w: f32) -> f32 {
     (available - 1.0).max(tools_w)
+}
+
+/// The app bar's centred title: the app's name, then the document's.
+fn app_bar_title(app: &DesignApp) -> String {
+    let name = crate::identity::app_name(app.edition);
+    match app.session.active() {
+        Some(d) => format!("{name} — {}", crate::rtl::isolate(&d.title())),
+        None => name.to_string(),
+    }
 }
 
 pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -251,6 +260,11 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 // (Drag-scrolling is touch-only by default, so a mouse drag on the bar moves the window.)
                 egui::ScrollArea::horizontal().id_salt("app_bar_scroll").auto_shrink([false, false]).show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
+                        if let Some(e) = app.edition {
+                            let (r, _) = ui.allocate_exact_size(vec2(23.4, 23.4), Sense::hover());
+                            crate::identity::paint_mark(ui, r, e.mark_svg);
+                            ui.add_space(4.0);
+                        }
                         if icons::button(ui, "home", home, app.session.active().is_none(), crate::i18n::tr(&app.ui.language, "Home")).clicked() {
                             app.session_home();
                         }
@@ -325,10 +339,12 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                             if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
                                 app.status(crate::i18n::tr(&app.ui.language, "Export a PDF, IDML or package to share — no cloud account needed."));
                             }
-                            ui.add_space(8.0);
-                            // Always one click away: the ArtCraft community Discord.
-                            if crate::about::discord_button(ui, "Discord", vec2(78.0, 22.0)) {
-                                let _ = app.run("help.discord", json!({}));
+                            // Always one click away: the ArtCraft community Discord (not in an edition).
+                            if app.edition.is_none() {
+                                ui.add_space(8.0);
+                                if crate::about::discord_button(ui, "Discord", vec2(78.0, 22.0)) {
+                                    let _ = app.run("help.discord", json!({}));
+                                }
                             }
                             tools_start = ui.min_rect().min.x;
                             ui.data_mut(|d| d.insert_temp(egui::Id::new("app_bar_tools_start"), tools_start));
@@ -342,10 +358,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 });
             });
             // Centred title.
-            let title = match app.session.active() {
-                Some(d) => format!("DesignCraft — {}", crate::rtl::isolate(&d.title())),
-                None => "DesignCraft".to_string(),
-            };
+            let title = app_bar_title(app);
             // Centred between the menus and the right-hand controls; left out when it won't fit.
             let galley = crate::rtl::plain(ui.ctx(), &title, egui::FontId::proportional(11.5), t.text);
             let w = galley.size().x;
@@ -804,11 +817,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 // Preflight: overset text is an error.
                 let errors = panels::preflight_errors(app);
                 let (r, dot) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
-                ui.painter().circle_filled(
-                    r.center(),
-                    4.0,
-                    if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
-                );
+                ui.painter().circle_filled(r.center(), 4.0, if errors == 0 { t.status_ok } else { t.status_error });
                 let count = if errors == 0 {
                     format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
                 } else {
@@ -854,7 +863,9 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
         |ui| {
             ui.label(crate::rtl::widget(
                 ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Welcome to DesignCraft")).font(semibold(28.0)).color(t.text_strong),
+                egui::RichText::new(crate::identity::named(crate::i18n::tr(&app.ui.language, "Welcome to DesignCraft"), app.edition))
+                    .font(semibold(28.0))
+                    .color(t.text_strong),
             ));
             ui.label(crate::rtl::widget(
                 ui,
@@ -868,10 +879,10 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .add(
                         egui::Button::new(crate::rtl::widget(
                             ui,
-                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(Color32::WHITE),
+                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(t.on_accent),
                         ))
                         .fill(t.accent_strong)
-                        .corner_radius(16.0)
+                        .corner_radius(t.corner(16.0))
                         .min_size(vec2(0.0, 32.0)),
                     )
                     .clicked()
@@ -881,7 +892,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 if ui
                     .add(
                         egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open  ")).size(14.0)))
-                            .corner_radius(16.0)
+                            .corner_radius(t.corner(16.0))
                             .min_size(vec2(0.0, 32.0)),
                     )
                     .clicked()
@@ -894,7 +905,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                             ui,
                             egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open sample magazine  ")).size(14.0),
                         ))
-                        .corner_radius(16.0)
+                        .corner_radius(t.corner(16.0))
                         .min_size(vec2(0.0, 32.0)),
                     )
                     .clicked()
@@ -915,7 +926,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
                     let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
                     let hov = resp.hovered();
-                    ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
+                    ui.painter().rect_filled(cr, t.corner(6.0), if hov { t.hover } else { t.panel });
                     let k = (80.0 / p.width.max(p.height)) as f32;
                     let pr = egui::Rect::from_center_size(cr.center() - vec2(0.0, 14.0), vec2(p.width as f32 * k, p.height as f32 * k));
                     ui.painter().rect_filled(pr, 0.0, Color32::from_gray(245));
@@ -963,7 +974,7 @@ fn recent_files(app: &mut DesignApp, ui: &mut egui::Ui) {
             let modified = there.then_some(stat.modified);
             let (cr, resp) = ui.allocate_exact_size(vec2(140.0, 170.0), Sense::click());
             let resp = resp.on_hover_text(&path);
-            ui.painter().rect_filled(cr, 6.0, if resp.hovered() { t.hover } else { t.panel });
+            ui.painter().rect_filled(cr, t.corner(6.0), if resp.hovered() { t.hover } else { t.panel });
             let area = egui::Rect::from_min_size(cr.min + vec2(20.0, 12.0), vec2(100.0, 108.0));
             match modified.and_then(|m| recent_preview_texture(ui.ctx(), &path, m)) {
                 Some(tex) => {
@@ -1048,35 +1059,46 @@ fn recent_preview_texture(ctx: &egui::Context, path: &str, modified: Option<std:
     tex
 }
 
-/// Start screen: the ArtCraft community (Discord first) and project links.
+/// Start screen: the ArtCraft community (Discord first) and project links. An edition credits
+/// DesignCraft and links its source instead, without the ArtCraft mark, community or Discord.
 fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    egui::Frame::NONE.fill(t.panel).corner_radius(10.0).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+    let edition = app.edition;
+    egui::Frame::NONE.fill(t.panel).corner_radius(t.corner(10.0)).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
         // Wide enough for the longer translations of the line under the title, with the button
         // at the right edge; the text wraps before the button's space rather than run under it.
         const BUTTON: egui::Vec2 = vec2(190.0, 38.0);
         ui.set_max_width(760.0);
         ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
-            crate::about::paint_mark(ui, r, crate::about::BRAND);
-            ui.add_space(8.0);
-            let text_width = (ui.available_width() - BUTTON.x - 16.0).max(120.0);
+            if edition.is_none() {
+                let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+                crate::about::paint_mark(ui, r, crate::about::BRAND);
+                ui.add_space(8.0);
+            }
+            let text_width = if edition.is_some() { ui.available_width() } else { (ui.available_width() - BUTTON.x - 16.0).max(120.0) };
             ui.vertical(|ui| {
                 ui.set_max_width(text_width);
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                ui.label(crate::rtl::widget(
-                    ui,
-                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Join the ArtCraft community")).font(semibold(14.0)).color(t.text_strong),
-                ));
-                ui.label(crate::rtl::widget(
-                    ui,
-                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Get help, share your layouts and shape what we build next."))
-                        .size(12.0)
-                        .color(t.text_dim),
-                ));
+                if edition.is_some() {
+                    ui.label(egui::RichText::new(crate::identity::BASED_ON).size(12.0).color(t.text_dim));
+                } else {
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Join the ArtCraft community"))
+                            .font(semibold(14.0))
+                            .color(t.text_strong),
+                    ));
+                    ui.label(crate::rtl::widget(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Get help, share your layouts and shape what we build next."))
+                            .size(12.0)
+                            .color(t.text_dim),
+                    ));
+                }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    for (text, id) in [("DesignCraft page", "help.appPage"), ("GitHub", "help.github"), ("getartcraft.com", "help.website")] {
+                    let links = [("DesignCraft page", "help.appPage"), ("GitHub", "help.github"), ("getartcraft.com", "help.website")];
+                    for (text, id) in links.into_iter().filter(|(_, id)| !crate::identity::hidden(id, edition)) {
                         let url = designcraft_engine::links::get(&id[5..]).unwrap_or_default();
                         let l = ui
                             .add(egui::Label::new(egui::RichText::new(text).size(12.0).color(t.accent).underline()).sense(Sense::click()))
@@ -1089,11 +1111,13 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                 });
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::about::discord_button(ui, crate::i18n::tr(&app.ui.language, "Join our Discord"), BUTTON) {
-                    let _ = app.run("help.discord", json!({}));
-                }
-            });
+            if edition.is_none() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::about::discord_button(ui, crate::i18n::tr(&app.ui.language, "Join our Discord"), BUTTON) {
+                        let _ = app.run("help.discord", json!({}));
+                    }
+                });
+            }
         });
     });
 }
@@ -1130,6 +1154,18 @@ mod tests {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.control_bar = true;
         app
+    }
+
+    /// The app bar names the edition before the document's title.
+    #[test]
+    fn app_bar_title_uses_the_edition() {
+        let mut app = app();
+        app.edition = None;
+        assert_eq!(super::app_bar_title(&app), "DesignCraft");
+        app.run("file.new", serde_json::json!({})).unwrap();
+        assert_eq!(super::app_bar_title(&app), "DesignCraft — Untitled-1");
+        app.edition = Some(&crate::identity::FIXTURE_EDITION);
+        assert_eq!(super::app_bar_title(&app), "Test Edition — Untitled-1");
     }
 
     /// A document with a rectangle selected, so the object controls are enabled.

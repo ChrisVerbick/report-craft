@@ -854,7 +854,7 @@ pub(crate) fn body(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog, width: f32,
             tabs(app, ui, d);
             ui.add_space(12.0);
             let rest = ui.available_height().max(FIELD_H);
-            egui::Frame::NONE.fill(t.panel_darker).corner_radius(4.0).inner_margin(12.0).show(ui, |ui| {
+            egui::Frame::NONE.fill(t.panel_darker).corner_radius(t.corner(4.0)).inner_margin(12.0).show(ui, |ui| {
                 ui.set_min_size(vec2(presets_w - 24.0, rest - 24.0));
                 egui::ScrollArea::vertical().id_salt("nd_presets").max_height(rest - 24.0).auto_shrink([false, false]).show(ui, |ui| {
                     create = presets(app, ui, d);

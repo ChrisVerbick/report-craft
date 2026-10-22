@@ -56,7 +56,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
         egui::Frame::NONE
             .fill(t.panel)
             .stroke(Stroke::new(1.0, t.border))
-            .corner_radius(6)
+            .corner_radius(t.corner(6.0))
             .shadow(egui::epaint::Shadow { offset: [0, 2], blur: 8, spread: 0, color: egui::Color32::from_black_alpha(80) })
             .inner_margin(egui::Margin { left: 4, right: 8, top: 0, bottom: 0 })
             .show(ui, |ui| {

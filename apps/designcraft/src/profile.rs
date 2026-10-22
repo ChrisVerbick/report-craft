@@ -13,16 +13,23 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 fn config_dir_with(os: &str, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
+    config_dir_in(os, env, exe_dir, designcraft_edition::data_folder())
+}
+
+/// [`config_dir_with`] for the settings folder `folder`: an edition's own, lowercase with hyphens
+/// on Linux.
+fn config_dir_in(os: &str, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>, folder: &str) -> Option<PathBuf> {
     if let Some(root) = root_with(&env, exe_dir) {
         // An explicitly empty override must not fall back to the user's profile.
         return (!root.is_empty()).then(|| PathBuf::from(root));
     }
     match os {
-        "macos" => env("HOME").map(|p| PathBuf::from(p).join("Library/Application Support/DesignCraft")),
-        "windows" => env("APPDATA").map(|p| PathBuf::from(p).join("DesignCraft")),
-        _ => {
-            env("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| env("HOME").map(|p| PathBuf::from(p).join(".config"))).map(|p| p.join("designcraft"))
-        }
+        "macos" => env("HOME").map(|p| PathBuf::from(p).join("Library/Application Support").join(folder)),
+        "windows" => env("APPDATA").map(|p| PathBuf::from(p).join(folder)),
+        _ => env("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env("HOME").map(|p| PathBuf::from(p).join(".config")))
+            .map(|p| p.join(designcraft_engine::recovery::linux_folder(folder))),
     }
 }
 
@@ -85,8 +92,10 @@ fn executable_dir() -> Option<PathBuf> {
 }
 
 pub fn recovery_dir() -> Option<PathBuf> {
-    recovery_dir_with(root_with(|key| std::env::var_os(key), executable_dir().as_deref()), designcraft_engine::recovery::default_dir)
-        .and_then(own_run)
+    recovery_dir_with(root_with(|key| std::env::var_os(key), executable_dir().as_deref()), || {
+        designcraft_engine::recovery::default_dir_for(designcraft_edition::data_folder())
+    })
+    .and_then(own_run)
 }
 
 /// This run's folder in the recovery folder `root`. A second running DesignCraft has its own, so
@@ -119,6 +128,20 @@ mod tests {
             "XDG_CONFIG_HOME" => Some("/xdg-config".into()),
             _ => None,
         }
+    }
+
+    /// An edition keeps its settings in a folder of its own name (lowercase with hyphens on
+    /// Linux), and the override still wins.
+    #[test]
+    fn edition_folders() {
+        let home = |key: &str| if key == "XDG_CONFIG_HOME" { None } else { environment(key) };
+        assert_eq!(config_dir_in("macos", environment, None, "Test Edition"), Some("/user/Library/Application Support/Test Edition".into()));
+        assert_eq!(config_dir_in("macos", environment, None, "DesignCraft"), Some("/user/Library/Application Support/DesignCraft".into()));
+        assert_eq!(config_dir_in("windows", environment, None, "Test Edition"), Some("/roaming/Test Edition".into()));
+        assert_eq!(config_dir_in("linux", environment, None, "Test Edition"), Some("/xdg-config/test-edition".into()));
+        assert_eq!(config_dir_in("linux", home, None, "Test Edition"), Some("/user/.config/test-edition".into()));
+        let isolated = |key: &str| if key == "DESIGNCRAFT_CONFIG_DIR" { Some("/isolated".into()) } else { environment(key) };
+        assert_eq!(config_dir_in("macos", isolated, None, "Test Edition"), Some("/isolated".into()));
     }
 
     #[test]

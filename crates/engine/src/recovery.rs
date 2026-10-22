@@ -28,16 +28,25 @@ use serde_json::{Value, json};
 
 use crate::{DocState, EngineError, Result, Session};
 
-/// The platform's per-user recovery folder.
-pub fn default_dir() -> Option<PathBuf> {
+/// The platform's per-user recovery folder in the data folder named `folder`: "DesignCraft", or an
+/// edition's own (the host app knows which).
+pub fn default_dir_for(folder: &str) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
-        return home.map(|h| h.join("Library/Application Support/DesignCraft/Recovery"));
+        return home.map(|h| h.join("Library/Application Support").join(folder).join("Recovery"));
     }
     if cfg!(target_os = "windows") {
-        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("DesignCraft").join("Recovery"));
+        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join(folder).join("Recovery"));
     }
-    std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/share"))).map(|d| d.join("designcraft/recovery"))
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".local/share")))
+        .map(|d| d.join(linux_folder(folder)).join("recovery"))
+}
+
+/// A data folder's name on Linux, where they are lowercase: "Test Edition" is `test-edition`.
+pub fn linux_folder(folder: &str) -> String {
+    folder.to_lowercase().replace(' ', "-")
 }
 
 /// This process's folder in a recovery folder, with the lock that says it is still running.
@@ -873,6 +882,21 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An edition's recovery folder sits in its own data folder; DesignCraft's stays where it was.
+    #[test]
+    fn edition_folders() {
+        let (edition, plain) = (default_dir_for("Test Edition").unwrap(), default_dir_for("DesignCraft").unwrap());
+        let (e, p) = if cfg!(target_os = "macos") {
+            ("Library/Application Support/Test Edition/Recovery", "Library/Application Support/DesignCraft/Recovery")
+        } else if cfg!(target_os = "windows") {
+            ("Test Edition/Recovery", "DesignCraft/Recovery")
+        } else {
+            ("test-edition/recovery", "designcraft/recovery")
+        };
+        assert!(edition.ends_with(e) && plain.ends_with(p), "{} {}", edition.display(), plain.display());
+        assert_eq!((linux_folder("Test Edition"), linux_folder("DesignCraft")), ("test-edition".to_string(), "designcraft".to_string()));
+    }
 
     fn dirty_session() -> Session {
         let mut session = Session::new();

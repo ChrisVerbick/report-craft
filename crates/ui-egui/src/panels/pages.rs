@@ -195,10 +195,6 @@ const FOOTER_H: f32 = 28.0;
 const DIVIDER_H: f32 = 9.0;
 /// Parent rows shown at first; the divider shows more.
 const PARENTS_DEFAULT_ROWS: f32 = 4.5;
-/// Selected-page tint (multiplied over the thumbnail).
-const SELECTED_TINT: Color32 = Color32::from_rgb(0x88, 0xc7, 0xfb);
-/// Page-number badge of the selected page.
-const BADGE: Color32 = Color32::from_rgb(0x2f, 0x73, 0xe0);
 /// Thumbnail height (InDesign: about 28×37 pt for Letter).
 const THUMB_H: f32 = 37.0;
 /// Parent rows.
@@ -454,7 +450,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         resp.widget_info(|| {
                             egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                         });
-                        let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
+                        let tint = if selected { t.selection_tint } else { Color32::WHITE };
                         match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
                             Some(tex) => {
                                 ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
@@ -485,7 +481,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             drag_ghost(ui, &app.session.page_label(abs), &t);
                         }
                         if dragging && resp.contains_pointer() {
-                            ui.painter().rect_stroke(pr.expand(1.5), 0.0, Stroke::new(2.0, BADGE), StrokeKind::Outside);
+                            ui.painter().rect_stroke(pr.expand(1.5), 0.0, Stroke::new(2.0, t.selection_badge), StrokeKind::Outside);
                         }
                         if let Some(payload) = resp.dnd_release_payload::<PageDrag>() {
                             drop = Some(((*payload).clone(), abs));
@@ -501,19 +497,20 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             crate::canvas::go_to_page(app, abs);
                         }
                         resp.context_menu(|ui| page_menu(app, ui, &doc, abs, si));
-                        // Page number under the page: white on a blue badge when selected. Pages too
+                        // Page number under the page, on the selection badge when selected. Pages too
                         // narrow for their numbers share one label under the spread (below).
                         if narrow {
                             continue;
                         }
                         let name = app.session.page_label(abs);
-                        let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), Color32::WHITE);
+                        let colour = if selected { t.badge_text } else { t.page_number };
+                        let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), colour);
                         let c = egui::pos2(pr.center().x, pr.max.y + 11.0);
                         if selected {
                             let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
-                            ui.painter().rect_filled(br, 0.0, BADGE);
+                            ui.painter().rect_filled(br, 0.0, t.selection_badge);
                         }
-                        ui.painter().galley(c - g.size() / 2.0, g, Color32::WHITE);
+                        ui.painter().galley(c - g.size() / 2.0, g, colour);
                     }
                     if narrow {
                         let names: Vec<String> = (first..first + sp.pages.len()).map(|abs| app.session.page_label(abs)).collect();
@@ -522,12 +519,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             (Some(a), _) => a.clone(),
                             _ => String::new(),
                         };
-                        let g = ui.painter().layout_no_wrap(label, crate::theme::semibold(11.0), Color32::WHITE);
+                        let on_badge = cur_spread == Some(si) && !editing_parents;
+                        let colour = if on_badge { t.badge_text } else { t.page_number };
+                        let g = ui.painter().layout_no_wrap(label, crate::theme::semibold(11.0), colour);
                         let c = egui::pos2(row.min.x + center, top + row_h + 11.0);
-                        if cur_spread == Some(si) && !editing_parents {
-                            ui.painter().rect_filled(egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, 12.5)), 0.0, BADGE);
+                        if on_badge {
+                            ui.painter().rect_filled(egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, 12.5)), 0.0, t.selection_badge);
                         }
-                        ui.painter().galley(c - g.size() / 2.0, g, Color32::WHITE);
+                        ui.painter().galley(c - g.size() / 2.0, g, colour);
                     }
                 }
                 // Right-click on the empty part of the panel: the short menu.

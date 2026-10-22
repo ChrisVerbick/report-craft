@@ -1080,9 +1080,9 @@ pub fn button(ui: &mut egui::Ui, name: &str, size: f32, selected: bool, tip: &st
     let t = crate::theme::Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
     if selected {
-        ui.painter().rect_filled(r, 3.0, t.tool_active);
+        ui.painter().rect_filled(r, t.corner(3.0), t.tool_active);
     } else if resp.hovered() {
-        ui.painter().rect_filled(r, 3.0, t.hover);
+        ui.painter().rect_filled(r, t.corner(3.0), t.hover);
     }
     let pad = size * 0.16;
     paint(ui.painter(), r.shrink(pad), name, if selected { t.text_strong } else { t.icon });

@@ -128,11 +128,14 @@ fn group(ui: &mut Ui, rtl: bool, title: &str, add: impl FnOnce(&mut Ui)) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(title).color(t.text_strong));
     });
-    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(3.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 6.0;
-        add(ui);
-    });
+    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(t.corner(3.0)).inner_margin(egui::Margin::symmetric(10, 8)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            add(ui);
+        },
+    );
 }
 
 /// The options (beside the OK/Cancel column).
@@ -216,15 +219,18 @@ pub(crate) fn actions(app: &DesignApp, ui: &mut Ui) -> Option<bool> {
     let t = Tokens::get(ui.ctx());
     let size = vec2(ACTIONS_W - 8.0, 26.0);
     let mut out = None;
-    let ok = egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK")).color(egui::Color32::WHITE)))
+    let ok = egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK")).color(t.on_accent)))
         .fill(t.accent_strong)
-        .corner_radius(13.0)
+        .corner_radius(t.corner(13.0))
         .min_size(size);
     if ui.add(ok).clicked() {
         out = Some(true);
     }
     ui.add_space(4.0);
-    if ui.add(egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).corner_radius(13.0).min_size(size)).clicked() {
+    if ui
+        .add(egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).corner_radius(t.corner(13.0)).min_size(size))
+        .clicked()
+    {
         out = Some(false);
     }
     out
