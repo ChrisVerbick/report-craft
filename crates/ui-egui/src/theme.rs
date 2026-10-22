@@ -677,6 +677,12 @@ pub(crate) fn add_edition_fonts(fonts: &mut FontDefinitions, edition: &designcra
         ("edition-ui-semibold", edition.semibold, FontFamily::Name("semibold".into())),
         ("edition-ui-bold", edition.bold.unwrap_or(edition.semibold), FontFamily::Name("bold".into())),
     ] {
+        // epaint parses every face when the fonts load and stops the app on one it can't read, and
+        // the build checks only a font's first bytes: such a face is left out, for the bundled ones.
+        if designcraft_fonts::line_metrics(data, 0).is_none() {
+            log::warn!("the edition's {name} face isn't a font egui can read; using the bundled faces");
+            continue;
+        }
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
         fonts.families.entry(family).or_default().insert(0, name.into());
     }
@@ -1169,6 +1175,27 @@ mod edition_tests {
         assert_eq!(with.len(), 6);
         assert_eq!(with[0], Brightness::Edition);
         assert_eq!(&with[1..], &Brightness::ALL[..]);
+    }
+
+    /// The build checks only a font's first bytes: a face that starts like one but won't parse is
+    /// left out (epaint would stop the app at every launch), and the bundled faces stand in.
+    #[test]
+    fn an_edition_face_that_will_not_parse_is_left_out() {
+        // A truncated file: the header check passes, the parse epaint runs fails.
+        let broken: &'static [u8] = b"OTTO\x00\x05";
+        let serif: &'static [u8] = include_bytes!("../../../assets/fonts/SourceSerif4-Regular.ttf");
+        let mut defs = super::font_definitions(&[], "en");
+        super::add_edition_fonts(&mut defs, &Fonts { regular: broken, semibold: serif, bold: None });
+        assert!(!defs.font_data.contains_key("edition-ui"));
+        assert_eq!(defs.families[&FontFamily::Proportional].first().map(String::as_str), Some("ui"));
+        assert_eq!(defs.families[&FontFamily::Name("semibold".into())].first().map(String::as_str), Some("edition-ui-semibold"));
+        // And the fonts load.
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("Loads");
+        });
+        output.textures_delta.clear();
     }
 
     /// The edition's typeface goes in front of the UI faces, and every face a plain build falls
