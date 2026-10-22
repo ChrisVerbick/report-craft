@@ -5,7 +5,7 @@ mod parse;
 fn main() -> Result<(), String> {
     println!("cargo:rerun-if-env-changed=DESIGNCRAFT_EDITION");
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").map_err(|e| e.to_string())?).join("edition.rs");
-    let code = match parse::edition_dir(std::env::var("DESIGNCRAFT_EDITION").ok().as_deref())? {
+    let code = match parse::edition_dir(parse::edition_env(std::env::var("DESIGNCRAFT_EDITION"))?.as_deref())? {
         None => "pub static EDITION: Option<&Edition> = None;\n".to_string(),
         Some(dir) => {
             let file = dir.join("edition.toml");

@@ -54,6 +54,16 @@ impl Parsed {
     }
 }
 
+/// `DESIGNCRAFT_EDITION` as `std::env::var` gives it: unset is no edition, and a value that isn't
+/// UTF-8 stops the build rather than quietly building plain DesignCraft.
+pub fn edition_env(var: Result<String, std::env::VarError>) -> Result<Option<String>, String> {
+    match var {
+        Ok(v) => Ok(Some(v)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(v)) => Err(format!("DESIGNCRAFT_EDITION isn't valid UTF-8: {}", v.to_string_lossy())),
+    }
+}
+
 /// The folder `DESIGNCRAFT_EDITION` names: none when it is unset or empty. It must be an absolute
 /// path to a folder, since cargo runs build scripts from the crate's own folder.
 pub fn edition_dir(env: Option<&str>) -> Result<Option<PathBuf>, String> {
@@ -76,7 +86,21 @@ const THEME: &[&str] =
 pub fn parse_edition(toml_text: &str, dir: &Path) -> Result<Parsed, String> {
     let top: toml::Table = toml_text.parse().map_err(|e| format!("edition.toml: {e}"))?;
     known(&top, "", TOP)?;
-    let text = |k: &str| top.get(k).and_then(toml::Value::as_str).map(str::to_string).ok_or_else(|| format!("edition.toml: `{k}` (text) is missing"));
+    let text = |k: &str| match top.get(k).and_then(toml::Value::as_str) {
+        None => Err(format!("edition.toml: `{k}` (text) is missing")),
+        Some(v) if v.trim().is_empty() => Err(format!("edition.toml: `{k}` is empty")),
+        Some(v) => Ok(v.to_string()),
+    };
+    // The settings and recovery files go in this folder of the platform's settings folder: one
+    // folder name, so they can't land beside it or anywhere else.
+    let data_folder = text("data_folder")?;
+    if data_folder.contains(['/', '\\', '\0']) || matches!(data_folder.trim(), "." | "..") {
+        return Err(format!("edition.toml: data_folder must be one folder name (no / or \\, not . or ..): {data_folder:?}"));
+    }
+    let bundle_id = text("bundle_id")?;
+    if !bundle_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') {
+        return Err(format!("edition.toml: bundle_id may hold only letters, digits, '.' and '-': {bundle_id:?}"));
+    }
     let logo = table(&top, "logo")?;
     known(logo, "logo", &["mark"])?;
     let theme = table(&top, "theme")?;
@@ -100,8 +124,8 @@ pub fn parse_edition(toml_text: &str, dir: &Path) -> Result<Parsed, String> {
     };
     Ok(Parsed {
         name: text("name")?,
-        bundle_id: text("bundle_id")?,
-        data_folder: text("data_folder")?,
+        bundle_id,
+        data_folder,
         wordmark: text("wordmark")?,
         mark: file(dir, logo, "logo", "mark")?,
         theme: ParsedTheme {
@@ -244,6 +268,19 @@ mod tests {
         assert!(edition_dir(Some(missing.to_str().unwrap())).unwrap_err().contains(missing.to_str().unwrap()));
     }
 
+    /// A variable that isn't UTF-8 stops the build instead of quietly meaning "no edition".
+    #[test]
+    fn edition_env_refuses_what_isnt_utf8() {
+        assert_eq!(edition_env(Ok("/x".into())), Ok(Some("/x".into())));
+        assert_eq!(edition_env(Err(std::env::VarError::NotPresent)), Ok(None));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let bad = std::env::VarError::NotUnicode(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+            assert!(edition_env(Err(bad)).unwrap_err().contains("UTF-8"));
+        }
+    }
+
     #[test]
     fn the_fixture_parses() {
         let p = parse_edition(&fixture_toml(), &fixture()).unwrap();
@@ -265,6 +302,14 @@ mod tests {
         assert!(err(with("bg = \"#101418\"", "bg = \"black\"")).contains("bg"));
         assert!(err(with("secondary = 0.72", "secondary = 1.5")).contains("secondary"));
         assert!(err(with("mark = \"mark.svg\"", "mark = \"nope.svg\"")).contains("nope.svg"));
+        // Text values are there, and the data folder stays one folder in the settings folder.
+        assert!(err(with("name = \"Test Edition\"", "name = \" \"")).contains("name"));
+        assert!(err(with("wordmark = \"TEST\"", "wordmark = \"\"")).contains("wordmark"));
+        for folder in ["", "../Documents", "/tmp/x", "a/b", "..", "a\\b"] {
+            let text = with("data_folder = \"Test Edition\"", &format!("data_folder = {folder:?}"));
+            assert!(err(text).contains("data_folder"), "{folder}");
+        }
+        assert!(err(with("bundle_id = \"org.example.test-edition\"", "bundle_id = \"org.example/test\"")).contains("bundle_id"));
         // A font that is neither OpenType nor TrueType: the fixture's SVG named as one.
         let fonts = format!("{}\n[fonts]\nregular = \"mark.svg\"\nsemibold = \"mark.svg\"\n", fixture_toml());
         assert!(err(fonts).contains("mark.svg"));
