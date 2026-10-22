@@ -16,6 +16,7 @@
 #[cfg(target_os = "macos")]
 mod apple_events;
 mod control_server;
+mod edition_icon;
 mod gpu;
 mod gpu_limits;
 mod logging;
@@ -324,14 +325,59 @@ fn services() -> Services {
 /// Desktop app ID: the Linux `.desktop` file name and hicolor icon name (Wayland matches windows by it).
 const APP_ID: &str = "ai.storyteller.designcraft";
 
-/// The window, Dock, taskbar and Alt-Tab icon. macOS gets Apple's icon grid (transparent margin);
-/// elsewhere the full tile. Regenerate with `packaging/icons.sh`.
+/// The window, Dock, taskbar and Alt-Tab icon: the edition's mark on Apple's grid when the build
+/// has one, else DesignCraft's.
 fn app_icon() -> Option<egui::IconData> {
+    app_icon_from(designcraft_edition::current().map(|e| e.mark_svg))
+}
+
+/// [`app_icon`] for an edition's mark, or DesignCraft's icon when there is none or it doesn't
+/// render. DesignCraft's: macOS gets Apple's icon grid (transparent margin); elsewhere the full
+/// tile. Regenerate with `packaging/icons.sh`.
+fn app_icon_from(edition_svg: Option<&[u8]>) -> Option<egui::IconData> {
+    if let Some(svg) = edition_svg {
+        match edition_icon::icon_grid(svg, 512) {
+            Some(rgba) => return Some(egui::IconData { rgba, width: 512, height: 512 }),
+            None => log::warn!("app icon: the edition's mark doesn't render; using DesignCraft's"),
+        }
+    }
     #[cfg(target_os = "macos")]
     let png: &[u8] = include_bytes!("../../../assets/app-icon/designcraft-macos-512.png");
     #[cfg(not(target_os = "macos"))]
     let png: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png");
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
+}
+
+/// `--edition-info`: the build's name, bundle ID, settings folder and version as JSON, for
+/// `packaging/macos/edition.sh`.
+fn edition_info(e: Option<&designcraft_edition::Edition>) -> String {
+    serde_json::json!({
+        "name": e.map_or("DesignCraft", |e| e.name),
+        "bundleId": e.map_or(APP_ID, |e| e.bundle_id),
+        "dataFolder": e.map_or("DesignCraft", |e| e.data_folder),
+        "version": env!("CARGO_PKG_VERSION"),
+    })
+    .to_string()
+}
+
+/// `--edition-icon <dir>`: writes the edition's `.iconset` for `iconutil`. Exit 2 without an
+/// edition or a folder.
+fn edition_icon_flag(dir: Option<String>) -> std::process::ExitCode {
+    let Some(e) = designcraft_edition::current() else {
+        eprintln!("this build has no edition");
+        return std::process::ExitCode::from(2);
+    };
+    let Some(dir) = dir else {
+        eprintln!("--edition-icon: give the .iconset folder to write");
+        return std::process::ExitCode::from(2);
+    };
+    match edition_icon::write_iconset(e.mark_svg, std::path::Path::new(&dir)) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("--edition-icon: {err}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 /// The control port from `--control <port>` or `DESIGNCRAFT_CONTROL_PORT` (`source`); a value that
@@ -362,6 +408,11 @@ fn main() -> std::process::ExitCode {
                 println!("designcraft {}", env!("CARGO_PKG_VERSION"));
                 return std::process::ExitCode::SUCCESS;
             }
+            "--edition-info" => {
+                println!("{}", edition_info(designcraft_edition::current()));
+                return std::process::ExitCode::SUCCESS;
+            }
+            "--edition-icon" => return edition_icon_flag(args.next()),
             _ => match gpu::skip_arg(&a) {
                 Some(list) => skip = list,
                 None => files.push(a),
@@ -385,7 +436,7 @@ fn main() -> std::process::ExitCode {
     }
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("DesignCraft")
+            .with_title(designcraft_edition::app_name())
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
             .with_decorations(!cfg!(target_os = "windows"))
@@ -463,7 +514,7 @@ fn main() -> std::process::ExitCode {
     // A panic that ends the window (egui-wgpu's own) is caught here: never a crash.
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
-            "DesignCraft",
+            designcraft_edition::app_name(),
             options,
             Box::new(move |cc| {
                 let mut restarted = None;
@@ -558,6 +609,21 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+    /// `--edition-info` tells the packaging script the build's name, bundle ID, folder and version.
+    #[test]
+    fn edition_info_is_json() {
+        let parse = |e| serde_json::from_str::<serde_json::Value>(&super::edition_info(e)).unwrap();
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            parse(Some(&crate::edition_icon::TEST_EDITION)),
+            serde_json::json!({"name": "Test Edition", "bundleId": "org.example.test-edition", "dataFolder": "Test Edition", "version": version})
+        );
+        assert_eq!(
+            parse(None),
+            serde_json::json!({"name": "DesignCraft", "bundleId": "ai.storyteller.designcraft", "dataFolder": "DesignCraft", "version": version})
+        );
+    }
+
     #[test]
     fn relink_open_dialog_lists_graphics() {
         let filters = super::open_filters("relink");

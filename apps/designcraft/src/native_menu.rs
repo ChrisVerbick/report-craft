@@ -47,7 +47,7 @@ fn accel(sc: &str) -> Option<Accelerator> {
 
 /// A menu or item label in the interface language, as the native menu bar takes it.
 fn menu_title(app: &DesignApp, label: &str) -> String {
-    menus::native_label(designcraft_ui_egui::i18n::tr(&app.ui.language, label))
+    menus::native_label(&designcraft_ui_egui::identity::named(designcraft_ui_egui::i18n::tr(&app.ui.language, label), app.edition))
 }
 
 /// A command's default shortcut, as the in-window menus show it.
@@ -71,9 +71,11 @@ impl NativeMenu {
         let mut recent = None;
         // Application menu: our own About splash (with the community links) instead of the stock
         // panel, and Settings… (Edit › Preferences… on the other platforms).
-        let app_menu = Submenu::new("DesignCraft", true);
+        let app_menu = Submenu::new(designcraft_ui_egui::identity::app_name(app.edition), true);
         for entry in menus::MAC_APP_MENU {
             let _ = match *entry {
+                // An edition drops the ArtCraft Discord.
+                AppMenuItem::Cmd { command, .. } if designcraft_ui_egui::identity::hidden(command, app.edition) => continue,
                 AppMenuItem::Cmd { id, label, command } => {
                     let sc = shortcut(command).and_then(accel);
                     let item = MenuItem::with_id(id, menu_title(app, label), true, sc);
