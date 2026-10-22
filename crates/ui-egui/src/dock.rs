@@ -491,14 +491,6 @@ mod visual_regressions {
         }
     }
 
-    fn luminance(c: Color32) -> f32 {
-        let linear = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-        };
-        0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
-    }
-
     #[test]
     fn selected_dock_tab_has_readable_rendered_contrast_in_every_theme() {
         for brightness in crate::theme::Brightness::ALL {
@@ -524,9 +516,7 @@ mod visual_regressions {
                         })
                         .expect("the active Properties tab is painted");
                     let color = text.galley.job.sections.first().expect("tab text has a format").format.color;
-                    let a = luminance(color);
-                    let b = luminance(tokens.panel);
-                    let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                    let contrast = crate::theme::contrast(color, tokens.panel);
                     assert!(contrast >= 4.5, "{brightness:?} at {width}: selected tab contrast is {contrast:.2}");
                 }
             }

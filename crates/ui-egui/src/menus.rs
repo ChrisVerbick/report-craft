@@ -337,7 +337,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("window.deleteWorkspace", "Delete Workspace…", None, "{name}"),
     ("window.resetWorkspace", "Reset Workspace", None, "{} — back to the current workspace as saved (or its defaults)"),
-    ("window.brightness", "Interface Color Theme", None, "{brightness: dark|mediumDark|mediumLight|light|highContrast}"),
+    ("window.brightness", "Interface Color Theme", None, "{brightness: dark|mediumDark|mediumLight|light|highContrast|edition}"),
 ];
 
 /// Menu bar: (menu, entries). Entries: `cmd:<id>`, `ui:<id>`, `-` separator, `>Submenu` … `<`.
@@ -2338,8 +2338,8 @@ fn parse_entries(entries: &[&str]) -> Vec<Item> {
             items.push(cmd_item("window.newWorkspace", Value::Null));
             out.push(Item::Sub("Workspace".into(), items));
         } else if e == "ui:window.brightness" {
-            let items = crate::theme::Brightness::ALL
-                .iter()
+            let items = crate::theme::available(designcraft_edition::current())
+                .into_iter()
                 .map(|b| Item::Cmd {
                     label: b.label().to_string(),
                     id: "window.brightness".into(),
