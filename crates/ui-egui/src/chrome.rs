@@ -138,7 +138,7 @@ fn search_field(app: &mut DesignApp, ui: &mut egui::Ui) {
                             b = b.shortcut_text(crate::menus::shortcut_text(sc));
                         }
                         if k == st.highlight {
-                            ui.painter().rect_filled(egui::Rect::from_min_size(ui.cursor().min, size), 2.0, t.hover);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(ui.cursor().min, size), t.corner(2.0), t.hover);
                         }
                         let enabled = crate::menus::menu_enabled(app, &it.id);
                         // The button aligns its label by the layout it's in: left, like the menus.
@@ -261,7 +261,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 egui::ScrollArea::horizontal().id_salt("app_bar_scroll").auto_shrink([false, false]).show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
                         if let Some(e) = app.edition {
-                            let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                            let (r, _) = ui.allocate_exact_size(vec2(23.4, 23.4), Sense::hover());
                             crate::identity::paint_mark(ui, r, e.mark_svg);
                             ui.add_space(4.0);
                         }
@@ -882,7 +882,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                             egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(t.on_accent),
                         ))
                         .fill(t.accent_strong)
-                        .corner_radius(16.0)
+                        .corner_radius(t.corner(16.0))
                         .min_size(vec2(0.0, 32.0)),
                     )
                     .clicked()
@@ -892,7 +892,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 if ui
                     .add(
                         egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open  ")).size(14.0)))
-                            .corner_radius(16.0)
+                            .corner_radius(t.corner(16.0))
                             .min_size(vec2(0.0, 32.0)),
                     )
                     .clicked()
@@ -905,7 +905,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                             ui,
                             egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open sample magazine  ")).size(14.0),
                         ))
-                        .corner_radius(16.0)
+                        .corner_radius(t.corner(16.0))
                         .min_size(vec2(0.0, 32.0)),
                     )
                     .clicked()
@@ -926,7 +926,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
                     let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
                     let hov = resp.hovered();
-                    ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
+                    ui.painter().rect_filled(cr, t.corner(6.0), if hov { t.hover } else { t.panel });
                     let k = (80.0 / p.width.max(p.height)) as f32;
                     let pr = egui::Rect::from_center_size(cr.center() - vec2(0.0, 14.0), vec2(p.width as f32 * k, p.height as f32 * k));
                     ui.painter().rect_filled(pr, 0.0, Color32::from_gray(245));
@@ -974,7 +974,7 @@ fn recent_files(app: &mut DesignApp, ui: &mut egui::Ui) {
             let modified = there.then_some(stat.modified);
             let (cr, resp) = ui.allocate_exact_size(vec2(140.0, 170.0), Sense::click());
             let resp = resp.on_hover_text(&path);
-            ui.painter().rect_filled(cr, 6.0, if resp.hovered() { t.hover } else { t.panel });
+            ui.painter().rect_filled(cr, t.corner(6.0), if resp.hovered() { t.hover } else { t.panel });
             let area = egui::Rect::from_min_size(cr.min + vec2(20.0, 12.0), vec2(100.0, 108.0));
             match modified.and_then(|m| recent_preview_texture(ui.ctx(), &path, m)) {
                 Some(tex) => {
@@ -1064,7 +1064,7 @@ fn recent_preview_texture(ctx: &egui::Context, path: &str, modified: Option<std:
 fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let edition = app.edition;
-    egui::Frame::NONE.fill(t.panel).corner_radius(10.0).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+    egui::Frame::NONE.fill(t.panel).corner_radius(t.corner(10.0)).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
         // Wide enough for the longer translations of the line under the title, with the button
         // at the right edge; the text wraps before the button's space rather than run under it.
         const BUTTON: egui::Vec2 = vec2(190.0, 38.0);

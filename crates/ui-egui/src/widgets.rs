@@ -333,11 +333,11 @@ pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     let (r, resp) = ui.allocate_exact_size(vec2(width, BUTTON_H), Sense::click());
     let p = ui.painter();
     if resp.is_pointer_button_down_on() {
-        p.rect_filled(r, 2.0, t.well);
+        p.rect_filled(r, t.corner(2.0), t.well);
     } else if resp.hovered() {
-        p.rect_filled(r, 2.0, t.hover);
+        p.rect_filled(r, t.corner(2.0), t.hover);
     }
-    p.rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    p.rect_stroke(r, t.corner(2.0), Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
     // Screen readers (and tests) find it by its label.
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
@@ -533,7 +533,7 @@ pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egu
     if on {
         ui.painter().rect(r, 2.0, t.well, Stroke::new(1.0, t.well_rim), StrokeKind::Inside);
     } else if resp.hovered() {
-        ui.painter().rect_filled(r, 2.0, t.hover);
+        ui.painter().rect_filled(r, t.corner(2.0), t.hover);
     }
     let s = (size.y - 4.0).min(17.0);
     crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, if on { t.text_strong } else { t.icon });
@@ -555,11 +555,11 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (r, mut resp) = ui.allocate_exact_size(vec2(18.0 + g.size().x, FIELD_H), Sense::click());
     let b = Rect::from_center_size(pos2(r.min.x + 6.5, r.center().y), vec2(12.0, 12.0));
     if *on {
-        ui.painter().rect_filled(b, 2.0, t.icon);
+        ui.painter().rect_filled(b, t.corner(2.0), t.icon);
         ui.painter().line_segment([b.min + vec2(2.5, 6.0), b.min + vec2(5.0, 8.5)], Stroke::new(1.5, t.panel));
         ui.painter().line_segment([b.min + vec2(5.0, 8.5), b.min + vec2(9.5, 3.5)], Stroke::new(1.5, t.panel));
     } else {
-        ui.painter().rect_stroke(b, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+        ui.painter().rect_stroke(b, t.corner(2.0), Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     }
     ui.painter().galley(pos2(r.min.x + 18.0, r.center().y - g.size().y / 2.0), g, t.text);
     if resp.clicked() {

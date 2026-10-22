@@ -1113,7 +1113,7 @@ fn group_box(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.vertical(|ui| {
         crate::rtl::label(ui, egui::RichText::new(title).font(semibold(12.0)));
-        egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::same(8)).corner_radius(2.0).show(ui, add);
+        egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::same(8)).corner_radius(t.corner(2.0)).show(ui, add);
     });
 }
 
@@ -1317,11 +1317,14 @@ fn setup_row<R>(ui: &mut egui::Ui, rtl: bool, add: impl FnOnce(&mut egui::Ui) ->
 /// An outlined group of options.
 fn setup_group(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     let t = crate::theme::Tokens::get(ui.ctx());
-    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(3.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 6.0;
-        add(ui);
-    });
+    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(t.corner(3.0)).inner_margin(egui::Margin::symmetric(12, 8)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            add(ui);
+        },
+    );
 }
 
 /// The link beside a group's four edges: keeps them equal (linking makes them the first's).
@@ -1519,7 +1522,9 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
             crate::rtl::label(ui, tr("Adjust page elements to document changes"));
             let layout = if rtl { egui::Layout::left_to_right(egui::Align::Center) } else { egui::Layout::right_to_left(egui::Align::Center) };
             ui.with_layout(layout, |ui| {
-                let button = egui::Button::new(crate::rtl::widget(ui, tr("Adjust Layout"))).corner_radius(12.0).min_size(egui::vec2(120.0, 24.0));
+                let button = egui::Button::new(crate::rtl::widget(ui, tr("Adjust Layout")))
+                    .corner_radius(crate::theme::Tokens::get(ui.ctx()).corner(12.0))
+                    .min_size(egui::vec2(120.0, 24.0));
                 if ui.add(button).on_hover_text(tr("Apply the changes; objects follow the new page size and margins")).clicked() {
                     adjust = true;
                 }

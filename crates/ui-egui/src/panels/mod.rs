@@ -255,9 +255,9 @@ pub fn swatch_menu_row(ui: &mut egui::Ui, doc: &designcraft_doc::Document, name:
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, name == current, name));
     let hovered = resp.hovered();
     if hovered {
-        ui.painter().rect_filled(row, 2.0, t.accent_strong);
+        ui.painter().rect_filled(row, t.corner(2.0), t.accent_strong);
     } else if name == current {
-        ui.painter().rect_filled(row, 2.0, t.row_selected);
+        ui.painter().rect_filled(row, t.corner(2.0), t.row_selected);
     }
     let (c, g) = crate::widgets::swatch_colors(doc, name, 1.0);
     let chip = egui::Rect::from_min_size(row.min + vec2(4.0, 3.0), vec2(16.0, 16.0));

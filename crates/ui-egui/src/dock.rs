@@ -109,7 +109,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let menu_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 24.0, strip.min.y + 4.0), vec2(18.0, 18.0));
                 let menu = ui.interact(menu_r, ui.id().with("dock-menu"), Sense::click());
                 if menu.hovered() {
-                    ui.painter().rect_filled(menu_r, 3.0, t.hover);
+                    ui.painter().rect_filled(menu_r, t.corner(3.0), t.hover);
                 }
                 icons::paint(ui.painter(), menu_r, "menu", t.icon);
                 let tab = app.ui.dock_tab.clone();
@@ -149,9 +149,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let on = app.ui.open_panel.as_deref() == Some(id) || app.ui.floating.iter().any(|(p, _)| p == id);
                         let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
                         if on {
-                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.tool_active);
+                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), t.corner(3.0), t.tool_active);
                         } else if response.hovered() {
-                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.hover);
+                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), t.corner(3.0), t.hover);
                         }
                         icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(8.0, 4.0), vec2(18.0, 18.0)), icon, t.icon);
                         crate::rtl::paint(

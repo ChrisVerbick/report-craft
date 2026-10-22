@@ -261,7 +261,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 for (slug, name, what) in SIBLINGS {
                     let url = format!("{}/apps/{slug}", links::WEBSITE);
                     let b = ui
-                        .add(egui::Button::new(egui::RichText::new(*name).size(12.0)).corner_radius(10.0))
+                        .add(egui::Button::new(egui::RichText::new(*name).size(12.0)).corner_radius(t.corner(10.0)))
                         .on_hover_text(format!("{} — {url}", crate::i18n::tr(&app.ui.language, what)));
                     if b.clicked() {
                         app.ui.pending_urls.push(url);

@@ -126,6 +126,8 @@ pub struct Tokens {
     pub focus_border: Color32,
     /// Corner radius of windows and menus.
     pub frame_radius: u8,
+    /// The fill behind selected tabs, labels, buttons and text, under `text`.
+    pub selection_fill: Color32,
 }
 
 fn hex(s: u32) -> Color32 {
@@ -195,8 +197,10 @@ impl Tokens {
             focus_text: Color32::from_gray(20),
             focus_border: hex(0x45a0f5),
             frame_radius: 4,
+            // Each level's accent_strong (below).
+            selection_fill: hex(0x1473e6),
         };
-        match b {
+        let level = match b {
             Brightness::Dark => dark,
             // Measured from InDesign 2026 (plan/indesign/11-observed-ui.md §1). An edition's level
             // needs the edition (`resolve`); without one it is Medium Dark.
@@ -335,7 +339,8 @@ impl Tokens {
                 flow_ok: hex(0x4be06e),
                 ..dark
             },
-        }
+        };
+        Tokens { selection_fill: level.accent_strong, ..level }
     }
 
     /// An edition's theme by role (`docs/editions.md`): its background, raised and hover fills,
@@ -395,6 +400,8 @@ impl Tokens {
             focus_text: rgb(t.text),
             focus_border: rgb(t.accent),
             frame_radius: t.radius,
+            // egui sets selected widgets' text in `text`: the accent, darkened, keeps it readable.
+            selection_fill: over(t.accent, 0.65, t.bg),
             ..dark
         }
     }
@@ -706,7 +713,7 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.window_stroke = Stroke::new(1.0, t.divider);
     v.window_corner_radius = CornerRadius::same(t.frame_radius);
     v.menu_corner_radius = CornerRadius::same(t.frame_radius);
-    v.selection.bg_fill = t.accent_strong;
+    v.selection.bg_fill = t.selection_fill;
     v.selection.stroke = Stroke::new(1.0, t.text_strong);
     v.hyperlink_color = t.accent;
     v.override_text_color = Some(t.text);
@@ -735,6 +742,12 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
 }
 
 impl Tokens {
+    /// A widget's, frame's or painted well's corner radius `r`, or none in a square theme (an
+    /// edition's `radius = 0`: sharp everywhere).
+    pub fn corner(&self, r: f32) -> f32 {
+        if self.radius == 0 { 0.0 } else { r }
+    }
+
     /// Tokens stored by [`apply`].
     pub fn get(ctx: &egui::Context) -> Tokens {
         ctx.data(|d| d.get_temp::<Tokens>(egui::Id::NULL)).unwrap_or_else(|| Tokens::for_brightness(Brightness::Dark))
@@ -1033,6 +1046,8 @@ mod token_tests {
             assert_eq!(t.focus_border, Color32::from_rgb(0x45, 0xa0, 0xf5), "{b:?}");
             assert_eq!(t.on_accent, Color32::WHITE, "{b:?}");
             assert_eq!(t.frame_radius, 4, "{b:?}");
+            assert_eq!(t.selection_fill, t.accent_strong, "{b:?}");
+            assert_eq!(t.corner(16.0), 16.0, "{b:?}");
         }
     }
 }
@@ -1087,6 +1102,9 @@ mod edition_tests {
         }
         assert_eq!(t.row_selected, over(FIXTURE.accent, 0.16, FIXTURE.bg));
         assert_eq!((t.badge_text, t.on_accent), (rgb(FIXTURE.on_accent), rgb(FIXTURE.on_accent)));
+        assert_eq!(t.selection_fill, over(FIXTURE.accent, 0.65, FIXTURE.bg));
+        // Sharp everywhere: a square theme (radius 0) drops the explicit round corners too.
+        assert_eq!((t.corner(16.0), t.corner(3.0)), (0.0, 0.0));
         for c in [t.flow_ok, t.status_ok] {
             assert_eq!(c, rgb(FIXTURE.success));
         }
@@ -1122,6 +1140,7 @@ mod edition_tests {
             ("dim text on panel", t.text_dim, t.panel),
             ("dim text on input", t.text_dim, t.input),
             ("badge", t.badge_text, t.selection_badge),
+            ("text on the selection", t.text, t.selection_fill),
         ] {
             let ratio = super::contrast(fg, bg);
             assert!(ratio >= 4.5, "{what}: {ratio:.2}");
