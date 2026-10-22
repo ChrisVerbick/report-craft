@@ -1533,6 +1533,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hide/Lock Others", "Ocultar/bloquear outros"),
     ("High Quality Display", "Exibição em alta qualidade"),
     ("History", "Histórico"),
+    ("Review", "Revisão"),
     ("Import Options: Styles", "Opções de importação: estilos"),
     ("Index Page References", "Referências de página do índice remissivo"),
     ("Inner Glow", "Brilho interno"),

@@ -553,6 +553,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hide/Lock Others", "Ukryj/zablokuj pozostałe"),
     ("High Quality Display", "Wyświetlanie wysokiej jakości"),
     ("History", "Historia"),
+    ("Review", "Recenzja"),
     ("Hyphenation Exceptions", "Wyjątki dzielenia wyrazów"),
     ("Import Options: Styles", "Opcje importu: style"),
     ("Index Page References", "Odwołania do stron indeksu"),

@@ -13,8 +13,11 @@ use designcraft_doc::{CellAddr, Document, SpreadRef};
 use designcraft_geom::{Affine, Rect};
 use serde::{Deserialize, Serialize};
 
+mod comments;
 #[cfg(test)]
 mod tests;
+
+pub use comments::{Anchored, Author, Comment, Quote, reanchor};
 
 /// A page in the manifest's page list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

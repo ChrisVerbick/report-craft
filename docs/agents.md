@@ -89,6 +89,8 @@ the whole update-all job.
 `review.export {dir}` writes a review bundle: the pages as images, a text layer that maps every line
 back to a `text.select` address, and the PDF ([review-bundle.md](review-bundle.md)). It gives the document
 its review id the first time and keeps a `Review vN` version for Compare. `review.detach {}` clears the id.
+`review.publish {project?}` uploads the bundle to the review service, `review.sync {}` fetches the comments,
+`review.apply {id}` makes a suggestion a tracked change and `review.addNote {id}` a note ([review.md](review.md)).
 
 ## The running app
 

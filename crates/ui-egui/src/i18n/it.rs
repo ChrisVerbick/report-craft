@@ -674,6 +674,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hide/Lock Others", "Nascondi/blocca altri"),
     ("High Quality Display", "Visualizzazione alta qualità"),
     ("History", "Cronologia"),
+    ("Review", "Revisione"),
     ("Hyphenation Exceptions", "Eccezioni di sillabazione"),
     ("Import Options: Styles", "Opzioni di importazione: stili"),
     ("Index Page References", "Riferimenti di pagina dell'indice analitico"),

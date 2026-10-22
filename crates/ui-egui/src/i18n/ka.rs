@@ -602,6 +602,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hide/Lock Others", "დანარჩენების დამალვა/ჩაკეტვა"),
     ("High Quality Display", "მაღალი ხარისხის ჩვენება"),
     ("History", "ისტორია"),
+    ("Review", "განხილვა"),
     ("Hyphenation Exceptions", "გადატანის გამონაკლისები"),
     ("Import Options: Styles", "იმპორტის პარამეტრები: სტილები"),
     ("Index Page References", "ინდექსის გვერდის მითითებები"),

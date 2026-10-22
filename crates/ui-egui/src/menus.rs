@@ -889,6 +889,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel|Notes|{\"panel\": \"notes\"}",
             "ui:window.panel|Track Changes|{\"panel\": \"trackChanges\"}",
             "ui:window.panel|History|{\"panel\": \"history\"}",
+            "ui:window.panel|Review|{\"panel\": \"review\"}",
             "<",
             "ui:window.panel|Effects|{\"panel\": \"effects\"}",
             "ui:window.panel|Info|{\"panel\": \"info\"}",

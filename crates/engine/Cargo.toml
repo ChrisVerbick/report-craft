@@ -24,6 +24,7 @@ designcraft-pptx = { workspace = true }
 designcraft-textimport = { workspace = true }
 designcraft-flow = { workspace = true }
 designcraft-review = { workspace = true }
+zip = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }

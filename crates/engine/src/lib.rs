@@ -18,6 +18,7 @@ pub mod io;
 pub mod links;
 pub mod math;
 pub mod recovery;
+pub mod review;
 pub mod sample;
 pub mod script;
 mod tooling;
@@ -107,6 +108,8 @@ pub struct DocState {
     /// Recovery entries this state actually opened or published, for repeated-open and cleanup.
     /// Bounded, deduplicated checkpoint addresses; never inferred from uid alone.
     pub(crate) recovery_entries: Vec<(std::path::PathBuf, u64)>,
+    /// Where the document is published for review, and the comments last synced (Stage 10).
+    pub review: Option<crate::review::ReviewState>,
     /// Unfilled document while data-merge preview is showing a record. Not saved.
     pub preview_stash: Option<Arc<Document>>,
     /// 1-based record currently previewed.
@@ -162,6 +165,7 @@ impl DocState {
             editing_parents: false,
             uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             recovery_entries: Vec::new(),
+            review: None,
             preview_stash: None,
             preview_record: None,
             fonts: None,
@@ -257,6 +261,9 @@ pub struct Prefs {
     /// files keep the document's versions; off, saved files, copies, the serialized file and
     /// recovery data carry none, and saving drops the file's.
     pub keep_versions: bool,
+    /// The review service (Stage 10): its URL and the owner token the app uses.
+    pub review_server: String,
+    pub review_token: String,
 }
 
 /// The most recent files Preferences lets File › Open Recent keep.
@@ -335,6 +342,8 @@ impl Default for Prefs {
             recent_files_max: 20,
             user_name: String::new(),
             keep_versions: true,
+            review_server: String::new(),
+            review_token: String::new(),
         }
     }
 }
@@ -413,6 +422,9 @@ pub struct Session {
     /// Linked text files checked by the Links panel: path → the size and modification time the
     /// file had and the hash of its contents then, so a file touched but not changed is read once.
     pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
+    /// How review commands reach the review service; the app provides it (HTTP stays above the
+    /// engine). None: the review commands say so.
+    pub transport: Option<Arc<dyn crate::review::Transport>>,
 }
 
 impl Default for Session {
@@ -445,6 +457,7 @@ impl Session {
             recovery_dir: None,
             text_clipboard: None,
             text_link_checks: Default::default(),
+            transport: None,
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),

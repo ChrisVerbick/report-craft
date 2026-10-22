@@ -25,6 +25,7 @@ mod mac_window;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod profile;
+mod review_transport;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
@@ -545,6 +546,7 @@ fn main() -> std::process::ExitCode {
                     }
                 }
                 let mut session = Session::new();
+                session.transport = Some(std::sync::Arc::new(review_transport::UreqTransport::new()));
                 // Crash recovery: reopen what a previous run left unsaved, then keep it current.
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();

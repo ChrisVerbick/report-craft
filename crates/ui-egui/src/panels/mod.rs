@@ -15,6 +15,7 @@ pub mod library;
 pub mod notes;
 pub mod pages;
 pub mod properties;
+pub mod review;
 pub mod styles;
 pub mod swatches;
 pub mod table;

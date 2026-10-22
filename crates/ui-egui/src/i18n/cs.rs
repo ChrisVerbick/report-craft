@@ -546,6 +546,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hide/Lock Others", "Skrýt/zamknout ostatní"),
     ("High Quality Display", "Zobrazení ve vysoké kvalitě"),
     ("History", "Historie"),
+    ("Review", "Recenze"),
     ("Hyphenation Exceptions", "Výjimky dělení slov"),
     ("Import Options: Styles", "Možnosti importu: styly"),
     ("Index Page References", "Odkazy rejstříku na stránky"),

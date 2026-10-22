@@ -677,6 +677,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hide/Lock Others", "Приховати/заблокувати решту"),
     ("High Quality Display", "Відображення високої якості"),
     ("History", "Історія"),
+    ("Review", "Рецензування"),
     ("Hyphenation Exceptions", "Винятки переносу"),
     ("Import Options: Styles", "Параметри імпорту: стилі"),
     ("Index Page References", "Посилання покажчика на сторінки"),

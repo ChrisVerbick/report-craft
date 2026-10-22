@@ -1820,6 +1820,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ["High Quality Display", "Affichage de qualité supérieure", "High Quality Display", "High Quality Display", "高品质显示"],
     ),
     ("History", ["History", "Historique", "History", "History", "历史记录"]),
+    ("Review", ["Review", "Révision", "Revisión", "レビュー", "审阅"]),
     ("Hyphenation Exceptions", ["Hyphenation Exceptions", "Exceptions de césure", "Hyphenation Exceptions", "Hyphenation Exceptions", "断字例外"]),
     (
         "Import Options: Styles",
