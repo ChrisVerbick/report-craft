@@ -70,13 +70,13 @@ fn ensure_real_directory(path: &Path, ancestor: bool) -> Result<()> {
 /// A selected output directory and its resolved identity. Every package path is checked against
 /// it before use. Outputs are staged in the same directory and atomically persisted over an
 /// existing regular file, preserving overwrite behavior without following file links.
-struct OutputRoot {
+pub(super) struct OutputRoot {
     path: PathBuf,
     canonical: PathBuf,
 }
 
 impl OutputRoot {
-    fn new(path: PathBuf) -> Result<Self> {
+    pub(super) fn new(path: PathBuf) -> Result<Self> {
         // Before anything is created: the folder must be inside the automation write root.
         crate::file_access::check_write(&path).map_err(EngineError::Other)?;
         ensure_real_directory(&path, false)?;
@@ -151,7 +151,7 @@ impl OutputRoot {
         Ok(file)
     }
 
-    fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+    pub(super) fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (path, bytes);

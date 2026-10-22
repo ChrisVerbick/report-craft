@@ -629,6 +629,10 @@ fn is_zero(v: &u32) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Document {
     pub title: String,
+    /// Review identity, set the first time the document is exported for review. Save and Save
+    /// As keep it; a copy (Save a Copy, a snippet, IDML) carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub settings: DocSettings,
     pub spreads: Vec<Arc<Spread>>,
     pub parents: Vec<Arc<Spread>>,
@@ -902,6 +906,26 @@ impl Document {
     pub fn layer_rank(&self, id: LayerId) -> usize {
         self.layers.iter().position(|l| l.id == id).map(|i| self.layers.len() - 1 - i).unwrap_or(0)
     }
+    /// A fresh review id: a random version-4 UUID in lower case. Unique, not secret (a review's
+    /// share link is the secret).
+    pub fn fresh_id() -> String {
+        use std::hash::{BuildHasher, Hasher};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        // `RandomState` seeds itself from the OS once per thread; the time and a counter keep
+        // the ids of one process apart.
+        let word = |salt: u64| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_i64(vars::now());
+            h.write_u64(n);
+            h.write_u64(salt);
+            h.finish()
+        };
+        let (a, b) = (word(0x9E37_79B9_7F4A_7C15), word(0xD1B5_4A32_D192_ED03));
+        format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}", a >> 32, (a >> 16) & 0xffff, a & 0xfff, 0x8000 | ((b >> 48) & 0x3fff), b & 0xffff_ffff_ffff)
+    }
+
     pub fn default_layer(&self) -> LayerId {
         self.layers.first().map(|l| l.id).unwrap_or_default()
     }

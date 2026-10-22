@@ -71,16 +71,23 @@ impl Rendered {
     }
     /// PNG bytes (empty, with the error logged, if the image can't be encoded).
     pub fn to_png(&self) -> Vec<u8> {
+        self.encode(image::ImageFormat::Png, "PNG")
+    }
+    /// Lossless WebP bytes (empty, with the error logged, if the image can't be encoded).
+    pub fn to_webp(&self) -> Vec<u8> {
+        self.encode(image::ImageFormat::WebP, "WebP")
+    }
+    fn encode(&self, format: image::ImageFormat, name: &str) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut px = self.to_straight();
         // `pixels` is public: a mismatched buffer is padded or cut to the stated size.
         px.resize(self.width as usize * self.height as usize * 4, 0);
         let Some(img) = image::RgbaImage::from_raw(self.width, self.height, px) else {
-            log::error!("PNG encode: {}×{} image is too large", self.width, self.height);
+            log::error!("{name} encode: {}×{} image is too large", self.width, self.height);
             return Vec::new();
         };
-        if let Err(e) = img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png) {
-            log::error!("PNG encode: {e}");
+        if let Err(e) = img.write_to(&mut std::io::Cursor::new(&mut buf), format) {
+            log::error!("{name} encode: {e}");
             return Vec::new();
         }
         buf
@@ -2153,5 +2160,15 @@ mod tests {
         let want = [100.0 / 612.0, 200.0 / 792.0, 500.0 / 612.0, 697.0 / 792.0];
         assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
         assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
+    }
+}
+
+#[cfg(test)]
+mod webp_tests {
+    #[test]
+    fn to_webp_encodes_a_webp() {
+        let r = super::Rendered { width: 2, height: 2, pixels: vec![255; 16] };
+        let b = r.to_webp();
+        assert!(b.starts_with(b"RIFF") && &b[8..12] == b"WEBP", "{:?}", &b[..b.len().min(12)]);
     }
 }

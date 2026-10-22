@@ -81,6 +81,7 @@ impl CachedView {
 /// destructuring makes a new document field require an explicit cache invalidation decision.
 fn same_document(old: &Document, new: &Document) -> bool {
     let Document {
+        id: _,
         spreads,
         parents,
         stories,

@@ -422,6 +422,7 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     let st = s.doc()?;
     let mut d = (*st.doc).clone();
+    d.id = None;
     let keep: Vec<ItemId> = st.selection.items.clone();
     // Gather the selected items (in their spread coordinates, nested ones too) into spread 0.
     let mut items = Vec::new();

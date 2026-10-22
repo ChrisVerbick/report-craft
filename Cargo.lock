@@ -1051,6 +1051,7 @@ dependencies = [
  "designcraft-pdf",
  "designcraft-pptx",
  "designcraft-render",
+ "designcraft-review",
  "designcraft-textimport",
  "designcraft-tools",
  "hayro-cmap",
@@ -1226,6 +1227,16 @@ dependencies = [
  "serde",
  "vello_common 0.2.0",
  "vello_cpu 0.2.0",
+]
+
+[[package]]
+name = "designcraft-review"
+version = "0.9.0"
+dependencies = [
+ "designcraft-compose",
+ "designcraft-doc",
+ "designcraft-geom",
+ "serde",
 ]
 
 [[package]]

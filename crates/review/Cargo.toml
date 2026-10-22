@@ -1,0 +1,15 @@
+[package]
+name = "designcraft-review"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft Review: the review bundle a reviewer client reads (page list and text layer)"
+
+[lints]
+workspace = true
+
+[dependencies]
+designcraft-doc = { workspace = true }
+designcraft-compose = { workspace = true }
+designcraft-geom = { workspace = true }
+serde = { workspace = true }

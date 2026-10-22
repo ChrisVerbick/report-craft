@@ -351,3 +351,32 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
+
+#[test]
+fn the_review_id_is_optional_and_left_out_when_unset() {
+    let d = crate::Document::new(&crate::build::NewDocument::default());
+    assert_eq!(d.id, None);
+    let v = serde_json::to_value(&d).unwrap();
+    assert!(v.get("id").is_none(), "an unset id isn't written");
+    assert_eq!(serde_json::from_value::<crate::Document>(v).unwrap().id, None);
+    let with = crate::Document { id: Some("abc".into()), ..d };
+    let v = serde_json::to_value(&with).unwrap();
+    assert_eq!(v["id"], "abc");
+    assert_eq!(serde_json::from_value::<crate::Document>(v).unwrap().id.as_deref(), Some("abc"));
+}
+
+#[test]
+fn fresh_ids_are_lowercase_uuids_that_differ() {
+    let (a, b) = (crate::Document::fresh_id(), crate::Document::fresh_id());
+    assert_ne!(a, b);
+    for id in [&a, &b] {
+        assert_eq!(id.len(), 36, "{id}");
+        let shaped = id
+            .bytes()
+            .enumerate()
+            .all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == b'-' } else { c.is_ascii_hexdigit() && !c.is_ascii_uppercase() });
+        assert!(shaped, "{id}");
+        assert_eq!(&id[14..15], "4", "{id}");
+        assert!("89ab".contains(&id[19..20]), "{id}");
+    }
+}

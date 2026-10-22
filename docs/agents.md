@@ -84,6 +84,12 @@ versions in (the layout's own edits are kept and reported), `compare.file {}` co
 last save, and `compare.exportPdf {path}` writes what changed. [flow.md](flow.md) has the steps in the app and
 the whole update-all job.
 
+## Review
+
+`review.export {dir}` writes a review bundle: the pages as images, a text layer that maps every line
+back to a `text.select` address, and the PDF ([review-bundle.md](review-bundle.md)). It gives the document
+its review id the first time and keeps a `Review vN` version for Compare. `review.detach {}` clears the id.
+
 ## The running app
 
 ```sh

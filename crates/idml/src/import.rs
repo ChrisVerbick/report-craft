@@ -3222,6 +3222,7 @@ impl<'r> Importer<'r> {
         // Make sure built-in paragraph styles exist and are first.
         let mut d = Document {
             title,
+            id: None,
             settings: self.settings.clone(),
             spreads: std::mem::take(&mut self.spreads).into_iter().map(Arc::new).collect(),
             parents: std::mem::take(&mut self.parents).into_iter().map(Arc::new).collect(),

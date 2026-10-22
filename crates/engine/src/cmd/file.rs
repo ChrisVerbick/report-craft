@@ -59,6 +59,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let path = with_document_extension(path);
             let st = s.doc()?;
             let mut copy = (*st.doc).clone();
+            // A copy is another report as far as Review is concerned.
+            copy.id = None;
             super::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
             let with = p.get("history").and_then(Value::as_bool).unwrap_or(true);
             let versions = super::version::written(with && super::version::keeps(s.prefs.keep_versions, st), &st.versions);

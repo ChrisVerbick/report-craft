@@ -22,6 +22,7 @@ designcraft-fonts = { path = "crates/fonts" }
 designcraft-compose = { path = "crates/compose" }
 designcraft-images = { path = "crates/images" }
 designcraft-flow = { path = "crates/flow" }
+designcraft-review = { path = "crates/review" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }

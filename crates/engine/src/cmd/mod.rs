@@ -50,6 +50,7 @@ pub mod preflight;
 mod prefs;
 mod print;
 mod qr;
+mod review;
 mod rulers;
 mod scripts;
 mod select;
@@ -199,6 +200,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(changes::specs());
         v.extend(compare::specs());
         v.extend(version::specs());
+        v.extend(review::specs());
         v.extend(conditions::specs());
         v.extend(library::specs());
         v.extend(lists::specs());

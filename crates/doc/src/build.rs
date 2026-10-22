@@ -125,6 +125,7 @@ impl Document {
         };
         let mut d = Document {
             title: nd.title.clone(),
+            id: None,
             settings,
             spreads: vec![],
             parents: vec![],
