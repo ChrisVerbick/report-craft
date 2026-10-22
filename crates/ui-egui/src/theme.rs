@@ -96,6 +96,26 @@ pub struct Tokens {
     /// The Windows caption Close button when hovered, and its glyph.
     pub caption_close: Color32,
     pub caption_close_text: Color32,
+    /// Text and glyphs on accent fills (primary buttons, a hovered swatch row).
+    pub on_accent: Color32,
+    /// The Pages panel: the selected page's number badge (and the drop target's outline), the tint
+    /// multiplied over the selected thumbnail, the number on the badge, and the other pages' numbers.
+    pub selection_badge: Color32,
+    pub selection_tint: Color32,
+    pub badge_text: Color32,
+    pub page_number: Color32,
+    /// The Preflight dots: no errors, errors.
+    pub status_ok: Color32,
+    pub status_error: Color32,
+    /// Links statuses: modified, too large to check or low resolution; missing or failed.
+    pub link_warn: Color32,
+    pub link_error: Color32,
+    /// A number field while it is typed in.
+    pub focus_bg: Color32,
+    pub focus_text: Color32,
+    pub focus_border: Color32,
+    /// Corner radius of windows and menus.
+    pub frame_radius: u8,
 }
 
 fn hex(s: u32) -> Color32 {
@@ -146,6 +166,19 @@ impl Tokens {
             live_corner: hex(0xffe500),
             caption_close: hex(0xc42b1c),
             caption_close_text: Color32::WHITE,
+            on_accent: Color32::WHITE,
+            selection_badge: hex(0x2f73e0),
+            selection_tint: hex(0x88c7fb),
+            badge_text: Color32::WHITE,
+            page_number: Color32::WHITE,
+            status_ok: Color32::from_rgb(60, 200, 90),
+            status_error: Color32::from_rgb(235, 50, 50),
+            link_warn: hex(0xe8b32c),
+            link_error: hex(0xe54b4b),
+            focus_bg: Color32::WHITE,
+            focus_text: Color32::from_gray(20),
+            focus_border: hex(0x45a0f5),
+            frame_radius: 4,
         };
         match b {
             Brightness::Dark => dark,
@@ -561,8 +594,8 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.extreme_bg_color = t.input;
     v.faint_bg_color = t.panel_darker;
     v.window_stroke = Stroke::new(1.0, t.divider);
-    v.window_corner_radius = CornerRadius::same(4);
-    v.menu_corner_radius = CornerRadius::same(4);
+    v.window_corner_radius = CornerRadius::same(t.frame_radius);
+    v.menu_corner_radius = CornerRadius::same(t.frame_radius);
     v.selection.bg_fill = t.accent_strong;
     v.selection.stroke = Stroke::new(1.0, t.text_strong);
     v.hyperlink_color = t.accent;
@@ -848,6 +881,34 @@ mod russian_font_tests {
             for character in &characters {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::{Brightness, Tokens};
+    use egui::Color32;
+
+    /// The chrome colours that were literals in the panels are tokens now, and every upstream level
+    /// keeps today's values, so a plain build looks exactly as before.
+    #[test]
+    fn upstream_levels_keep_todays_chrome_colours() {
+        for b in Brightness::ALL {
+            let t = Tokens::for_brightness(b);
+            assert_eq!(t.selection_badge, Color32::from_rgb(0x2f, 0x73, 0xe0), "{b:?}");
+            assert_eq!(t.selection_tint, Color32::from_rgb(0x88, 0xc7, 0xfb), "{b:?}");
+            assert_eq!(t.badge_text, Color32::WHITE, "{b:?}");
+            assert_eq!(t.page_number, Color32::WHITE, "{b:?}");
+            assert_eq!(t.status_ok, Color32::from_rgb(60, 200, 90), "{b:?}");
+            assert_eq!(t.status_error, Color32::from_rgb(235, 50, 50), "{b:?}");
+            assert_eq!(t.link_warn, Color32::from_rgb(0xe8, 0xb3, 0x2c), "{b:?}");
+            assert_eq!(t.link_error, Color32::from_rgb(0xe5, 0x4b, 0x4b), "{b:?}");
+            assert_eq!(t.focus_bg, Color32::WHITE, "{b:?}");
+            assert_eq!(t.focus_text, Color32::from_gray(20), "{b:?}");
+            assert_eq!(t.focus_border, Color32::from_rgb(0x45, 0xa0, 0xf5), "{b:?}");
+            assert_eq!(t.on_accent, Color32::WHITE, "{b:?}");
+            assert_eq!(t.frame_radius, 4, "{b:?}");
         }
     }
 }

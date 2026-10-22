@@ -150,8 +150,7 @@ impl<'a> NumField<'a> {
         let mut text_rect = rect;
         let focused_id = key.with("te");
         let focused = ui.memory(|m| m.has_focus(focused_id));
-        let (bg, fg, border) =
-            if focused { (Color32::WHITE, Color32::from_gray(20), Color32::from_rgb(0x45, 0xa0, 0xf5)) } else { (t.input, t.text, t.field_border) };
+        let (bg, fg, border) = if focused { (t.focus_bg, t.focus_text, t.focus_border) } else { (t.input, t.text, t.field_border) };
         let fg = if self.enabled { fg } else { t.text_disabled };
         // Spinner segment.
         if self.spinner {

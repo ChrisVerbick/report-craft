@@ -216,7 +216,7 @@ pub(crate) fn actions(app: &DesignApp, ui: &mut Ui) -> Option<bool> {
     let t = Tokens::get(ui.ctx());
     let size = vec2(ACTIONS_W - 8.0, 26.0);
     let mut out = None;
-    let ok = egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK")).color(egui::Color32::WHITE)))
+    let ok = egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK")).color(t.on_accent)))
         .fill(t.accent_strong)
         .corner_radius(13.0)
         .min_size(size);

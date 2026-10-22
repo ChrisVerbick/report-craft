@@ -270,7 +270,7 @@ pub fn swatch_menu_row(ui: &mut egui::Ui, doc: &designcraft_doc::Document, name:
         egui::Align2::LEFT_CENTER,
         name,
         swatch_menu_font(),
-        if hovered { egui::Color32::WHITE } else { t.text },
+        if hovered { t.on_accent } else { t.text },
     );
     resp.clicked()
 }

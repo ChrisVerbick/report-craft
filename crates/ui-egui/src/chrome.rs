@@ -804,11 +804,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 // Preflight: overset text is an error.
                 let errors = panels::preflight_errors(app);
                 let (r, dot) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
-                ui.painter().circle_filled(
-                    r.center(),
-                    4.0,
-                    if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
-                );
+                ui.painter().circle_filled(r.center(), 4.0, if errors == 0 { t.status_ok } else { t.status_error });
                 let count = if errors == 0 {
                     format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
                 } else {
@@ -868,7 +864,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .add(
                         egui::Button::new(crate::rtl::widget(
                             ui,
-                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(Color32::WHITE),
+                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(t.on_accent),
                         ))
                         .fill(t.accent_strong)
                         .corner_radius(16.0)

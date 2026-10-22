@@ -2381,10 +2381,10 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 chosen = Some(aid);
             }
             let (txt, col) = match r["status"].as_str().unwrap_or("") {
-                "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
-                "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
+                "missing" => ("\u{26A0} Missing", t.link_error),
+                "modified" => ("\u{25B2} Modified", t.link_warn),
                 "embedded" => ("Embedded", t.text_dim),
-                "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
+                "tooLarge" => ("Too large to check", t.link_warn),
                 _ => ("OK", t.text_dim),
             };
             let status = crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
@@ -2404,10 +2404,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             };
             // Low effective resolution for print is flagged like the Preflight check.
             let low = uses.first().and_then(|u| u["ppi"].as_f64()).is_some_and(|p| p < 150.0);
-            crate::rtl::label(
-                ui,
-                egui::RichText::new(info).size(11.0).color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
-            );
+            crate::rtl::label(ui, egui::RichText::new(info).size(11.0).color(if low { t.link_warn } else { t.text_dim }));
             ui.end_row();
         }
     });
@@ -2525,7 +2522,7 @@ fn last_update(app: &mut DesignApp, ui: &mut egui::Ui, t: &Tokens, row: &Value) 
             let errors = rec["errors"].as_array().map_or(0, Vec::len);
             if errors > 0 {
                 let text = some(errors, "error in the linked files", "errors in the linked files");
-                crate::rtl::label(ui, egui::RichText::new(text).size(11.0).color(egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)));
+                crate::rtl::label(ui, egui::RichText::new(text).size(11.0).color(t.link_error));
             }
             // Each conflict: the file's text, which won; the layout's version is in a Flow note.
             for c in report["conflicts"].as_array().into_iter().flatten() {
@@ -2771,11 +2768,7 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(
-            r.center(),
-            4.5,
-            if errors == 0 { egui::Color32::from_rgb(60, 200, 90) } else { egui::Color32::from_rgb(235, 50, 50) },
-        );
+        ui.painter().circle_filled(r.center(), 4.5, if errors == 0 { t.status_ok } else { t.status_error });
         crate::rtl::label(
             ui,
             if issues.is_empty() {

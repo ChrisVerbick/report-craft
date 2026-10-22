@@ -2880,7 +2880,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 if ui
                     .add_enabled(
                         ok_enabled,
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(ok_label).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(ok_label).color(crate::theme::Tokens::get(ui.ctx()).on_accent)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
