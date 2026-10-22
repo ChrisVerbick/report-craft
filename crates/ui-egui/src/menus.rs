@@ -2368,9 +2368,20 @@ fn parse_entries(entries: &[&str]) -> Vec<Item> {
     out
 }
 
-/// The whole menu tree (InDesign order).
+/// The whole menu tree (InDesign order), for the edition this build carries.
 pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
-    MENUS.iter().map(|(m, e)| (*m, parse_entries(e))).collect()
+    menu_tree_for(designcraft_edition::current())
+}
+
+/// The menu tree for `edition`: without the ArtCraft commands an edition leaves out.
+pub fn menu_tree_for(edition: Option<&designcraft_edition::Edition>) -> Vec<(&'static str, Vec<Item>)> {
+    let mut tree: Vec<_> = MENUS.iter().map(|(m, e)| (*m, parse_entries(e))).collect();
+    if edition.is_some() {
+        for (_, entries) in &mut tree {
+            without_commands(entries, &|id| crate::identity::hidden(id, edition));
+        }
+    }
+    tree
 }
 
 /// A row of the macOS application menu (the menu named after the app).
@@ -2986,7 +2997,7 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
                 let label = match id.as_str() {
                     "window.workspace" => format!("[{}]", crate::i18n::workspace_name(lang, label)),
                     "window.resetWorkspace" => format!("{} {}", crate::i18n::tr(lang, "Reset"), crate::i18n::workspace_name(lang, &app.ui.workspace)),
-                    _ => crate::i18n::tr(lang, label).to_owned(),
+                    _ => crate::identity::named(crate::i18n::tr(lang, label), app.edition),
                 };
                 let text = match checked(app, id, params) {
                     Some(true) => format!("✓ {label}"),
@@ -3314,6 +3325,7 @@ fn quick_commands() -> impl Iterator<Item = (&'static str, &'static str, Option<
         .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
         .map(|c| (c.id, c.label, c.shortcut))
         .chain(UI_COMMANDS.iter().map(|c| (c.0, c.1, c.2)))
+        .filter(|(id, _, _)| !crate::identity::hidden(id, designcraft_edition::current()))
 }
 
 /// Whether any of `texts` contains the lowercased query (an empty query matches everything).
@@ -3336,7 +3348,13 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
         if out.len() >= 14 || !self::shown(app, id) || out.iter().any(|it| it.id == id) || !quick_match(&ql, &[shown, label, id]) {
             continue;
         }
-        out.push(QuickItem { label: shown.to_string(), id: id.to_string(), params: Value::Null, shortcut: shortcut_of(app, id), kind: "" });
+        out.push(QuickItem {
+            label: crate::identity::named(shown, app.edition),
+            id: id.to_string(),
+            params: Value::Null,
+            shortcut: shortcut_of(app, id),
+            kind: "",
+        });
     }
     out
 }

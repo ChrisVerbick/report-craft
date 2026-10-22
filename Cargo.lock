@@ -1259,6 +1259,7 @@ dependencies = [
  "designcraft-fonts",
  "designcraft-geom",
  "designcraft-idml",
+ "designcraft-images",
  "designcraft-render",
  "designcraft-tools",
  "egui",

@@ -17,6 +17,7 @@ pub mod dock;
 pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
+pub mod identity;
 pub mod menus;
 mod modal_drag;
 mod new_document;

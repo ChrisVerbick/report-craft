@@ -287,12 +287,13 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › ")))
         .chain(crate::menus::UI_COMMANDS.iter().map(|c| (c.0.to_string(), c.1.to_string(), String::new())))
         .filter(|(id, l, _)| ql.is_empty() || l.to_lowercase().contains(&ql) || id.to_lowercase().contains(&ql))
+        .filter(|(id, _, _)| !crate::identity::hidden(id, app.edition))
         .collect();
     rows.sort_by(|a, b| a.1.cmp(&b.1));
     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
         egui::Grid::new("shortcuts").num_columns(3).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
             for (id, label, menu) in &rows {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')))
+                crate::rtl::label(ui, crate::identity::named(crate::i18n::tr(&app.ui.language, label.trim_end_matches('…')), app.edition))
                     .on_hover_text(format!("{id}{}", if menu.is_empty() { String::new() } else { format!("  ({menu})") }));
                 let cur = crate::menus::shortcut_of(app, id).map(|s| crate::menus::shortcut_text(&s)).unwrap_or_else(|| "—".into());
                 let text = if recording == *id { crate::i18n::tr(&app.ui.language, "Press keys…").to_string() } else { cur };

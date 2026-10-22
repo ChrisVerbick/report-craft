@@ -100,6 +100,46 @@ fn link(ui: &mut egui::Ui, text: &str, url: &str, color: Color32) -> bool {
     resp.clicked()
 }
 
+/// An edition's About tab: its lockup, name and version, then the plain-text credit to
+/// DesignCraft with its links, in place of the ArtCraft mark, community and apps.
+fn edition_about(app: &mut DesignApp, ui: &mut egui::Ui, e: &designcraft_edition::Edition, t: &Tokens, open: &mut Option<&'static str>) {
+    let lang = app.ui.language.clone();
+    ui.vertical_centered(|ui| {
+        ui.add_space(8.0);
+        crate::identity::paint_lockup(ui, e, 160.0);
+        ui.add_space(8.0);
+        ui.label(crate::rtl::widget(ui, egui::RichText::new(e.name).font(semibold(26.0)).color(t.text_strong)));
+        crate::rtl::label(
+            ui,
+            egui::RichText::new(format!("{} {}", crate::i18n::tr(&lang, "Version"), env!("CARGO_PKG_VERSION"))).size(12.0).color(t.text_dim),
+        );
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new(crate::identity::BASED_ON).size(12.0).color(t.text));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            // Centre the row of links.
+            let w = 220.0;
+            ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+            for (text, key) in [("GitHub", "github"), ("Report an issue", "issues")] {
+                if link(ui, crate::i18n::tr(&lang, text), links::get(key).unwrap_or_default(), t.accent) {
+                    *open = Some(key);
+                }
+                ui.add_space(6.0);
+            }
+            let notice = format!("{}/blob/main/NOTICE", links::GITHUB);
+            if link(ui, "NOTICE", &notice, t.accent) {
+                app.ui.pending_urls.push(notice);
+            }
+        });
+        ui.add_space(12.0);
+        ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&lang, "Open source. No telemetry.")).size(11.0).color(t.text_dim)));
+        ui.add_space(8.0);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "  Close  "))).clicked() {
+            app.ui.about = false;
+        }
+    });
+}
+
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if !app.ui.about {
         return;
@@ -143,6 +183,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     app.ui.about = false;
                 }
             });
+            return;
+        }
+        if let Some(e) = app.edition {
+            edition_about(app, ui, e, &t, &mut open);
             return;
         }
         ui.vertical_centered(|ui| {
@@ -240,5 +284,52 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     }
     if let Some(k) = open {
         let _ = app.run(&format!("help.{k}"), json!({}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::DesignApp;
+
+    fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(t.galley.job.text.clone()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
+            _ => {}
+        }
+    }
+
+    /// Every text the About tab paints (the last of three frames: the box sizes itself first).
+    fn about_texts(app: &mut DesignApp) -> Vec<String> {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        crate::theme::apply(&ctx, &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+        app.ui.about = true;
+        app.ui.about_tab = 0;
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| super::show(app, ui.ctx()));
+            output.textures_delta.clear();
+            texts.clear();
+            output.shapes.iter().for_each(|s| collect(&s.shape, &mut texts));
+        }
+        texts
+    }
+
+    /// An edition's About box credits DesignCraft in plain text, without the ArtCraft community.
+    #[test]
+    fn edition_about_box_credits_designcraft() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.edition = None;
+        let plain = about_texts(&mut app);
+        assert!(plain.iter().any(|t| t == "Join the ArtCraft Discord"), "{plain:?}");
+        app.edition = Some(&crate::identity::FIXTURE_EDITION);
+        let texts = about_texts(&mut app);
+        for present in ["Test Edition", crate::identity::BASED_ON] {
+            assert!(texts.iter().any(|t| t == present), "{present} missing: {texts:?}");
+        }
+        for absent in ["Join the ArtCraft Discord", "More ArtCraft apps", "Part of the ArtCraft suite of open creative tools."] {
+            assert!(!texts.iter().any(|t| t == absent), "{absent} shown: {texts:?}");
+        }
     }
 }

@@ -1044,32 +1044,10 @@ mod edition_tests {
     use egui::{Color32, FontFamily};
 
     /// Task 1's fixture (`crates/edition/tests/fixture/edition.toml`).
-    const FIXTURE: Theme = Theme {
-        bg: [0x10, 0x14, 0x18],
-        raised: [0x20, 0x26, 0x2c],
-        hover: [0x2a, 0x31, 0x38],
-        text: [0xe8, 0xec, 0xf0],
-        accent: [0x3a, 0xa6, 0x75],
-        on_accent: [0x00, 0x00, 0x00],
-        success: [0x4c, 0xc3, 0x8a],
-        error: [0xe5, 0x48, 0x4d],
-        secondary: 0.72,
-        muted: 0.52,
-        faint: 0.32,
-        hairline: 0.18,
-        radius: 0,
-    };
+    const FIXTURE: Theme = crate::identity::FIXTURE_EDITION.theme;
 
     fn edition() -> Edition {
-        Edition {
-            name: "Test Edition",
-            bundle_id: "org.example.test-edition",
-            data_folder: "Test Edition",
-            wordmark: "TEST",
-            mark_svg: b"<svg/>",
-            theme: FIXTURE,
-            fonts: None,
-        }
+        crate::identity::FIXTURE_EDITION
     }
 
     fn rgb(c: [u8; 3]) -> Color32 {
