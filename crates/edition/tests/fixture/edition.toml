@@ -1,0 +1,23 @@
+# A made-up edition for the tests: neutral names, invented colours, no fonts.
+name = "Test Edition"
+bundle_id = "org.example.test-edition"
+data_folder = "Test Edition"
+wordmark = "TEST"
+
+[logo]
+mark = "mark.svg"
+
+[theme]
+bg = "#101418"
+raised = "#20262c"
+hover = "#2a3138"
+text = "#e8ecf0"
+secondary = 0.72
+muted = 0.52
+faint = 0.32
+hairline = 0.18
+accent = "#3aa675"
+on_accent = "#000000"
+success = "#4cc38a"
+error = "#e5484d"
+radius = 0

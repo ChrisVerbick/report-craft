@@ -1,0 +1,15 @@
+[package]
+name = "designcraft-edition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft editions: a name, theme, mark and typeface embedded at build time from DESIGNCRAFT_EDITION"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+toml = "1"
+
+[dev-dependencies]
+toml = "1"

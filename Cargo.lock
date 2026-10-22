@@ -1021,6 +1021,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "designcraft-edition"
+version = "0.9.0"
+dependencies = [
+ "toml",
+]
+
+[[package]]
 name = "designcraft-engine"
 version = "0.9.0"
 dependencies = [

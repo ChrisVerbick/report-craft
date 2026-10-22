@@ -16,6 +16,7 @@ craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "c3487320b2
 # internal
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
+designcraft-edition = { path = "crates/edition" }
 designcraft-doc = { path = "crates/doc" }
 designcraft-fonts = { path = "crates/fonts" }
 designcraft-compose = { path = "crates/compose" }
