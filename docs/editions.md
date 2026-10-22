@@ -11,6 +11,7 @@ name = "Test Edition"                   # where the app names itself
 bundle_id = "org.example.test-edition"  # the macOS bundle identifier
 data_folder = "Test Edition"            # one folder: settings, logs and recovery files
 wordmark = "TEST"                       # under the mark in the About box
+review = { server = "https://review.example.com" }  # optional: the review service (docs/review.md)
 
 [logo]
 mark = "mark.svg"                       # square SVG: app bar, About box, app icon
@@ -22,19 +23,18 @@ radius = 0                              # corners, 0 to 16
 density = "compact"                     # optional, or "comfortable": roomier Properties and Pages
 ```
 
-The fixture's `[theme]` sets every required key. An optional `[fonts]` table names the interface
-typeface: `regular`, `semibold` and an optional `bold` for the wordmark, OpenType or TrueType.
-Without it, the About box shows the mark alone. The build stops on an unknown key, an empty value,
-a missing file, a colour that isn't `#rrggbb`, an alpha outside 0 to 1, or a `data_folder` that
-isn't one folder name, and names what is wrong. A face egui can't read is left out, not loaded.
+An optional `[fonts]` table names the interface typeface (`regular`, `semibold`, optional `bold`);
+without it the About box shows the mark alone, and a face egui can't read is skipped. The review
+server must be https (http only on localhost); the owner token is a preference. The build stops on
+an unknown key, an empty value, a missing file, a colour that isn't `#rrggbb`, an alpha outside
+0 to 1, a `data_folder` that isn't one folder name or a bad review server, and names what is wrong.
 
-Run it, or package it as a Mac app (`<name>.app` in `target/edition`, or in `CARGO_TARGET_DIR`
-when that is set; signed ad hoc for this Mac):
+Run it, or package it as a Mac app (`<name>.app` in `target/edition` or `CARGO_TARGET_DIR`, signed ad hoc):
 
     DESIGNCRAFT_EDITION=/abs/path/to/edition cargo run --release -p designcraft
     DESIGNCRAFT_EDITION=/abs/path/to/edition packaging/macos/edition.sh
 
 The code is MIT or Apache 2.0, but the ArtCraft marks are not: forks and modified versions must
-remove or replace them ([`docs/brand/LICENSE-brand.txt`](brand/LICENSE-brand.txt)). An edition
-does so. It leaves out the ArtCraft mark, Discord and website links, and credits DesignCraft in
-plain text in its About box. Keep an edition's own brand files and fonts out of this repository.
+remove or replace them ([`docs/brand/LICENSE-brand.txt`](brand/LICENSE-brand.txt)). An edition does
+so: no ArtCraft mark, Discord or website links, DesignCraft credited in plain text in its About box,
+and its own brand files and fonts kept out of this repository.

@@ -89,6 +89,7 @@ pub(crate) const FIXTURE_EDITION: designcraft_edition::Edition = designcraft_edi
     bundle_id: "org.example.test-edition",
     data_folder: "Test Edition",
     wordmark: "TEST",
+    review_server: None,
     mark_svg: include_bytes!("../../edition/tests/fixture/mark.svg"),
     theme: designcraft_edition::Theme {
         bg: [0x10, 0x14, 0x18],

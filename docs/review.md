@@ -9,7 +9,8 @@ same commands with buttons.
 ## Set up once
 
 The service's URL and its owner token live in Preferences (`prefs.set {reviewServer, reviewToken}`;
-the panel has fields for both). They are kept in the preferences file on this computer: anyone
+the panel has fields for both). An edition names its own service (`[review] server` in
+`edition.toml`, [editions.md](editions.md)), the default when the preference is empty. They are kept in the preferences file on this computer: anyone
 using this account can read the token, which can do everything the owner can on the service.
 A keychain entry is the planned upgrade. The token never goes into an edition build.
 

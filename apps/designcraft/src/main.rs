@@ -547,6 +547,7 @@ fn main() -> std::process::ExitCode {
                 }
                 let mut session = Session::new();
                 session.transport = Some(std::sync::Arc::new(review_transport::UreqTransport::new()));
+                session.review_server_default = designcraft_edition::current().and_then(|e| e.review_server).map(str::to_string);
                 // Crash recovery: reopen what a previous run left unsaved, then keep it current.
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();

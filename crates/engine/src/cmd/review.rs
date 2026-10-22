@@ -178,7 +178,14 @@ impl Service {
 
 fn service(s: &Session, p: &Value, id: &str) -> Result<Service> {
     let transport = s.transport.clone().ok_or_else(|| bad(id, "this build has no connection to a review service"))?;
-    let server = str_param(p, "server").map(str::trim).filter(|v| !v.is_empty()).map_or_else(|| s.prefs.review_server.clone(), str::to_string);
+    // A parameter, else the preference, else what the host set (its edition's own service).
+    let server = str_param(p, "server")
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| Some(s.prefs.review_server.trim().to_string()).filter(|v| !v.is_empty()))
+        .or_else(|| s.review_server_default.clone())
+        .unwrap_or_default();
     let token = s.prefs.review_token.clone();
     if server.is_empty() || token.is_empty() {
         return Err(bad(id, SETTINGS_HELP));
@@ -770,6 +777,10 @@ mod tests {
         let e = s.execute("review.projects", &json!({})).unwrap_err().to_string();
         assert!(e.contains("reviewServer"), "{e}");
         assert!(s.execute("review.sync", &json!({})).is_err());
+        // The host's default (an edition's own service) stands in for the preference.
+        s.review_server_default = Some("https://review.test".into());
+        s.execute("prefs.set", &json!({"reviewToken": "t"})).unwrap();
+        assert_eq!(s.execute("review.projects", &json!({})).unwrap()[0]["name"], "P");
     }
 
     /// The sample magazine has a table and a footnote: their text is in the layer, addressed as

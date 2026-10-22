@@ -21,6 +21,9 @@ pub struct Edition {
     pub mark_svg: &'static [u8],
     pub theme: Theme,
     pub fonts: Option<Fonts>,
+    /// The review service this edition publishes to (`[review] server`), the default for the
+    /// `reviewServer` preference.
+    pub review_server: Option<&'static str>,
 }
 
 /// Colours by role (sRGB), alphas of `text` over `bg` and the density, as the edition's `[theme]`

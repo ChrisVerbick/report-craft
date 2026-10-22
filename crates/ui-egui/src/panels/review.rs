@@ -39,12 +39,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     );
 
     // The service: the preferences, kept on this computer.
-    let unset = app.session.prefs.review_server.is_empty() || app.session.prefs.review_token.is_empty();
+    // The host passes its edition's service in; the hint shows it.
+    let edition_server = app.session.review_server_default.clone().unwrap_or_else(|| "https://review.example.com".into());
+    let unset =
+        (app.session.prefs.review_server.is_empty() && app.session.review_server_default.is_none()) || app.session.prefs.review_token.is_empty();
     egui::CollapsingHeader::new(crate::rtl::widget(ui, tr("Review service"))).default_open(unset).show(ui, |ui| {
         let mut server = app.session.prefs.review_server.clone();
         let mut token = app.session.prefs.review_token.clone();
         crate::rtl::label(ui, RichText::new(tr("Server")).size(11.0).color(t.text_dim));
-        if ui.add(egui::TextEdit::singleline(&mut server).hint_text("https://review.example.com")).changed() {
+        if ui.add(egui::TextEdit::singleline(&mut server).hint_text(edition_server.as_str())).changed() {
             let _ = app.run("prefs.set", json!({"reviewServer": server.trim()}));
         }
         crate::rtl::label(ui, RichText::new(tr("Owner token")).size(11.0).color(t.text_dim));

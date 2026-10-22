@@ -77,6 +77,7 @@ pub(crate) const TEST_EDITION: designcraft_edition::Edition = designcraft_editio
     bundle_id: "org.example.test-edition",
     data_folder: "Test Edition",
     wordmark: "TEST",
+    review_server: None,
     mark_svg: include_bytes!("../../../crates/edition/tests/fixture/mark.svg"),
     theme: designcraft_edition::Theme {
         bg: [0x10, 0x14, 0x18],

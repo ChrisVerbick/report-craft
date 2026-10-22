@@ -14,6 +14,8 @@ pub struct Parsed {
     pub mark: PathBuf,
     pub theme: ParsedTheme,
     pub fonts: Option<ParsedFonts>,
+    /// `[review] server`: the review service the app publishes to.
+    pub review_server: Option<String>,
 }
 
 /// `[theme]`: colours by role and alphas, as the crate's `Theme` holds them.
@@ -87,7 +89,7 @@ pub fn edition_dir(env: Option<&str>) -> Result<Option<PathBuf>, String> {
     Ok(Some(dir))
 }
 
-const TOP: &[&str] = &["name", "bundle_id", "data_folder", "wordmark", "logo", "theme", "fonts"];
+const TOP: &[&str] = &["name", "bundle_id", "data_folder", "wordmark", "logo", "theme", "fonts", "review"];
 const THEME: &[&str] =
     &["bg", "raised", "hover", "text", "accent", "on_accent", "success", "error", "secondary", "muted", "faint", "hairline", "radius", "density"];
 
@@ -137,7 +139,16 @@ pub fn parse_edition(toml_text: &str, dir: &Path) -> Result<Parsed, String> {
             Some(ParsedFonts { regular: font(dir, f, "regular")?, semibold: font(dir, f, "semibold")?, bold })
         }
     };
+    let review_server = match top.get("review") {
+        None => None,
+        Some(v) => {
+            let r = v.as_table().ok_or_else(|| "edition.toml: `review` must be a table".to_string())?;
+            known(r, "review", &["server"])?;
+            Some(review_server(r)?)
+        }
+    };
     Ok(Parsed {
+        review_server,
         name: text("name")?,
         bundle_id,
         data_folder,
@@ -178,7 +189,7 @@ pub fn generated_rust(p: &Parsed) -> String {
         ),
     };
     format!(
-        "pub static EDITION: Option<&Edition> = Some(&Edition {{\n    name: {:?},\n    bundle_id: {:?},\n    data_folder: {:?},\n    wordmark: {:?},\n    mark_svg: {},\n    theme: Theme {{\n        bg: {}, raised: {}, hover: {}, text: {}, accent: {}, on_accent: {}, success: {}, error: {},\n        secondary: {:?}, muted: {:?}, faint: {:?}, hairline: {:?}, radius: {},\n        density: Density::{:?},\n    }},\n    fonts: {},\n}});\n",
+        "pub static EDITION: Option<&Edition> = Some(&Edition {{\n    name: {:?},\n    bundle_id: {:?},\n    data_folder: {:?},\n    wordmark: {:?},\n    mark_svg: {},\n    theme: Theme {{\n        bg: {}, raised: {}, hover: {}, text: {}, accent: {}, on_accent: {}, success: {}, error: {},\n        secondary: {:?}, muted: {:?}, faint: {:?}, hairline: {:?}, radius: {},\n        density: Density::{:?},\n    }},\n    fonts: {},\n    review_server: {},\n}});\n",
         p.name,
         p.bundle_id,
         p.data_folder,
@@ -199,7 +210,20 @@ pub fn generated_rust(p: &Parsed) -> String {
         t.radius,
         t.density,
         fonts,
+        p.review_server.as_deref().map_or_else(|| "None".to_string(), |s| format!("Some({s:?})")),
     )
+}
+
+/// `review.server`: an https URL, or http on this computer only, since the owner token travels
+/// with every request.
+fn review_server(t: &toml::Table) -> Result<String, String> {
+    let bad = || "edition.toml: review.server must be an https:// URL (http:// only for localhost or 127.0.0.1), with no spaces".to_string();
+    let s = t.get("server").and_then(toml::Value::as_str).map(str::trim).ok_or_else(bad)?;
+    let local = s.starts_with("http://localhost") || s.starts_with("http://127.0.0.1");
+    if s.is_empty() || s.contains(char::is_whitespace) || !(s.starts_with("https://") || local) {
+        return Err(bad());
+    }
+    Ok(s.trim_end_matches('/').to_string())
 }
 
 fn known(t: &toml::Table, section: &str, keys: &[&str]) -> Result<(), String> {
@@ -341,6 +365,25 @@ mod tests {
         // A font that is neither OpenType nor TrueType: the fixture's SVG named as one.
         let fonts = format!("{}\n[fonts]\nregular = \"mark.svg\"\nsemibold = \"mark.svg\"\n", fixture_toml());
         assert!(err(fonts).contains("mark.svg"));
+    }
+
+    /// `[review] server` names the review service the edition's app publishes to: https, or http
+    /// on this computer only (the owner token travels with every request).
+    #[test]
+    fn the_review_server_is_optional_and_must_be_https() {
+        let none = parse_edition(&fixture_toml(), &fixture()).unwrap();
+        assert_eq!(none.review_server, None);
+        assert!(generated_rust(&none).contains("review_server: None"));
+        let some = parse_edition(&format!("{}\n[review]\nserver = \"https://review.example.com\"\n", fixture_toml()), &fixture()).unwrap();
+        assert_eq!(some.review_server.as_deref(), Some("https://review.example.com"));
+        assert!(generated_rust(&some).contains("review_server: Some(\"https://review.example.com\")"));
+        let local = parse_edition(&format!("{}\n[review]\nserver = \"http://localhost:8080\"\n", fixture_toml()), &fixture()).unwrap();
+        assert_eq!(local.review_server.as_deref(), Some("http://localhost:8080"));
+        let err = |tail: &str| parse_edition(&format!("{}\n{tail}\n", fixture_toml()), &fixture()).unwrap_err();
+        assert!(err("[review]\nserver = \"http://review.example.com\"").contains("https"), "plain http elsewhere");
+        assert!(err("[review]\nserver = \"\"").contains("review.server"));
+        assert!(err("[review]\nserver = \"https://a b\"").contains("review.server"));
+        assert!(err("[review]\nurl = \"https://review.example.com\"").contains("url"), "unknown key");
     }
 
     #[test]

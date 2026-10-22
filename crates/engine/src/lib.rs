@@ -425,6 +425,9 @@ pub struct Session {
     /// How review commands reach the review service; the app provides it (HTTP stays above the
     /// engine). None: the review commands say so.
     pub transport: Option<Arc<dyn crate::review::Transport>>,
+    /// The review service to use when the `reviewServer` preference is empty: the host passes
+    /// its edition's in (the engine knows no edition).
+    pub review_server_default: Option<String>,
 }
 
 impl Default for Session {
@@ -458,6 +461,7 @@ impl Session {
             text_clipboard: None,
             text_link_checks: Default::default(),
             transport: None,
+            review_server_default: None,
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),
