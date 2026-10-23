@@ -9,10 +9,11 @@ use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
+use crate::prop_grid::{PropGrid, Track, value_fits};
 use crate::theme::Tokens;
 use crate::widgets::{
-    self, FIELD_H, NumField, button_pair, caption, divider, dropdown, full_width, icon_toggle, link_label, measure, more_options, number,
-    outline_button, rule, section, section_row, selection_band,
+    self, DROPDOWN_CHROME, FIELD_H, NUM_CHROME, NumField, SPIN_CHROME, button_pair, caption, divider, full_width, icon_toggle, link_label, measure,
+    more_options, number, outline_button, rule, section, section_row, selection_band,
 };
 use crate::{DesignApp, icons};
 
@@ -33,16 +34,21 @@ fn block(ui: &mut Ui, h: f32) -> Rect {
     ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover()).0
 }
 
-/// A sub-rect of a block at (`x`, `y`) relative to its top-left.
-fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
-    Rect::from_min_size(b.min + vec2(x, y), vec2(w, h))
-}
-
 /// Run `f` in a child ui occupying `r` (left-to-right, vertically centred). The parent's cursor
 /// does not move: callers allocate the whole block first with [`block`].
 pub(crate) fn place<R>(ui: &mut Ui, r: Rect, f: impl FnOnce(&mut Ui) -> R) -> R {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)));
     f(&mut child)
+}
+
+/// A child of `ui` over the rows a section's grid has allocated: it draws without moving the
+/// cursor, and is disabled unless `on`.
+fn over_grid(ui: &mut Ui, on: bool) -> Ui {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(ui.max_rect()));
+    if !on {
+        child.disable();
+    }
+    child
 }
 
 fn temp_bool(ui: &Ui, key: &str, default: bool) -> bool {
@@ -77,6 +83,7 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    widgets::scope_label_size(ui, t.label_size);
     if app.session.active().is_none() {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No document open")).color(t.text_dim));
         return;
@@ -154,7 +161,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     } else {
         if i.is_graphic {
             section(ui, crate::i18n::tr(&app.ui.language, "Frame Fitting"), true);
-            ui.horizontal(|ui| {
+            let g = PropGrid::new(ui, &t, 1);
+            place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 for (icon, mode, tip) in [
                     ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
@@ -216,13 +224,13 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     let n = page + 1;
     let t = Tokens::get(ui.ctx());
     // The band: "Page", and Back at its end.
-    let band = block(ui, 33.0);
+    let band = block(ui, t.title_band_h);
     crate::rtl::paint(
         ui.painter(),
         pos2(band.min.x, band.center().y + 1.0),
         egui::Align2::LEFT_CENTER,
         crate::i18n::tr(&lang, "Page"),
-        crate::theme::semibold(11.5),
+        crate::theme::semibold(t.title_size),
         t.text_strong,
     );
     let back = place(ui, Rect::from_min_size(pos2(band.max.x - 58.0, band.center().y - 10.0), vec2(54.0, 20.0)), |ui| {
@@ -235,25 +243,24 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
         return;
     }
     section(ui, crate::i18n::tr(&lang, "Page Size"), true);
-    // Which page.
-    let b = block(ui, FIELD_H);
+    // Which page; the preset and orientation; W; H; then Margins and Columns.
+    let g = PropGrid::new(ui, &t, 5);
     let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, names.get(page).map_or("", String::as_str), 93.0, &names, Some(page))
-    });
+    let c = g.span(0, Track::Lead, Track::FieldA);
+    let picked =
+        place(ui, c, |ui| widgets::dropdown_list_h(ui, names.get(page).map_or("", String::as_str), c.width(), c.height(), &names, Some(page)));
     if let Some(p) = picked {
         let _ = app.run("layout.selectPage", json!({"page": p + 1}));
         crate::canvas::go_to_page(app, p);
         return;
     }
-    ui.add_space(3.0);
     // Preset and orientation: this page alone.
     let (w, h) = (pg.width, pg.height);
     let landscape = w > h;
-    let b = block(ui, FIELD_H);
     let mut size = None;
-    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        let resp = dropdown(ui, crate::i18n::tr(&lang, preset_name(w, h)), 93.0);
+    let c = g.span(1, Track::Lead, Track::FieldA);
+    place(ui, c, |ui| {
+        let resp = widgets::dropdown_h(ui, crate::i18n::tr(&lang, preset_name(w, h)), c.width(), c.height());
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(140.0);
             for p in PAGE_PRESETS {
@@ -264,7 +271,7 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
             }
         });
     });
-    place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
+    place(ui, g.span(1, Track::SlotB, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         if icon_toggle(ui, "orient-portrait", !landscape, crate::i18n::tr(&lang, "Portrait")).clicked() && landscape {
             size = Some((h, w));
@@ -273,13 +280,12 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
             size = Some((h, w));
         }
     });
-    ui.add_space(3.0);
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
     for (row, (label, v, key)) in [("W:", w, "width"), ("H:", h, "height")].into_iter().enumerate() {
-        let y = row as f32 * 26.0;
-        place(ui, sub(b, 0.0, y, 20.0, FIELD_H), |ui| widgets::caption_w(ui, label, 20.0));
-        let nv = place(ui, sub(b, 21.0, y, 72.0, FIELD_H), |ui| {
-            NumField::measure(&format!("page_{key}"), Some(v), u).width(72.0).spinner().range(1.0, 15552.0).show(ui)
+        let c = g.cell(row + 2, Track::SlotA);
+        place(ui, c, |ui| widgets::caption_w(ui, label, c.width()));
+        let c = g.cell(row + 2, Track::FieldA);
+        let nv = place(ui, c, |ui| {
+            NumField::measure(&format!("page_{key}"), Some(v), u).width(c.width()).height(c.height()).spinner().range(1.0, 15552.0).show(ui)
         });
         if let Some(nv) = nv {
             size = Some(if key == "width" { (nv, h) } else { (w, nv) });
@@ -288,15 +294,16 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     if let Some((nw, nh)) = size {
         let _ = app.run("layout.pageSize", json!({"pages": [n], "width": nw, "height": nh, "anchor": app.ui.ref_point.min(8)}));
     }
-    ui.add_space(6.0);
-    let fw = full_width(ui);
-    if outline_button(ui, crate::i18n::tr(&lang, "Margins and Columns"), fw).clicked() {
+    let c = g.span(4, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&lang, "Margins and Columns"), c.width())).clicked() {
         crate::canvas::go_to_page(app, page);
         crate::menus::activate(app, "layout.marginsAndColumns", &Value::Null);
     }
     divider(ui);
     section(ui, crate::i18n::tr(&lang, "Quick Actions"), true);
-    if outline_button(ui, crate::i18n::tr(&lang, "Import File"), fw).clicked() {
+    let g = PropGrid::new(ui, &t, 1);
+    let c = g.span(0, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&lang, "Import File"), c.width())).clicked() {
         let _ = app.run("app.placeDialog", json!({}));
     }
 }
@@ -306,12 +313,14 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     let Some(st) = app.session.active() else { return };
     let d = st.doc.clone();
     let (pw, ph) = (d.settings.page_width, d.settings.page_height);
+    let t = Tokens::get(ui.ctx());
     section(ui, crate::i18n::tr(&app.ui.language, "Document"), true);
-    // Preset dropdown + orientation.
-    let b = block(ui, FIELD_H);
+    // The preset and orientation; W and the page count; H and Facing Pages.
+    let g = PropGrid::new(ui, &t, 3);
     let mut preset = None;
-    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        let resp = dropdown(ui, preset_name(pw, ph), 93.0);
+    let c = g.span(0, Track::Lead, Track::FieldA);
+    place(ui, c, |ui| {
+        let resp = widgets::dropdown_h(ui, preset_name(pw, ph), c.width(), c.height());
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(140.0);
             for p in PAGE_PRESETS {
@@ -324,7 +333,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     });
     let landscape = pw > ph;
     let mut orient = None;
-    place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
+    place(ui, g.span(0, Track::SlotB, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         if icon_toggle(ui, "orient-portrait", !landscape, crate::i18n::tr(&app.ui.language, "Portrait")).clicked() && landscape {
             orient = Some(());
@@ -340,22 +349,19 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if orient.is_some() {
         let _ = app.run("layout.documentSetup", json!({"width": ph, "height": pw}));
     }
-    ui.add_space(3.0);
-    // W / H, page count, facing pages.
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
     for (row, (label, v, key)) in [("W:", pw, "width"), ("H:", ph, "height")].into_iter().enumerate() {
-        let y = row as f32 * 26.0;
-        place(ui, sub(b, 0.0, y, 20.0, FIELD_H), |ui| widgets::caption_w(ui, label, 20.0));
-        let nv =
-            place(ui, sub(b, 21.0, y, 72.0, FIELD_H), |ui| NumField::measure(key, Some(v), u).width(72.0).spinner().range(1.0, 15552.0).show(ui));
+        let c = g.cell(row + 1, Track::SlotA);
+        place(ui, c, |ui| widgets::caption_w(ui, label, c.width()));
+        let c = g.cell(row + 1, Track::FieldA);
+        let nv = place(ui, c, |ui| NumField::measure(key, Some(v), u).width(c.width()).height(c.height()).spinner().range(1.0, 15552.0).show(ui));
         if let Some(nv) = nv {
             let _ = app.run("layout.documentSetup", json!({key: nv}));
         }
     }
     let n = d.page_count();
-    let t = Tokens::get(ui.ctx());
-    icons::paint(ui.painter(), sub(b, 127.0, 2.0, 17.0, 17.0), "page-count", t.icon);
-    let nv = place(ui, sub(b, 150.0, 0.0, 68.0, FIELD_H), |ui| number(ui, "pagecount", Some(n as f64), "", 68.0, 0));
+    icons::paint(ui.painter(), Rect::from_center_size(g.cell(1, Track::SlotB).center(), vec2(16.0, 16.0)), "page-count", t.icon);
+    let c = g.cell(1, Track::FieldB);
+    let nv = place(ui, c, |ui| NumField::number("pagecount", Some(n as f64), "", 0).width(c.width()).height(c.height()).show(ui));
     if let Some(nv) = nv {
         let want = (nv.round() as usize).clamp(1, 9999);
         if want > n {
@@ -365,7 +371,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
         }
     }
     let mut facing = d.settings.facing_pages;
-    let changed = place(ui, sub(b, 126.0, 26.0, 100.0, FIELD_H), |ui| {
+    let changed = place(ui, g.span(2, Track::SlotB, Track::Trail), |ui| {
         widgets::checkbox(ui, &mut facing, crate::i18n::tr(&app.ui.language, "Facing Pages")).changed()
     });
     if changed {
@@ -381,25 +387,26 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
         Some((pi, qi)) => d.parents.get(pi).and_then(|s| s.pages.get(qi)).cloned(),
         None => d.page(cur).cloned(),
     };
+    // The four margins and their link, then Adjust Layout.
+    let button_row = if shown.is_some() { 2 } else { 0 };
+    let g = PropGrid::new(ui, &t, button_row + 1);
     if let Some(p) = shown {
         let linked = temp_bool(ui, "margins_linked", true);
-        let b = block(ui, 2.0 * FIELD_H + 5.0);
         let mut set: Option<designcraft_doc::Margins> = None;
         let fields = [
-            ("margin-top", "Top", p.margins.top, 0.0, 0.0),
-            ("margin-bottom", "Bottom", p.margins.bottom, 0.0, 26.0),
-            ("margin-outside", if d.settings.facing_pages { "Outside" } else { "Right" }, p.margins.outside, 127.0, 0.0),
-            ("margin-inside", if d.settings.facing_pages { "Inside" } else { "Left" }, p.margins.inside, 127.0, 26.0),
+            ("margin-top", "Top", p.margins.top, 0, Track::SlotA, Track::FieldA),
+            ("margin-bottom", "Bottom", p.margins.bottom, 1, Track::SlotA, Track::FieldA),
+            ("margin-outside", if d.settings.facing_pages { "Outside" } else { "Right" }, p.margins.outside, 0, Track::SlotB, Track::FieldB),
+            ("margin-inside", if d.settings.facing_pages { "Inside" } else { "Left" }, p.margins.inside, 1, Track::SlotB, Track::FieldB),
         ];
-        for (k, (icon, tip, v, x, y)) in fields.into_iter().enumerate() {
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+        for (k, (icon, tip, v, row, slot, field)) in fields.into_iter().enumerate() {
+            let ir = Rect::from_center_size(g.cell(row, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.id().with(("micon", k)), Sense::hover()).on_hover_ui(|ui| {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, tip));
             });
-            let nv = place(ui, sub(b, x + 20.0, y, 73.0, FIELD_H), |ui| {
-                NumField::measure(tip, Some(v), u).width(73.0).spinner().range(0.0, 8000.0).show(ui)
-            });
+            let c = g.cell(row, field);
+            let nv = place(ui, c, |ui| NumField::measure(tip, Some(v), u).width(c.width()).height(c.height()).spinner().range(0.0, 8000.0).show(ui));
             if let Some(nv) = nv {
                 let mut m = p.margins;
                 if linked {
@@ -415,10 +422,16 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
                 set = Some(m);
             }
         }
-        let lr = sub(b, 99.0, 12.5, 22.0, FIELD_H);
+        let lr = g.span_rows(0..2, Track::Trail, Track::Trail);
         let clicked = place(ui, lr, |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, "Make all settings the same", vec2(22.0, 21.0))
-                .clicked()
+            widgets::icon_toggle_sized(
+                ui,
+                if linked { "link" } else { "link-broken" },
+                linked,
+                "Make all settings the same",
+                vec2(lr.width(), t.row_h),
+            )
+            .clicked()
         });
         if clicked {
             set_temp_bool(ui, "margins_linked", !linked);
@@ -435,23 +448,25 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             let _ = app.run("layout.marginsAndColumns", params);
         }
     }
-    ui.add_space(6.0);
-    let fw = full_width(ui);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Adjust Layout"), fw).clicked() {
+    let c = g.span(button_row, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Adjust Layout"), c.width())).clicked() {
         crate::dialogs::open_document_setup(app);
     }
     divider(ui);
-    // Page.
+    // Page: which page, with Insert and Delete at the end; then Edit Page.
     section(ui, crate::i18n::tr(&app.ui.language, "Page"), true);
-    let b = block(ui, FIELD_H);
+    let g = PropGrid::new(ui, &t, 2);
     let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, &names[cur.min(names.len().saturating_sub(1))], 93.0, &names, Some(cur))
+    let c = g.span(0, Track::Lead, Track::FieldA);
+    let picked = place(ui, c, |ui| {
+        let shown = names.get(cur.min(names.len().saturating_sub(1))).map_or("", String::as_str);
+        widgets::dropdown_list_h(ui, shown, c.width(), c.height(), &names, Some(cur))
     });
     if let Some(pg) = picked {
         crate::canvas::go_to_page(app, pg);
     }
-    let (add, del) = place(ui, sub(b, 172.0, 0.0, 50.0, FIELD_H), |ui| {
+    let s = g.span(0, Track::FieldB, Track::Trail);
+    let (add, del) = place(ui, Rect::from_min_max(pos2(s.max.x - 48.0, s.min.y), s.max), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let a = widgets::icon_toggle_sized(ui, "style-new", false, "Insert Page", vec2(22.0, 21.0)).clicked();
         let d = widgets::icon_toggle_sized(ui, "trash", false, "Delete Page", vec2(22.0, 21.0)).clicked();
@@ -463,8 +478,8 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if del {
         let _ = crate::dialogs::delete_pages(app, vec![cur]);
     }
-    ui.add_space(3.0);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit Page"), fw).clicked() {
+    let c = g.span(1, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit Page"), c.width())).clicked() {
         // As in InDesign: the Page tool on this page; Properties shows the page's own settings.
         app.select_tool("page");
         let _ = app.run("layout.selectPage", json!({"page": cur + 1}));
@@ -560,14 +575,17 @@ pub(crate) fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
 }
 
 fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    let t = Tokens::get(ui.ctx());
     let u = units(app);
     let rp = app.ui.ref_point;
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
+    // X/Y and W/H, the angles and scales, then the quarter turns and flips.
+    let g = PropGrid::new(ui, &t, 5);
     // Reference-point position of the bounds.
     let r = i.page_rect;
     let (fx, fy) = ((rp % 3) as f64 / 2.0, (rp / 3) as f64 / 2.0);
     let (x, y) = (r.x0 + r.width() * fx, r.y0 + r.height() * fy);
-    if let Some(p) = ref_point_proxy(ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
+    let lead = g.span_rows(0..2, Track::Lead, Track::Lead);
+    if let Some(p) = ref_point_proxy(ui, Rect::from_min_size(pos2(lead.min.x, lead.center().y - 13.0), vec2(26.0, 26.0)), rp) {
         app.ui.ref_point = p;
     }
     let constrain = temp_bool(ui, "constrain_wh", false);
@@ -575,13 +593,16 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     for (row, (lx, vx, kx, lw, vw, kw)) in
         [("X:", x, "x", "W:", r.width(), "width"), ("Y:", y, "y", "H:", r.height(), "height")].into_iter().enumerate()
     {
-        let yy = row as f32 * 25.0;
-        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
-        if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, kx, Some(vx), u, 54.0)) {
+        let c = g.cell(row, Track::SlotA);
+        place(ui, c, |ui| widgets::caption_w(ui, lx, c.width()));
+        let c = g.cell(row, Track::FieldA);
+        if let Some(v) = place(ui, c, |ui| NumField::measure(kx, Some(vx), u).width(c.width()).height(c.height()).show(ui)) {
             set.insert(kx.into(), json!(v));
         }
-        place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
-        if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| measure(ui, kw, Some(vw), u, 54.0)) {
+        let c = g.cell(row, Track::SlotB);
+        place(ui, c, |ui| widgets::caption_w(ui, lw, c.width()));
+        let c = g.cell(row, Track::FieldB);
+        if let Some(v) = place(ui, c, |ui| NumField::measure(kw, Some(vw), u).width(c.width()).height(c.height()).show(ui)) {
             set.insert(kw.into(), json!(v));
             if constrain && vw > 0.0 {
                 let k = v / vw;
@@ -590,13 +611,14 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
             }
         }
     }
-    let clicked = place(ui, sub(b, 200.0, 12.0, 22.0, FIELD_H), |ui| {
+    let link = g.span_rows(0..2, Track::Trail, Track::Trail);
+    let clicked = place(ui, link, |ui| {
         widgets::icon_toggle_sized(
             ui,
             if constrain { "link" } else { "link-broken" },
             constrain,
             "Constrain proportions for width and height",
-            vec2(22.0, 21.0),
+            vec2(link.width(), t.row_h),
         )
         .clicked()
     });
@@ -607,34 +629,33 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         set.insert("ref".into(), json!(rp));
         let _ = app.run("transform.set", Value::Object(set));
     }
-    transform_angles(app, ui, rp);
-    if more_options(ui, &app.ui.language).clicked() {
+    transform_angles(app, ui, rp, &g);
+    if place(ui, g.cell(4, Track::Trail), |ui| more_options(ui, &app.ui.language)).clicked() {
         show_panel(app, "info");
     }
 }
 
 /// Properties › Transform, below X/Y/W/H as in InDesign: rotation and shear angles beside the
 /// X and Y scales (totals, as Transformations are Totals), then rotate a quarter turn and flip.
-fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
+/// They fill rows 2–4 of the section's grid `g`.
+fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8, g: &PropGrid) {
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let tv = app.session.execute("transform.info", &json!({})).ok();
     let tv_get = |k: &str| tv.as_ref().and_then(|v| v[k].as_f64());
-    ui.add_space(4.0);
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
     let mut set = serde_json::Map::new();
     let rows = [
         [("tool-rotate", "Rotation Angle", "rotation", "°", "p_rot"), ("tool-scale", "Scale X Percentage", "scaleX", "%", "p_sx")],
         [("tool-shear", "Shear X Angle", "shear", "°", "p_shear"), ("tool-scale", "Scale Y Percentage", "scaleY", "%", "p_sy")],
     ];
     for (row, cells) in rows.into_iter().enumerate() {
-        let yy = row as f32 * 25.0;
         for (col, (icon, tip, key, suffix, id)) in cells.into_iter().enumerate() {
-            let x = if col == 0 { 40.0 } else { 120.0 };
-            let ir = sub(b, x, yy + 2.0, 17.0, 17.0);
+            let (slot, field) = if col == 0 { (Track::SlotA, Track::FieldA) } else { (Track::SlotB, Track::FieldB) };
+            let ir = Rect::from_center_size(g.cell(row + 2, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.id().with(id), Sense::hover()).on_hover_text(crate::i18n::tr(&lang, tip));
-            if let Some(v) = place(ui, sub(b, x + 19.0, yy, 54.0, FIELD_H), |ui| widgets::number(ui, id, tv_get(key), suffix, 54.0, 1)) {
+            let c = g.cell(row + 2, field);
+            if let Some(v) = place(ui, c, |ui| NumField::number(id, tv_get(key), suffix, 1).width(c.width()).height(c.height()).show(ui)) {
                 set.insert(key.into(), json!(v));
             }
         }
@@ -643,9 +664,7 @@ fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
         set.insert("ref".into(), json!(rp));
         let _ = app.run("transform.set", Value::Object(set));
     }
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.add_space(36.0);
+    place(ui, g.span(4, Track::SlotA, Track::FieldB), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, tip, cmd, params) in [
             ("rotate-clockwise", "Rotate 90° Clockwise", "transform.rotate", json!({"angle": -90})),
@@ -664,7 +683,7 @@ fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
 }
 
 /// A stroke-type preview dropdown (light box with the line style).
-pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
+pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32, h: f32) {
     const TYPES: &[(&str, &str)] = &[
         ("Solid", "solid"),
         ("Dashed", "dashed"),
@@ -674,7 +693,7 @@ pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, 
         ("Thin - Thin", "thinThin"),
         ("Thick - Thick", "thickThick"),
     ];
-    let resp = preview_dropdown(ui, w, |p, r| paint_stroke_type(p, r, cur));
+    let resp = preview_dropdown(ui, w, h, |p, r| paint_stroke_type(p, r, cur));
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(140.0);
         for (label, kind) in TYPES {
@@ -722,12 +741,16 @@ fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str) {
 }
 
 /// A dropdown whose face is a light preview box (stroke type, corner shape).
-fn preview_dropdown(ui: &mut Ui, w: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
+/// The narrowest preview dropdown: its chevron and a face wide enough to show a dash pattern or a
+/// corner.
+const PREVIEW_MIN_W: f32 = widgets::SEG_W + 28.0;
+
+fn preview_dropdown(ui: &mut Ui, w: f32, h: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
     let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let face = Rect::from_min_max(r.min, pos2(r.max.x - widgets::SEG_W, r.max.y));
     ui.painter().rect_filled(face, 0.0, egui::Color32::from_gray(0xdf));
-    paint(ui.painter(), face);
+    paint(&ui.painter().with_clip_rect(face.intersect(ui.clip_rect())), face);
     let seg = Rect::from_min_max(pos2(face.max.x, r.min.y), r.max);
     ui.painter().rect_filled(seg, 0.0, if resp.hovered() { t.hover } else { t.input });
     widgets::chevron_down(ui.painter(), seg.center(), t.icon);
@@ -761,8 +784,8 @@ fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape) {
     p.add(egui::Shape::line(pts, s));
 }
 
-pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
-    let resp = preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape));
+pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32, h: f32) {
+    let resp = preview_dropdown(ui, width, h, |p, r| paint_corner_shape(p, r, shape));
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(140.0);
         for s in CornerShape::ALL {
@@ -777,10 +800,37 @@ pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: Corn
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+    // A row's value field and its preview (stroke type, corner shape) share the row's span, slot B
+    // to the trail, when the field keeps its usual value whole and the preview a readable face;
+    // otherwise the preview takes the next row.
+    let tracks = PropGrid::tracks(full_width(ui));
+    let span_w = tracks[Track::Trail as usize].0 + tracks[Track::Trail as usize].1 - tracks[Track::SlotB as usize].0;
+    let preview_w = |w: f32| PREVIEW_MIN_W.max((w - 4.0) / 3.0);
+    let stroke_side = value_fits(ui, NUM_CHROME, "0.5 pt", span_w - 4.0 - preview_w(span_w));
+    let corner_side = value_fits(ui, SPIN_CHROME, "12 pt", span_w - 4.0 - preview_w(span_w));
+    // Fill, Stroke, Corner and Opacity, then the effects.
+    let corner_row = if stroke_side { 2 } else { 3 };
+    let opacity_row = corner_row + if corner_side { 1 } else { 2 };
+    let g = PropGrid::new(ui, &t, opacity_row + 2);
+    // A swatch or icon at the padding edge, centred on its row.
+    let lead = |row: usize, side: f32| {
+        let c = g.cell(row, Track::Lead);
+        Rect::from_min_size(pos2(c.min.x, c.center().y - side / 2.0), vec2(side, side))
+    };
+    // A row's field and preview: side by side (the preview a third, at least PREVIEW_MIN_W), or
+    // the preview on the next row.
+    let controls = |row: usize, side: bool| {
+        let c = g.span(row, Track::SlotB, Track::Trail);
+        if side {
+            let w = preview_w(c.width());
+            (Rect::from_min_max(c.min, pos2(c.max.x - w - 4.0, c.max.y)), Rect::from_min_max(pos2(c.max.x - w, c.min.y), c.max))
+        } else {
+            (c, g.span(row + 1, Track::SlotB, Track::Trail))
+        }
+    };
     // Fill.
-    let b = block(ui, FIELD_H);
     let (fc, fg) = widgets::swatch_colors(&doc, &i.fill, 1.0);
-    let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+    let chip = lead(0, 17.0);
     widgets::paint_chip(ui.painter(), chip, fc, fg);
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!(
@@ -790,19 +840,18 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
     swatch_menu(app, &resp, &doc, &i.fill, false, i.is_text && i.count == 1, false);
+    let label = g.span(0, Track::SlotA, Track::FieldA);
     crate::rtl::paint(
-        ui.painter(),
-        b.min + vec2(34.0, FIELD_H / 2.0),
+        &ui.painter().with_clip_rect(label.intersect(ui.clip_rect())),
+        label.left_center(),
         egui::Align2::LEFT_CENTER,
         crate::i18n::tr(&app.ui.language, "Fill"),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
-    ui.add_space(4.0);
     // Stroke.
-    let b = block(ui, FIELD_H);
     let (sc, _) = widgets::swatch_colors(&doc, &i.stroke, 1.0);
-    let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+    let chip = lead(1, 17.0);
     widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!(
@@ -812,55 +861,63 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
     swatch_menu(app, &resp, &doc, &i.stroke, true, i.is_text && i.count == 1, false);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
+    let label = g.span(1, Track::SlotA, Track::FieldA);
+    if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), label.width())).clicked() {
         show_panel(app, "stroke");
     }
     const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::number("sw", Some(i.stroke_weight), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
+    let (a, b) = controls(1, stroke_side);
+    if let Some(v) = place(ui, a, |ui| {
+        NumField::number("sw", Some(i.stroke_weight), " pt", 3)
+            .width(a.width())
+            .height(a.height())
+            .spinner()
+            .presets(WEIGHTS)
+            .range(0.0, 800.0)
+            .show(ui)
     }) {
         let _ = app.run("object.stroke", json!({"weight": v}));
     }
     let kind = i.stroke_kind.clone();
-    place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| stroke_type_dropdown(app, ui, &kind, 54.0));
-    ui.add_space(4.0);
+    place(ui, b, |ui| stroke_type_dropdown(app, ui, &kind, b.width(), b.height()));
     // Corner.
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "corner", t.accent);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), 56.0)).clicked() {
+    icons::paint(ui.painter(), lead(corner_row, 19.0), "corner", t.accent);
+    let label = g.span(corner_row, Track::SlotA, Track::FieldA);
+    if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), label.width())).clicked() {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("frameSize", json!({})));
     }
     let (shape, size) = i.corner;
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::measure("corner", Some(size), Unit::Points).width(69.0).spinner().range(0.0, 1000.0).show(ui)
+    let (a, b) = controls(corner_row, corner_side);
+    if let Some(v) = place(ui, a, |ui| {
+        NumField::measure("corner", Some(size), Unit::Points).width(a.width()).height(a.height()).spinner().range(0.0, 1000.0).show(ui)
     }) {
         let sh = if shape == CornerShape::None { CornerShape::Rounded } else { shape };
         let _ = app.run("object.cornerOptions", json!({"shape": sh, "size": v}));
     }
-    place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| {
-        corner_type_dropdown(app, ui, shape, size, 54.0);
+    place(ui, b, |ui| {
+        corner_type_dropdown(app, ui, shape, size, b.width(), b.height());
     });
-    ui.add_space(4.0);
     // Opacity.
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "opacity", t.icon);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), 56.0)).clicked() {
+    icons::paint(ui.painter(), lead(opacity_row, 19.0), "opacity", t.icon);
+    let label = g.span(opacity_row, Track::SlotA, Track::FieldA);
+    if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), label.width())).clicked() {
         show_panel(app, "effects");
     }
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 51.0, FIELD_H), |ui| {
-        NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(51.0).range(0.0, 100.0).show(ui)
+    let c = g.span(opacity_row, Track::SlotB, Track::FieldB);
+    if let Some(v) = place(ui, c, |ui| {
+        NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(c.width()).height(c.height()).range(0.0, 100.0).show(ui)
     }) {
         let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
     }
-    let more = sub(b, 147.0, 0.0, 18.0, FIELD_H);
+    let more = g.cell(opacity_row, Track::Trail);
     let mresp = ui.interact(more, ui.id().with("opmore"), Sense::click());
     ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
     if mresp.clicked() {
         show_panel(app, "effects");
     }
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    // Effects.
+    place(ui, g.span(opacity_row + 1, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
             show_panel(app, "textWrap");
@@ -949,52 +1006,61 @@ fn swatch_menu(
 
 fn align_row(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let to = app.ui.align_to.clone();
-        let to_label = match to.as_str() {
-            "selection" => "Selection",
-            "keyObject" => "Key Object",
-            "margins" => "Margins",
-            "page" => "Page",
-            "spread" => "Spread",
-            other => other,
-        };
-        let tip = format!("{}: {}", crate::i18n::tr(&app.ui.language, "Align To"), crate::i18n::tr(&app.ui.language, to_label));
-        let resp = icon_toggle(ui, "align-to", false, &tip);
-        egui::Popup::menu(&resp).show(|ui| {
-            for (label, id) in [
-                ("Align to Selection", "selection"),
-                ("Align to Key Object", "keyObject"),
-                ("Align to Margins", "margins"),
-                ("Align to Page", "page"),
-                ("Align to Spread", "spread"),
-            ] {
-                if ui.selectable_label(app.ui.align_to == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    app.ui.align_to = id.into();
-                    ui.close();
-                }
-            }
-        });
-        let (r, _) = ui.allocate_exact_size(vec2(1.0, FIELD_H), Sense::hover());
-        ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.section_divider.gamma_multiply(1.6)));
-        for (edge, icon, tip) in [
-            ("left", "objalign-left", "Align left edges"),
-            ("hcenter", "objalign-hcenter", "Align horizontal centers"),
-            ("right", "objalign-right", "Align right edges"),
-            ("top", "objalign-top", "Align top edges"),
-            ("vcenter", "objalign-vcenter", "Align vertical centers"),
-            ("bottom", "objalign-bottom", "Align bottom edges"),
+    let g = PropGrid::new(ui, &t, 1);
+    let to = app.ui.align_to.clone();
+    let to_label = match to.as_str() {
+        "selection" => "Selection",
+        "keyObject" => "Key Object",
+        "margins" => "Margins",
+        "page" => "Page",
+        "spread" => "Spread",
+        other => other,
+    };
+    let tip = format!("{}: {}", crate::i18n::tr(&app.ui.language, "Align To"), crate::i18n::tr(&app.ui.language, to_label));
+    let resp = place(ui, g.cell(0, Track::Lead), |ui| icon_toggle(ui, "align-to", false, &tip));
+    egui::Popup::menu(&resp).show(|ui| {
+        for (label, id) in [
+            ("Align to Selection", "selection"),
+            ("Align to Key Object", "keyObject"),
+            ("Align to Margins", "margins"),
+            ("Align to Page", "page"),
+            ("Align to Spread", "spread"),
         ] {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.align", json!({"edge": edge, "to": to}));
+            if ui.selectable_label(app.ui.align_to == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                app.ui.align_to = id.into();
+                ui.close();
             }
         }
     });
+    // A rule between Align To and the buttons, in the gap before slot A.
+    let lead = g.cell(0, Track::Lead);
+    let x = lead.max.x + 2.0;
+    ui.painter().line_segment([pos2(x, lead.min.y), pos2(x, lead.max.y)], Stroke::new(1.0, t.section_divider.gamma_multiply(1.6)));
+    // The six buttons spread evenly over slot A to the trail.
+    let s = g.span(0, Track::SlotA, Track::Trail);
+    let w = s.width() / 6.0;
+    for (k, (edge, icon, tip)) in [
+        ("left", "objalign-left", "Align left edges"),
+        ("hcenter", "objalign-hcenter", "Align horizontal centers"),
+        ("right", "objalign-right", "Align right edges"),
+        ("top", "objalign-top", "Align top edges"),
+        ("vcenter", "objalign-vcenter", "Align vertical centers"),
+        ("bottom", "objalign-bottom", "Align bottom edges"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let c = Rect::from_center_size(pos2(s.min.x + (k as f32 + 0.5) * w, s.center().y), vec2(23.0, s.height()));
+        if place(ui, c, |ui| icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip))).clicked() {
+            let _ = app.run("object.align", json!({"edge": edge, "to": to}));
+        }
+    }
 }
 
 fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    ui.horizontal(|ui| {
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, 1);
+    place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 7.0;
         for (icon, mode, tip) in [
             ("wrap-none", "none", "No Text Wrap"),
@@ -1060,41 +1126,43 @@ fn convert_shape_menu(app: &mut DesignApp, resp: &egui::Response) {
 }
 
 fn quick_actions_object(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    let fw = full_width(ui);
-    let hw = (fw - 10.0) / 2.0;
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, if i.is_text { 3 } else { 2 });
+    let full = |row: usize| g.span(row, Track::Lead, Track::Trail);
+    // Two buttons share a row in halves, 10 pt apart.
+    let halves = |row: usize| {
+        let s = full(row);
+        let w = ((s.width() - 10.0) / 2.0).max(0.0);
+        (Rect::from_min_size(s.min, vec2(w, s.height())), Rect::from_min_max(pos2(s.max.x - w, s.min.y), s.max))
+    };
+    let lang = app.ui.language.clone();
+    let button = |ui: &mut Ui, r: Rect, label: &str| place(ui, r, |ui| outline_button(ui, crate::i18n::tr(&lang, label), r.width()));
     if i.is_text {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), hw);
-            convert_shape_menu(app, &r);
-            let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
-            arrange_menu(app, &r);
-        });
-        ui.add_space(4.0);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), fw).clicked() {
+        let (a, b) = halves(0);
+        let r = button(ui, a, "Convert Shape");
+        convert_shape_menu(app, &r);
+        let r = button(ui, b, "Arrange");
+        arrange_menu(app, &r);
+        if button(ui, full(1), "Fill with Placeholder Text").clicked() {
             let _ = app.run("type.fillWithPlaceholder", json!({}));
         }
-        ui.add_space(4.0);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit in Story Editor"), fw).clicked() {
+        if button(ui, full(2), "Edit in Story Editor").clicked() {
             let _ = app.run("app.storyEditor", json!({}));
         }
         return;
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
-        arrange_menu(app, &r);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, if i.count > 1 { "Group" } else { "Lock" }), hw).clicked() {
-            let _ = app.run(if i.count > 1 { "object.group" } else { "object.lock" }, json!({}));
-        }
-    });
-    ui.add_space(4.0);
+    let (a, b) = halves(0);
+    let r = button(ui, a, "Arrange");
+    arrange_menu(app, &r);
+    if button(ui, b, if i.count > 1 { "Group" } else { "Lock" }).clicked() {
+        let _ = app.run(if i.count > 1 { "object.group" } else { "object.lock" }, json!({}));
+    }
     if i.kind == "<group>" {
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Ungroup"), fw).clicked() {
+        if button(ui, full(1), "Ungroup").clicked() {
             let _ = app.run("object.ungroup", json!({}));
         }
     } else {
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), fw);
+        let r = button(ui, full(1), "Convert Shape");
         convert_shape_menu(app, &r);
     }
 }
@@ -1140,7 +1208,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
         pos2(ag.max.x + 8.0, resp.rect.center().y),
         egui::Align2::LEFT_CENTER,
         &label,
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
     let mut pick = None;
@@ -1202,13 +1270,15 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(a) = text_attrs(app) else { return };
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     let c = &a["chars"];
+    // Fill and Stroke, as for objects, then Stroke Behind Fill.
+    let g = PropGrid::new(ui, &t, 3);
     for (k, (key, label)) in [("fill", "Fill"), ("stroke", "Stroke")].into_iter().enumerate() {
         let sw = c[key].as_str().unwrap_or(designcraft_color::swatch::NONE).to_string();
-        let b = block(ui, FIELD_H);
-        let (col, g) = widgets::swatch_colors(&doc, &sw, 1.0);
-        let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+        let (col, grad) = widgets::swatch_colors(&doc, &sw, 1.0);
+        let lead = g.cell(k, Track::Lead);
+        let chip = Rect::from_min_size(pos2(lead.min.x, lead.center().y - 8.5), vec2(17.0, 17.0));
         if k == 0 {
-            widgets::paint_chip(ui.painter(), chip, col, g);
+            widgets::paint_chip(ui.painter(), chip, col, grad);
         } else {
             widgets::paint_stroke_chip(ui.painter(), chip, col, egui::Color32::from_gray(20));
         }
@@ -1220,30 +1290,39 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
         }
         let resp = ui.interact(chip, ui.id().with(("tchip", k)), Sense::click()).on_hover_text(format!("{label}: {sw}"));
         swatch_menu(app, &resp, &doc, &sw, k != 0, false, true);
+        let lr = g.span(k, Track::SlotA, Track::FieldA);
         if k == 0 {
             crate::rtl::paint(
-                ui.painter(),
-                b.min + vec2(34.0, FIELD_H / 2.0),
+                &ui.painter().with_clip_rect(lr.intersect(ui.clip_rect())),
+                lr.left_center(),
                 egui::Align2::LEFT_CENTER,
                 crate::i18n::tr(&app.ui.language, label),
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(t.label_size + 0.5),
                 t.text,
             );
         } else {
-            if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, label), 56.0)).clicked() {
+            if place(ui, lr, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, label), lr.width())).clicked() {
                 show_panel(app, "stroke");
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
-            if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
+            let cr = g.span(k, Track::SlotB, Track::FieldB);
+            if let Some(v) = place(ui, cr, |ui| {
+                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3)
+                    .width(cr.width())
+                    .height(cr.height())
+                    .spinner()
+                    .presets(WEIGHTS)
+                    .range(0.0, 100.0)
+                    .show(ui)
             }) {
                 let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
             }
         }
-        ui.add_space(4.0);
     }
     let mut behind = c["strokeBehindFill"].as_bool().unwrap_or(false);
-    if ui.checkbox(&mut behind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stroke Behind Fill"))).changed() {
+    if place(ui, g.span(2, Track::Lead, Track::Trail), |ui| {
+        ui.checkbox(&mut behind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stroke Behind Fill"))).changed()
+    }) {
         let _ = app.run("type.char", json!({"attrs": {"strokeBehindFill": behind}}));
     }
 }
@@ -1255,76 +1334,95 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     let c = a["chars"].clone();
     let fam = c["fontFamily"].as_str().unwrap_or("").to_string();
     let sty = c["fontStyle"].as_str().unwrap_or("").to_string();
-    let fw = full_width(ui);
+    let lang = app.ui.language.clone();
+    // The pair rule: size and leading, and kerning and tracking, share a row when both boxes show
+    // their usual values whole, and take a row each otherwise.
+    let (first, second) = PropGrid::pair_widths(full_width(ui));
+    let size_side = value_fits(ui, NUM_CHROME, "10.5 pt", first) && value_fits(ui, NUM_CHROME, "(14.4 pt)", second);
+    let kern_side = ["Metrics", "Optical"].into_iter().all(|s| value_fits(ui, DROPDOWN_CHROME, crate::i18n::tr(&lang, s), first))
+        && value_fits(ui, NUM_CHROME, "-100", second);
+    // Family, style, the two pairs, then language.
+    let kern_row = if size_side { 3 } else { 4 };
+    let lang_row = kern_row + if kern_side { 1 } else { 2 };
+    let g = PropGrid::new(ui, &t, lang_row + 1);
+    let icon = |ui: &Ui, slot: Rect, name: &str| icons::paint(ui.painter(), Rect::from_center_size(slot.center(), vec2(16.0, 16.0)), name, t.icon);
     // Family dropdown with a search segment on the left.
     let fonts = super::fonts(app);
     let menu = super::font_menu(app);
-    let resp = widgets::dropdown(ui, "", fw);
-    let r = resp.rect;
-    icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(14.0, 14.0)), "search", t.icon);
-    widgets::chevron_down(ui.painter(), r.min + vec2(22.0, 10.5), t.icon);
+    let r = g.span(0, Track::Lead, Track::Trail);
+    let resp = place(ui, r, |ui| widgets::dropdown_h(ui, "", r.width(), r.height()));
+    let (r, mid) = (resp.rect, resp.rect.center().y);
+    icons::paint(ui.painter(), Rect::from_min_size(pos2(r.min.x + 3.0, mid - 7.5), vec2(14.0, 14.0)), "search", t.icon);
+    widgets::chevron_down(ui.painter(), pos2(r.min.x + 22.0, mid), t.icon);
     ui.painter().text(
-        r.min + vec2(30.0, 10.5),
+        pos2(r.min.x + 30.0, mid),
         egui::Align2::LEFT_CENTER,
         if fam.is_empty() { "—".to_string() } else { super::font_label(app, &menu, &fam) },
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
     if let Some(f) = super::font_popup(app, &resp, &menu, &fam) {
         super::apply_font(app, &f);
     }
-    ui.add_space(1.0);
     let styles = fonts.styles(&fam);
     let cur = styles.iter().position(|s| *s == sty);
-    if let Some(k) = widgets::dropdown_list(ui, if sty.is_empty() { "—" } else { &sty }, fw, &styles, cur) {
-        let _ = app.run("type.char", json!({"attrs": {"fontStyle": styles[k]}}));
+    let r = g.span(1, Track::Lead, Track::Trail);
+    if let Some(k) = place(ui, r, |ui| widgets::dropdown_list_h(ui, if sty.is_empty() { "—" } else { &sty }, r.width(), r.height(), &styles, cur))
+        && let Some(style) = styles.get(k)
+    {
+        let _ = app.run("type.char", json!({"attrs": {"fontStyle": style}}));
     }
-    ui.add_space(1.0);
     const SIZES: &[f64] = &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 21.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
-    let half = (fw - 10.0) / 2.0;
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
     let size = c["size"].as_f64();
     let auto = c["leading"]["kind"].as_str() != Some("points");
     let lv = if auto { size.map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
-    icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "font-size", t.icon);
-    if let Some(v) = place(ui, sub(b, 24.0, 0.0, half - 24.0, FIELD_H), |ui| {
-        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+    let [(si, sb), (li, lb)] = g.pair(2, size_side);
+    icon(ui, si, "font-size");
+    if let Some(v) = place(ui, sb, |ui| {
+        NumField::number("csize", size, " pt", 2).width(sb.width()).height(sb.height()).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
-    icons::paint(ui.painter(), sub(b, half + 10.0, 1.0, 19.0, 19.0), "leading", t.icon);
-    let lw = half - 24.0;
+    icon(ui, li, "leading");
     let lshow = lv.map(|v| (v * 100.0).round() / 100.0);
-    if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, lw, FIELD_H), |ui| {
+    if let Some(v) = place(ui, lb, |ui| {
         let key = if auto { "cleadauto" } else { "clead" };
         // Auto leading is shown in parentheses, like "(14.4 pt)".
-        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
+        NumField::number(key, lshow, " pt", 2).width(lb.width()).height(lb.height()).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
     }
     // Kerning / tracking.
-    icons::paint(ui.painter(), sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", t.icon);
-    place(ui, sub(b, 24.0, 26.0, half - 24.0, FIELD_H), |ui| kerning_control(app, ui, "ckern", &c["kerning"], half - 24.0));
-    icons::paint(ui.painter(), sub(b, half + 10.0, 27.0, 19.0, 19.0), "tracking", t.icon);
+    let [(ki, kb), (ti, tb)] = g.pair(kern_row, kern_side);
+    icon(ui, ki, "kerning");
+    place(ui, kb, |ui| kerning_control(app, ui, "ckern", &c["kerning"], kb.width(), kb.height()));
+    icon(ui, ti, "tracking");
     const TRACK: &[f64] = &[-100.0, -75.0, -50.0, -25.0, -10.0, -5.0, 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 200.0];
-    if let Some(v) = place(ui, sub(b, half + 34.0, 26.0, lw, FIELD_H), |ui| {
-        NumField::number("ctrack", c["tracking"].as_f64(), "", 0).width(lw).spinner().presets(TRACK).step(5.0).range(-1000.0, 10000.0).show(ui)
+    if let Some(v) = place(ui, tb, |ui| {
+        NumField::number("ctrack", c["tracking"].as_f64(), "", 0)
+            .width(tb.width())
+            .height(tb.height())
+            .spinner()
+            .presets(TRACK)
+            .step(5.0)
+            .range(-1000.0, 10000.0)
+            .show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
     }
     // Language: hyphenation, spelling and typographer's quotes follow it.
-    ui.add_space(1.0);
-    let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
-    let label = crate::i18n::tr(&app.ui.language, "Language");
-    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &lang), fw).on_hover_ui(|ui| {
+    let language = c["language"].as_str().unwrap_or("English: USA").to_string();
+    let label = crate::i18n::tr(&lang, "Language");
+    let r = g.span(lang_row, Track::Lead, Track::Trail);
+    let resp = place(ui, r, |ui| widgets::dropdown_h(ui, crate::i18n::tr(&lang, &language), r.width(), r.height())).on_hover_ui(|ui| {
         crate::rtl::label(ui, label);
     });
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(fw);
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &lang));
+        ui.set_min_width(r.width());
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &language));
     });
-    if more_options(ui, &app.ui.language).clicked() {
+    if more_options(ui, &lang).clicked() {
         show_panel(app, "character");
     }
 }
@@ -1332,10 +1430,12 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
 /// Paragraph section: the 9 alignment buttons and •••.
 fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(a) = text_attrs(app) else { return };
+    let t = Tokens::get(ui.ctx());
     let cur: Align = serde_json::from_value(a["para"]["align"].clone()).unwrap_or_default();
-    let fw = full_width(ui);
-    let pitch = fw / 9.0;
-    ui.horizontal(|ui| {
+    let g = PropGrid::new(ui, &t, 1);
+    let r = g.span(0, Track::Lead, Track::Trail);
+    let pitch = r.width() / 9.0;
+    place(ui, r, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for (al, icon) in [
             (Align::Left, "palign-left"),
@@ -1363,8 +1463,10 @@ fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
 
 fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(a) = text_attrs(app) else { return };
+    let t = Tokens::get(ui.ctx());
     let lt = a["para"]["listType"].as_str().unwrap_or("none").to_string();
-    ui.horizontal(|ui| {
+    let g = PropGrid::new(ui, &t, 1);
+    place(ui, g.span(0, Track::Lead, Track::FieldA), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, kind, tip) in [("bullets", "bullets", "Bulleted List"), ("numbering", "numbers", "Numbered List")] {
             let on = lt == kind;
@@ -1372,61 +1474,62 @@ fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
                 let _ = app.run("type.para", json!({"attrs": {"listType": if on { "none" } else { kind }}}));
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 66.0).clicked() {
-                show_panel(app, "paragraph");
-            }
-        });
     });
+    let r = g.span(0, Track::SlotB, Track::Trail);
+    if place(ui, r, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), r.width())).clicked() {
+        show_panel(app, "paragraph");
+    }
 }
 
 fn quick_actions_text(app: &mut DesignApp, ui: &mut Ui) {
-    let fw = full_width(ui);
-    let hw = (fw - 10.0) / 2.0;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Change Case"), hw);
-        egui::Popup::menu(&r).show(|ui| {
-            for (label, v) in [("UPPERCASE", "allCaps"), ("Small Caps", "smallCaps"), ("Normal", "normal")] {
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    let _ = app.run("type.char", json!({"attrs": {"capitalization": v}}));
-                    ui.close();
-                }
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, 2);
+    let s = g.span(0, Track::Lead, Track::Trail);
+    let hw = ((s.width() - 10.0) / 2.0).max(0.0);
+    let (a, b) = (Rect::from_min_size(s.min, vec2(hw, s.height())), Rect::from_min_max(pos2(s.max.x - hw, s.min.y), s.max));
+    let r = place(ui, a, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Change Case"), hw));
+    egui::Popup::menu(&r).show(|ui| {
+        for (label, v) in [("UPPERCASE", "allCaps"), ("Small Caps", "smallCaps"), ("Normal", "normal")] {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                let _ = app.run("type.char", json!({"attrs": {"capitalization": v}}));
+                ui.close();
             }
-        });
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Story Editor"), hw).clicked() {
-            let _ = app.run("app.storyEditor", json!({}));
         }
     });
-    ui.add_space(4.0);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), fw).clicked() {
+    if place(ui, b, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Story Editor"), hw)).clicked() {
+        let _ = app.run("app.storyEditor", json!({}));
+    }
+    let f = g.span(1, Track::Lead, Track::Trail);
+    if place(ui, f, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), f.width())).clicked() {
         let _ = app.run("type.fillWithPlaceholder", json!({}));
     }
 }
 
-/// Text Frame section: columns, gutter, [Options].
+/// Text Frame section: columns and gutter (a pair), then [Options] on the B side of its own row.
 fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
     let Some(st) = app.session.active() else { return };
     let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame));
     let Some(opts) = fid.and_then(|f| st.doc.item(f)).and_then(|i| i.text_frame()).map(|t| t.options.clone()) else { return };
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
-    if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {
-        NumField::number("tfcols", Some(opts.columns as f64), "", 0).width(54.0).spinner().range(1.0, 40.0).show(ui)
+    let (first, second) = PropGrid::pair_widths(full_width(ui));
+    let side = value_fits(ui, SPIN_CHROME, "40", first) && value_fits(ui, SPIN_CHROME, "0.1667 in", second);
+    let g = PropGrid::new(ui, &t, if side { 2 } else { 3 });
+    let [(ci, cb), (gi, gb)] = g.pair(0, side);
+    icons::paint(ui.painter(), Rect::from_center_size(ci.center(), vec2(16.0, 16.0)), "text-columns", t.icon);
+    if let Some(v) = place(ui, cb, |ui| {
+        NumField::number("tfcols", Some(opts.columns as f64), "", 0).width(cb.width()).height(cb.height()).spinner().range(1.0, 40.0).show(ui)
     }) {
         let _ = app.run("object.textFrameOptions", json!({"columns": v.max(1.0) as u64}));
     }
-    icons::paint(ui.painter(), sub(b, 83.0, 1.0, 19.0, 19.0), "text-gutter", t.icon);
-    if let Some(v) = place(ui, sub(b, 105.0, 0.0, 54.0, FIELD_H), |ui| {
-        NumField::measure("tfgut", Some(opts.gutter), u).width(54.0).spinner().range(0.0, 1440.0).show(ui)
+    icons::paint(ui.painter(), Rect::from_center_size(gi.center(), vec2(16.0, 16.0)), "text-gutter", t.icon);
+    if let Some(v) = place(ui, gb, |ui| {
+        NumField::measure("tfgut", Some(opts.gutter), u).width(gb.width()).height(gb.height()).spinner().range(0.0, 1440.0).show(ui)
     }) {
         let _ = app.run("object.textFrameOptions", json!({"gutter": v}));
     }
-    let ow = (b.max.x - 8.0) - (b.min.x + 164.0);
-    if place(ui, sub(b, 164.0, 0.5, ow, 20.0), |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), ow)).clicked() {
+    let r = g.span(if side { 1 } else { 2 }, Track::SlotB, Track::Trail);
+    if place(ui, r, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), r.width())).clicked() {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
     }
 }
@@ -1481,7 +1584,7 @@ fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
 /// Kerning for the text selection, or at a caret for the pair at the caret: the label shows
 /// Metrics, Optical, 0 or the manual value; its menu sets one of the first three or a manual value
 /// in 1/1000 em (typed or stepped).
-fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32) {
+fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32, h: f32) {
     let kind = k["kind"].as_str().unwrap_or("metrics");
     let manual = k["value"].as_f64().filter(|v| kind == "manual" && v.is_finite());
     let label = match (kind, manual) {
@@ -1490,7 +1593,7 @@ fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, 
         ("manual", Some(v)) => format!("{v}"),
         _ => "Metrics".to_string(),
     };
-    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &label), width);
+    let resp = widgets::dropdown_h(ui, crate::i18n::tr(&app.ui.language, &label), width, h);
     let name = crate::i18n::tr(&app.ui.language, "Kerning");
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, name));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
@@ -1560,7 +1663,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         left.horizontal(|ui| {
             caption_cell(ui, crate::i18n::tr(&app.ui.language, "Kerning"), left_w);
             let width = (ui.available_width() - ui.spacing().item_spacing.x).max(40.0);
-            kerning_control(app, ui, "pck", &c["kerning"], width);
+            kerning_control(app, ui, "pck", &c["kerning"], width, FIELD_H);
         });
         if let Some(v) = char_field(app, left, "Baseline", left_w, NumField::number("pcb", c["baselineShift"].as_f64(), " pt", 2)) {
             let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
@@ -2183,7 +2286,9 @@ const PATHFINDER: [(&str, &str, &str); 5] = [
 
 /// Properties › Pathfinder (several objects selected): combine them into one shape.
 fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
-    ui.horizontal(|ui| {
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, 1);
+    place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         for (icon, op, tip) in PATHFINDER {
             if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
@@ -3034,6 +3139,213 @@ mod tests {
         h
     }
 
+    /// The Properties panel at the width it opens at (fonts and tokens set before the first frame).
+    fn props_harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        props_harness_at(app, 253.0)
+    }
+
+    /// The Properties panel `width` wide.
+    fn props_harness_at(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(width, 1600.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        h.run_steps(3);
+        h
+    }
+
+    /// A new document with one rectangle selected, in `language` (the default when `None`).
+    fn rectangle_app(language: Option<&str>) -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        if let Some(l) = language {
+            app.ui.language = l.into();
+        }
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app
+    }
+
+    /// Every text field and combo box starts on a grid edge (a dropdown on it, a field's value 5
+    /// pt in, a spinner field's 23 pt in), and every section header at the padding edge, so a
+    /// hard-coded position fails. `anchor` is a section header the panel shows.
+    fn assert_on_grid_edges(h: &Harness<'_, DesignApp>, anchor: &str, headers: &[&str]) {
+        let lang = h.state().ui.language.clone();
+        let hdr = h.get_by_label(crate::i18n::tr(&lang, anchor)).rect();
+        let x0 = hdr.min.x;
+        let tracks = PropGrid::tracks(hdr.width() - 8.0);
+        let edges: Vec<f32> = [Track::Lead, Track::FieldA, Track::SlotB, Track::FieldB]
+            .into_iter()
+            .flat_map(|k| [0.0, 5.0, 23.0].map(|d| x0 + tracks[k as usize].0 + d))
+            .collect();
+        let mut seen = 0;
+        for role in [egui::accesskit::Role::TextInput, egui::accesskit::Role::ComboBox] {
+            for n in h.query_all_by_role(role) {
+                let x = n.rect().min.x;
+                assert!(edges.iter().any(|e| (x - e).abs() <= 1.0), "{lang}: {role:?} {:?} starts at {x}, off the grid {edges:?}", n.value());
+                seen += 1;
+            }
+        }
+        assert!(seen > 0, "{lang}: no fields");
+        for title in headers {
+            let r = h.get_by_label(crate::i18n::tr(&lang, title)).rect();
+            assert!((r.min.x - x0).abs() <= 0.5, "{lang}: the {title} header starts at {}, not {x0}", r.min.x);
+        }
+    }
+
+    #[test]
+    fn controls_start_on_grid_edges_with_a_rectangle_selected() {
+        for lang in [None, Some("ar")] {
+            let h = props_harness(rectangle_app(lang));
+            assert_on_grid_edges(&h, "Transform", &["Transform", "Appearance", "Align", "Flex Layout", "Spacing", "Text Wrap", "Quick Actions"]);
+        }
+    }
+
+    /// Long translations of Appearance's labels end before the controls (slot B): the label is
+    /// given its span and clips to it.
+    #[test]
+    fn appearance_labels_stay_in_their_span() {
+        for lang in ["de", "ru", "uk"] {
+            let h = props_harness(rectangle_app(Some(lang)));
+            let hdr = h.get_by_label(crate::i18n::tr(lang, "Transform")).rect();
+            let slot_b = hdr.min.x + PropGrid::tracks(hdr.width() - 8.0)[Track::SlotB as usize].0;
+            for label in ["Stroke", "Corner", "Opacity"] {
+                let r = h.get_by_label(crate::i18n::tr(lang, label)).rect();
+                assert!(r.max.x <= slot_b + 0.5, "{lang} {label}: ends at {}, past slot B at {slot_b}", r.max.x);
+            }
+        }
+    }
+
+    /// Appearance's stroke-type and corner-shape previews keep a face wide enough to show a dash
+    /// pattern or a corner (the value field beside them keeps its usual value), and never paint
+    /// over a field, at every width the dock allows.
+    #[test]
+    fn appearance_previews_stay_readable() {
+        for width in [220.0, 253.0, 280.0, 300.0, 420.0] {
+            let h = props_harness_at(rectangle_app(None), width);
+            let faces: Vec<Rect> = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) if r.fill == egui::Color32::from_gray(0xdf) => Some(r.rect),
+                    _ => None,
+                })
+                .collect();
+            assert!(faces.len() >= 2, "{width}: the stroke-type and corner-shape previews");
+            let fields: Vec<Rect> = h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.rect()).collect();
+            for f in &faces {
+                assert!(f.width() >= 27.5, "{width}: a preview face only {} pt wide", f.width());
+                for r in &fields {
+                    assert!(!f.shrink(0.5).intersects(*r), "{width}: a preview at {f:?} covers a field at {r:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn controls_start_on_grid_edges_with_nothing_selected() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let h = props_harness(app);
+        assert_on_grid_edges(&h, "Document", &["Document", "Margins", "Page", "Quick Actions"]);
+        // The Page tool with no objects selected: the page's own settings ("Page" there is the
+        // band, painted, so the first header anchors).
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.select_tool("page");
+        app.run("layout.selectPage", json!({"page": 1})).unwrap();
+        let h = props_harness(app);
+        assert_on_grid_edges(&h, "Page Size", &["Page Size", "Quick Actions"]);
+    }
+
+    /// A text frame: selected as an object, or with its text selected for editing (`editing`),
+    /// in `language` and type `size` pt.
+    fn text_frame_app(editing: bool, language: Option<&str>, size: f64) -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        if let Some(l) = language {
+            app.ui.language = l.into();
+        }
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Heading", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        app.run("type.char", json!({"attrs": {"size": size}})).unwrap();
+        if !editing {
+            app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
+        }
+        app
+    }
+
+    #[test]
+    fn controls_start_on_grid_edges_with_a_text_frame_selected() {
+        let h = props_harness(text_frame_app(false, None, 12.0));
+        assert_on_grid_edges(&h, "Transform", &["Transform", "Text Style", "Appearance", "Character", "Paragraph", "Text Frame", "Quick Actions"]);
+        let h = props_harness(text_frame_app(true, None, 12.0));
+        assert_on_grid_edges(&h, "Character", &["Text Style", "Appearance", "Character", "Paragraph", "Bullets and Numbering", "Quick Actions"]);
+    }
+
+    /// `text`'s width in the Properties panel's label font, as `value_fits` measures it.
+    fn text_w(h: &Harness<'_, DesignApp>, text: &str) -> f32 {
+        let p = egui::Painter::new(h.ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
+        p.layout_no_wrap(text.to_owned(), egui::FontId::proportional(crate::widgets::LABEL_SIZE), egui::Color32::PLACEHOLDER).size().x
+    }
+
+    /// Size and leading, and kerning and tracking, share a row exactly when both boxes can show
+    /// their usual values ("10.5 pt", "(14.4 pt)"; "Metrics" or "Optical", "-100"), and take a
+    /// row each otherwise, at every width from 200 to 420 pt; no two ever overlap.
+    #[test]
+    fn character_pairs_follow_the_rule() {
+        use crate::widgets::{DROPDOWN_CHROME, NUM_CHROME};
+        for (lang, size, leading) in [(None, 12.0, "(14.4 pt)"), (None, 99.5, "(119.4 pt)"), (Some("ru"), 12.0, "(14.4 pt)")] {
+            let mut cases = std::collections::BTreeSet::new();
+            for width in (200..=420).step_by(10) {
+                let h = props_harness_at(text_frame_app(true, lang, size), width as f32);
+                let l = h.state().ui.language.clone();
+                let hdr = h.get_by_label(crate::i18n::tr(&l, "Character")).rect();
+                let tracks = PropGrid::tracks(hdr.width() - 8.0);
+                let field_a = tracks[Track::FieldA as usize].1;
+                let wide = tracks[Track::Trail as usize].0 + tracks[Track::Trail as usize].1 - tracks[Track::FieldB as usize].0;
+                let kern_label = ["Metrics", "Optical"].map(|s| text_w(&h, crate::i18n::tr(&l, s))).into_iter().fold(0.0, f32::max);
+                let size_side = NUM_CHROME + text_w(&h, "10.5 pt") <= field_a && NUM_CHROME + text_w(&h, "(14.4 pt)") <= wide;
+                let kern_side = DROPDOWN_CHROME + kern_label <= field_a && NUM_CHROME + text_w(&h, "-100") <= wide;
+                let input = |v: &str| h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(v)).rect();
+                let (size_r, lead_r, track_r) = (input(&format!("{size} pt")), input(leading), input("0"));
+                let kern_r = h.get_by_label(crate::i18n::tr(&l, "Kerning")).rect();
+                assert_eq!((size_r.center().y - lead_r.center().y).abs() < 0.5, size_side, "{l} {width}: size and leading {size_r:?} {lead_r:?}");
+                assert_eq!(
+                    (kern_r.center().y - track_r.center().y).abs() < 0.5,
+                    kern_side,
+                    "{l} {width}: kerning and tracking {kern_r:?} {track_r:?}"
+                );
+                let rects = [size_r, lead_r, kern_r, track_r];
+                for (i, a) in rects.iter().enumerate() {
+                    for b in &rects[i + 1..] {
+                        assert!(!a.shrink(0.5).intersects(b.shrink(0.5)), "{l} {width}: {a:?} overlaps {b:?}");
+                    }
+                }
+                // A field's node is its value's box (the field less its chrome); the kerning
+                // dropdown's is the whole dropdown.
+                assert!(text_w(&h, "10.5 pt") <= size_r.width() + 0.5, "{l} {width}: a size like 10.5 pt is cut off");
+                assert!(text_w(&h, "(14.4 pt)") <= lead_r.width() + 0.5, "{l} {width}: a leading like (14.4 pt) is cut off");
+                assert!(DROPDOWN_CHROME + kern_label <= kern_r.width() + 0.5, "{l} {width}: the kerning label is cut off");
+                cases.insert((size_side, kern_side));
+            }
+            if lang.is_none() && size == 12.0 {
+                assert_eq!(cases, [(false, false), (false, true), (true, true)].into_iter().collect(), "all three layouts occur");
+            }
+        }
+    }
+
     /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
     #[test]
     fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
@@ -3870,21 +4182,24 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
     let has_sel = app.session.active().is_some_and(|s| !s.selection.items.is_empty());
     let container = selected_container(app);
     let f = container.as_ref().and_then(|(it, _)| it.flex.clone());
+    // The checkbox; W and H beside the alignment grid; justification, direction and wrap.
+    let g = PropGrid::new(ui, &t, 4);
     let mut on = f.is_some();
-    let resp = ui.add_enabled_ui(has_sel, |ui| widgets::checkbox(ui, &mut on, &tr("Create Flex Layout"))).inner;
+    let resp = place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
+        ui.add_enabled_ui(has_sel, |ui| widgets::checkbox(ui, &mut on, &tr("Create Flex Layout"))).inner
+    });
     if resp.changed() {
         let _ = app.run(if on { "flex.add" } else { "flex.remove" }, json!({}));
         return;
     }
-    ui.add_space(4.0);
     let enabled = f.is_some();
     let rect = container.as_ref().map(|(it, _)| it.inner_bounds());
     let arranged = container.as_ref().and_then(|(it, kids)| it.flex.as_ref().map(|f| flex::arrange(f, it.inner_bounds(), kids)));
     let mut set: Option<Value> = None;
-    // Alignment grid, W and H with Auto/Fixed, constrain proportions.
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
-    ui.add_enabled_ui(enabled, |ui| {
-        if let Some(c) = flex_grid(ui, sub(b, 0.0, 0.0, 48.0, 48.0), f.as_ref()) {
+    {
+        let ui = &mut over_grid(ui, enabled);
+        let lead = g.span_rows(1..3, Track::Lead, Track::Lead);
+        if let Some(c) = flex_grid(ui, Rect::from_min_size(pos2(lead.min.x, lead.center().y - 13.0), vec2(26.0, 26.0)), f.as_ref()) {
             set = Some(json!({"cell": c}));
         }
         let linked = temp_bool(ui, "flex_size_linked", false);
@@ -3895,15 +4210,16 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         .into_iter()
         .enumerate()
         {
-            let y = k as f32 * (FIELD_H + 5.0);
+            let row = k + 1;
             ui.painter().text(
-                sub(b, 56.0, y, 18.0, FIELD_H).right_center(),
+                g.cell(row, Track::SlotA).right_center(),
                 egui::Align2::RIGHT_CENTER,
                 tr(label),
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(t.label_size + 0.5),
                 t.text,
             );
-            let nv = place(ui, sub(b, 78.0, y, 66.0, FIELD_H), |ui| NumField::measure(key, len, u).width(66.0).range(0.0, 100_000.0).show(ui));
+            let c = g.cell(row, Track::FieldA);
+            let nv = place(ui, c, |ui| NumField::measure(key, len, u).width(c.width()).height(c.height()).range(0.0, 100_000.0).show(ui));
             if let Some(v) = nv {
                 let mut p = json!({ key: v });
                 if linked
@@ -3917,27 +4233,32 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
             }
             let names = [tr("Fixed"), tr("Auto")];
             let cur = if mode == Some(FlexSize::Auto) { 1 } else { 0 };
-            if let Some(i) = place(ui, sub(b, 148.0, y, 62.0, FIELD_H), |ui| widgets::dropdown_list(ui, &names[cur], 62.0, &names, Some(cur))) {
+            let c = g.span(row, Track::SlotB, Track::FieldB);
+            if let Some(i) = place(ui, c, |ui| widgets::dropdown_list_h(ui, &names[cur], c.width(), c.height(), &names, Some(cur))) {
                 set = Some(json!({ key: if i == 1 { "auto" } else { "fixed" } }));
             }
         }
-        let clicked = place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Constrain proportions"), vec2(22.0, 21.0))
-                .clicked()
+        let link = g.span_rows(1..3, Track::Trail, Track::Trail);
+        let clicked = place(ui, link, |ui| {
+            widgets::icon_toggle_sized(
+                ui,
+                if linked { "link" } else { "link-broken" },
+                linked,
+                &tr("Constrain proportions"),
+                vec2(link.width(), t.row_h),
+            )
+            .clicked()
         });
         if clicked {
             set_temp_bool(ui, "flex_size_linked", !linked);
         }
-    });
-    ui.add_space(6.0);
-    // Justification, direction, wrap.
-    let b = block(ui, FIELD_H);
-    ui.add_enabled_ui(enabled, |ui| {
+        // Justification, direction, wrap.
         let cur = f.as_ref().map(|f| f.justify).unwrap_or_default();
         let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map(|j| j.1).unwrap_or("flex-start");
-        let resp = place(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H), |ui| {
-            preview_dropdown(ui, 58.0, |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
+        let c = g.span(3, Track::Lead, Track::SlotA);
+        let resp = place(ui, c, |ui| {
+            preview_dropdown(ui, c.width(), c.height(), |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
         });
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(150.0);
@@ -3954,50 +4275,52 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         });
         let dir = f.as_ref().map(|f| f.direction).unwrap_or_default();
-        place(ui, sub(b, 78.0, 0.0, 132.0, FIELD_H), |ui| {
+        let arrows = g.span(3, Track::FieldA, Track::FieldB);
+        place(ui, arrows, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            // The four arrows share the span, 31 pt each once it is wide enough.
+            let w = ((arrows.width() - 6.0) / 4.0).clamp(0.0, 31.0);
             for (d, icon, tip) in [
                 (designcraft_doc::FlexDirection::Row, "flex-right", "Row"),
                 (designcraft_doc::FlexDirection::RowReverse, "flex-left", "Reverse Row"),
                 (designcraft_doc::FlexDirection::Column, "flex-down", "Column"),
                 (designcraft_doc::FlexDirection::ColumnReverse, "flex-up", "Reverse Column"),
             ] {
-                if widgets::icon_toggle_sized(ui, icon, enabled && dir == d, &tr(tip), vec2(31.0, 21.0)).clicked() {
+                if widgets::icon_toggle_sized(ui, icon, enabled && dir == d, &tr(tip), vec2(w, t.row_h)).clicked() {
                     set = Some(json!({"direction": d}));
                 }
             }
         });
         let wrap = f.as_ref().is_some_and(|f| f.wrap);
-        if place(ui, sub(b, 214.0, 0.0, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, "flex-wrap", wrap, &tr("Wrap Content"), vec2(22.0, 21.0)).clicked()
-        }) {
+        let c = g.cell(3, Track::Trail);
+        if place(ui, c, |ui| widgets::icon_toggle_sized(ui, "flex-wrap", wrap, &tr("Wrap Content"), vec2(c.width(), t.row_h)).clicked()) {
             set = Some(json!({"wrap": !wrap}));
         }
-    });
+    }
     // Spacing: padding (linked by default) and the spacing between objects.
     section(ui, &tr("Spacing"), true);
-    let b = block(ui, 3.0 * FIELD_H + 10.0);
-    ui.add_enabled_ui(enabled, |ui| {
+    let g = PropGrid::new(ui, &t, 3);
+    {
+        let ui = &mut over_grid(ui, enabled);
         let pad = f.as_ref().map(|f| f.padding).unwrap_or_default();
         let linked = temp_bool(ui, "flex_padding_linked", true);
-        for (k, (icon, tip, x, y)) in [
-            ("margin-top", "Top", 0.0, 0.0),
-            ("margin-inside", "Left", 112.0, 0.0),
-            ("margin-bottom", "Bottom", 0.0, 26.0),
-            ("margin-outside", "Right", 112.0, 26.0),
+        for (k, (icon, tip, row, slot, field)) in [
+            ("margin-top", "Top", 0, Track::SlotA, Track::FieldA),
+            ("margin-inside", "Left", 0, Track::SlotB, Track::FieldB),
+            ("margin-bottom", "Bottom", 1, Track::SlotA, Track::FieldA),
+            ("margin-outside", "Right", 1, Track::SlotB, Track::FieldB),
         ]
         .into_iter()
         .enumerate()
         {
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            let ir = Rect::from_center_size(g.cell(row, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.id().with(("flex_pad", k)), Sense::hover()).on_hover_ui(|ui| {
                 crate::rtl::label(ui, tr(tip));
             });
             let value = f.as_ref().map(|_| pad[k]);
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(tip, value, u).width(76.0).spinner().range(0.0, 8000.0).show(ui)
-            });
+            let c = g.cell(row, field);
+            let nv = place(ui, c, |ui| NumField::measure(tip, value, u).width(c.width()).height(c.height()).spinner().range(0.0, 8000.0).show(ui));
             if let Some(v) = nv {
                 let p = if linked {
                     [v; 4]
@@ -4009,9 +4332,16 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
                 set = Some(json!({"padding": p}));
             }
         }
-        if place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
-                .clicked()
+        let link = g.span_rows(0..2, Track::Trail, Track::Trail);
+        if place(ui, link, |ui| {
+            widgets::icon_toggle_sized(
+                ui,
+                if linked { "link" } else { "link-broken" },
+                linked,
+                &tr("Make all settings the same"),
+                vec2(link.width(), t.row_h),
+            )
+            .clicked()
         }) {
             set_temp_bool(ui, "flex_padding_linked", !linked);
         }
@@ -4019,8 +4349,10 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         // the cross axis' only counts when objects wrap.
         let (row, distributes, wrap) = f.as_ref().map(|f| (f.direction.is_row(), f.justify.distributes(), f.wrap)).unwrap_or((true, false, false));
         let main_gap = arranged.as_ref().map(|a| a.main_gap);
-        for (k, (icon, key, tip, x)) in
-            [("gap-h", "gapH", "Horizontal Spacing", 0.0), ("gap-v", "gapV", "Vertical Spacing", 112.0)].into_iter().enumerate()
+        for (k, (icon, key, tip, slot, field)) in
+            [("gap-h", "gapH", "Horizontal Spacing", Track::SlotA, Track::FieldA), ("gap-v", "gapV", "Vertical Spacing", Track::SlotB, Track::FieldB)]
+                .into_iter()
+                .enumerate()
         {
             let main = (k == 0) == row;
             let live = if main { !distributes } else { wrap };
@@ -4029,20 +4361,20 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
                 Some(f) => Some(if k == 0 { f.gap_h } else { f.gap_v }),
                 None => None,
             };
-            let y = 2.0 * FIELD_H + 10.0;
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            let ir = Rect::from_center_size(g.cell(2, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, if live { t.icon } else { t.text_dim });
             ui.interact(ir, ui.id().with(("flex_gap", k)), Sense::hover()).on_hover_ui(|ui| {
                 crate::rtl::label(ui, tr(tip));
             });
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(key, value, u).width(76.0).spinner().range(0.0, 8000.0).enabled(live).show(ui)
+            let c = g.cell(2, field);
+            let nv = place(ui, c, |ui| {
+                NumField::measure(key, value, u).width(c.width()).height(c.height()).spinner().range(0.0, 8000.0).enabled(live).show(ui)
             });
             if let Some(v) = nv {
                 set = Some(json!({ key: v }));
             }
         }
-    });
+    }
     if let Some(p) = set {
         let _ = app.run("flex.set", p);
     }

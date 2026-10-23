@@ -25,6 +25,7 @@ mod object_control;
 mod panel_docking;
 pub mod panels;
 mod prefs;
+pub mod prop_grid;
 pub mod render_worker;
 mod rtl;
 mod section_options;

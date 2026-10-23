@@ -104,6 +104,7 @@ pub(crate) const FIXTURE_EDITION: designcraft_edition::Edition = designcraft_edi
         faint: 0.32,
         hairline: 0.18,
         radius: 0,
+        density: designcraft_edition::Density::Compact,
     },
     fonts: None,
 };

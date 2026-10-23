@@ -23,7 +23,8 @@ pub struct Edition {
     pub fonts: Option<Fonts>,
 }
 
-/// Colours by role (sRGB) and alphas of `text` over `bg`, as the edition's `[theme]` gives them.
+/// Colours by role (sRGB), alphas of `text` over `bg` and the density, as the edition's `[theme]`
+/// gives them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     pub bg: [u8; 3],
@@ -39,6 +40,16 @@ pub struct Theme {
     pub faint: f32,
     pub hairline: f32,
     pub radius: u8,
+    pub density: Density,
+}
+
+/// How roomy the Properties and Pages panels are: `compact` (every upstream level's spacing, the
+/// default) or `comfortable`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Density {
+    #[default]
+    Compact,
+    Comfortable,
 }
 
 /// The interface typeface (OpenType or TrueType). Bold sets the wordmark; without it, Semibold.

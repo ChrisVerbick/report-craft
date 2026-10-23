@@ -187,7 +187,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
             let _ = app.run("object.stroke", json!({"weight": v}));
         }
         cell(ui, rect, 36.0, 1, 94.0, selected, |ui| {
-            properties::stroke_type_dropdown(app, ui, info.as_ref().map_or("solid", |i| &i.stroke_kind), 94.0)
+            properties::stroke_type_dropdown(app, ui, info.as_ref().map_or("solid", |i| &i.stroke_kind), 94.0, crate::widgets::FIELD_H)
         });
         icon(ui, rect, 138.0, 0, "opacity", &tr("Opacity"));
         if let Some(v) = cell(ui, rect, 158.0, 0, 66.0, selected, |ui| {
@@ -236,7 +236,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
             let shape = if shape == CornerShape::None { CornerShape::Rounded } else { shape };
             let _ = app.run("object.cornerOptions", json!({"shape": shape, "size": v}));
         }
-        cell(ui, rect, 0.0, 1, 102.0, selected, |ui| properties::corner_type_dropdown(app, ui, shape, size, 102.0));
+        cell(ui, rect, 0.0, 1, 102.0, selected, |ui| properties::corner_type_dropdown(app, ui, shape, size, 102.0, crate::widgets::FIELD_H));
     });
     separator(ui);
     group(ui, "fitting", 116.0, |ui, rect| {

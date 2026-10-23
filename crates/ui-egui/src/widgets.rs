@@ -14,13 +14,35 @@ use crate::theme::Tokens;
 pub const FIELD_H: f32 = 21.0;
 /// Width of the spinner (⌃⌄) and preset (⌄) segments.
 pub const SEG_W: f32 = 18.0;
+/// What a [`NumField`] draws around its value: its spinner and preset segments, 5 pt before the
+/// value and 1 pt after it. The pair rule ([`crate::prop_grid::value_fits`]) measures with these.
+pub const NUM_CHROME: f32 = 2.0 * SEG_W + 6.0;
+/// The same for a spinner field without presets.
+pub const SPIN_CHROME: f32 = SEG_W + 6.0;
+/// What [`dropdown_h`] draws around its text: 7 pt before it, 2 pt after it, and its chevron.
+pub const DROPDOWN_CHROME: f32 = SEG_W + 9.0;
 /// Outline button height.
 pub const BUTTON_H: f32 = 20.0;
 /// UI label size (InDesign: about 10.5–11 pt).
 pub const LABEL_SIZE: f32 = 11.0;
 
-fn label_font() -> egui::FontId {
-    egui::FontId::proportional(LABEL_SIZE)
+/// The text style of labels and field values: [`LABEL_SIZE`], unless a panel raises it with
+/// [`scope_label_size`].
+pub(crate) fn label_style() -> egui::TextStyle {
+    egui::TextStyle::Name("label".into())
+}
+
+pub(crate) fn label_font(ui: &Ui) -> egui::FontId {
+    ui.style().text_styles.get(&label_style()).cloned().unwrap_or_else(|| egui::FontId::proportional(LABEL_SIZE))
+}
+
+/// Labels, field values and egui's own text inside `ui` use `size`. The Properties panel follows
+/// the density this way; other panels keep [`LABEL_SIZE`].
+pub fn scope_label_size(ui: &mut Ui, size: f32) {
+    let styles = &mut ui.style_mut().text_styles;
+    for style in [label_style(), egui::TextStyle::Body, egui::TextStyle::Button] {
+        styles.insert(style, egui::FontId::proportional(size));
+    }
 }
 
 /// What a numeric field holds.
@@ -74,6 +96,7 @@ pub struct NumField<'a> {
     value: Option<f64>,
     kind: NumKind<'a>,
     width: f32,
+    height: f32,
     spinner: bool,
     presets: &'a [f64],
     step: Option<f64>,
@@ -90,11 +113,28 @@ impl<'a> NumField<'a> {
         Self::new(id, value, NumKind::Number { suffix, decimals })
     }
     fn new(id: &'a str, value: Option<f64>, kind: NumKind<'a>) -> Self {
-        NumField { id, value, kind, width: 72.0, spinner: false, presets: &[], step: None, range: (f64::MIN, f64::MAX), enabled: true, parens: false }
+        NumField {
+            id,
+            value,
+            kind,
+            width: 72.0,
+            height: FIELD_H,
+            spinner: false,
+            presets: &[],
+            step: None,
+            range: (f64::MIN, f64::MAX),
+            enabled: true,
+            parens: false,
+        }
     }
     /// Total width (spinner and preset segments included).
     pub fn width(mut self, w: f32) -> Self {
         self.width = w;
+        self
+    }
+    /// The field's height (default [`FIELD_H`]); both segments fill it.
+    pub fn height(mut self, h: f32) -> Self {
+        self.height = if h.is_finite() { h.max(1.0) } else { FIELD_H };
         self
     }
     /// Show the ⌃⌄ spinner segment on the left.
@@ -142,7 +182,7 @@ impl<'a> NumField<'a> {
     pub fn show_or_clear(self, ui: &mut Ui) -> Option<Option<f64>> {
         let t = Tokens::get(ui.ctx());
         let key = ui.id().with(self.id);
-        let (rect, _) = ui.allocate_exact_size(vec2(self.width, FIELD_H), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(self.width, self.height), Sense::hover());
         let step = self.step.unwrap_or_else(|| self.kind.step());
         let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
         let mut out: Option<f64> = None;
@@ -154,7 +194,7 @@ impl<'a> NumField<'a> {
         let fg = if self.enabled { fg } else { t.text_disabled };
         // Spinner segment.
         if self.spinner {
-            let seg = Rect::from_min_size(rect.min, vec2(SEG_W, FIELD_H));
+            let seg = Rect::from_min_size(rect.min, vec2(SEG_W, self.height));
             text_rect.min.x = seg.max.x;
             ui.painter().rect_filled(seg, 0.0, t.input);
             let up = Rect::from_min_max(seg.min, pos2(seg.max.x, seg.center().y));
@@ -196,7 +236,7 @@ impl<'a> NumField<'a> {
         let te = egui::TextEdit::singleline(&mut buf)
             .id(focused_id)
             .frame(egui::Frame::NONE)
-            .font(label_font())
+            .font(label_font(ui))
             .text_color(fg)
             .margin(egui::Margin::ZERO)
             .vertical_align(egui::Align::Center);
@@ -305,13 +345,18 @@ pub fn dropdown_h(ui: &mut Ui, text: &str, width: f32, h: f32) -> Response {
     p.line_segment([seg.left_top(), seg.left_bottom()], Stroke::new(1.0, t.field_border));
     chevron_down(p, seg.center(), t.icon);
     let clip = Rect::from_min_max(r.min, pos2(seg.min.x - 2.0, r.max.y));
-    p.with_clip_rect(clip).text(pos2(r.min.x + 7.0, r.center().y), egui::Align2::LEFT_CENTER, text, label_font(), t.text);
+    p.with_clip_rect(clip).text(pos2(r.min.x + 7.0, r.center().y), egui::Align2::LEFT_CENTER, text, label_font(ui), t.text);
     resp
 }
 
 /// A dropdown that lists `items` and returns the picked index.
 pub fn dropdown_list(ui: &mut Ui, text: &str, width: f32, items: &[String], current: Option<usize>) -> Option<usize> {
-    let resp = dropdown(ui, text, width);
+    dropdown_list_h(ui, text, width, FIELD_H, items, current)
+}
+
+/// [`dropdown_list`] `h` tall (a Properties grid row).
+pub fn dropdown_list_h(ui: &mut Ui, text: &str, width: f32, h: f32, items: &[String], current: Option<usize>) -> Option<usize> {
+    let resp = dropdown_h(ui, text, width, h);
     let mut out = None;
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(width);
@@ -338,7 +383,7 @@ pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
         p.rect_filled(r, t.corner(2.0), t.hover);
     }
     p.rect_stroke(r, t.corner(2.0), Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
+    crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(ui), t.text);
     // Screen readers (and tests) find it by its label.
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     resp
@@ -365,10 +410,11 @@ pub fn full_width(ui: &Ui) -> f32 {
 pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::click());
-    let g = crate::rtl::plain(ui.ctx(), text, label_font(), t.text);
+    let g = crate::rtl::plain(ui.ctx(), text, label_font(ui), t.text);
     let pos = pos2(r.min.x, r.center().y - g.size().y / 2.0);
-    let w = g.size().x;
-    ui.painter().galley(pos, g, t.text);
+    // A long translation is cut off at the label's width, never painted over the next control.
+    let w = g.size().x.min(r.width());
+    ui.painter().with_clip_rect(r.intersect(ui.clip_rect())).galley(pos, g, t.text);
     let y = r.center().y + 6.5;
     ui.painter().line_segment([pos2(r.min.x, y), pos2(r.min.x + w, y)], Stroke::new(1.0, if resp.hovered() { t.text_strong } else { t.text_dim }));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
@@ -392,7 +438,8 @@ pub fn more_options(ui: &mut Ui, language: &str) -> Response {
 /// A small dim label (field captions like `X:` or `W:`).
 pub fn caption(ui: &mut Ui, s: &str) {
     let t = Tokens::get(ui.ctx());
-    crate::rtl::label(ui, egui::RichText::new(s).size(LABEL_SIZE).color(t.text));
+    let size = label_font(ui).size;
+    crate::rtl::label(ui, egui::RichText::new(s).size(size).color(t.text));
 }
 
 /// A right-aligned caption of a fixed width (`W:` before a spinner).
@@ -401,15 +448,24 @@ pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
     // Painted, so tell screen readers (and UI tests) what it says.
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
-    crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
+    // Half a point above the labels, as everywhere in the panel.
+    let font = egui::FontId::proportional(label_font(ui).size + 0.5);
+    crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, font, t.text);
 }
 
 /// The selection-type line at the top of the Properties panel ("No Selection", "Rectangle", …):
-/// a 33 pt band followed by a section rule.
+/// a band (33 pt in every upstream level) followed by a section rule.
 pub fn selection_band(ui: &mut Ui, title: &str) {
     let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 33.0), Sense::hover());
-    crate::rtl::paint(ui.painter(), pos2(r.min.x, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, crate::theme::semibold(11.5), t.text_strong);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.title_band_h), Sense::hover());
+    crate::rtl::paint(
+        ui.painter(),
+        pos2(r.min.x, r.center().y + 1.0),
+        egui::Align2::LEFT_CENTER,
+        title,
+        crate::theme::semibold(t.title_size),
+        t.text_strong,
+    );
     rule(ui);
 }
 
@@ -417,12 +473,12 @@ pub fn selection_band(ui: &mut Ui, title: &str) {
 /// 1.5 pt rule separates sections). Returns whether to show the section body (always true).
 pub fn section(ui: &mut Ui, title: &str, _default_open: bool) -> bool {
     let t = Tokens::get(ui.ctx());
-    ui.add_space(7.0);
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
-    crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
+    ui.add_space(t.section_above);
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.section_header_h), Sense::hover());
+    crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(t.header_size), t.text_strong);
     // Screen readers hear the section's title.
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title));
-    ui.add_space(3.0);
+    ui.add_space(t.section_header_gap);
     true
 }
 
@@ -430,17 +486,19 @@ pub fn section(ui: &mut Ui, title: &str, _default_open: bool) -> bool {
 /// returns the remaining rect to the right of the title.
 pub fn section_row(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
     let t = Tokens::get(ui.ctx());
-    ui.add_space(8.0);
+    // Its row holds controls, so it is a control row a little taller than a plain header.
+    let h = t.row_h + 2.0;
+    ui.add_space(t.section_above + 1.0);
     ui.horizontal(|ui| {
-        ui.set_min_height(23.0);
-        let (r, _) = ui.allocate_exact_size(vec2(100.0, 23.0), Sense::hover());
-        crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
+        ui.set_min_height(h);
+        let (r, _) = ui.allocate_exact_size(vec2(100.0, h), Sense::hover());
+        crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(t.header_size), t.text_strong);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(4.0);
             add(ui)
         });
     });
-    ui.add_space(6.0);
+    ui.add_space(t.section_header_gap + 3.0);
 }
 
 /// The 1.5 pt section rule, full panel width.
@@ -456,7 +514,7 @@ pub fn rule(ui: &mut Ui) {
 }
 
 pub fn divider(ui: &mut Ui) {
-    ui.add_space(8.0);
+    ui.add_space(Tokens::get(ui.ctx()).divider_gap);
     rule(ui);
 }
 
@@ -551,7 +609,7 @@ pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egu
 /// An InDesign checkbox: 12 pt rounded box, white check, label.
 pub fn checkbox(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let t = Tokens::get(ui.ctx());
-    let g = ui.painter().layout_no_wrap(label.to_string(), label_font(), t.text);
+    let g = ui.painter().layout_no_wrap(label.to_string(), label_font(ui), t.text);
     let (r, mut resp) = ui.allocate_exact_size(vec2(18.0 + g.size().x, FIELD_H), Sense::click());
     let b = Rect::from_center_size(pos2(r.min.x + 6.5, r.center().y), vec2(12.0, 12.0));
     if *on {
@@ -583,7 +641,7 @@ pub fn segmented(ui: &mut Ui, labels: &[&str], active: usize, width: f32) -> Opt
         } else if resp.hovered() {
             ui.painter().rect_filled(sr, 0.0, t.hover);
         }
-        crate::rtl::paint(ui.painter(), sr.center(), egui::Align2::CENTER_CENTER, l, label_font(), if i == active { t.accent } else { t.text });
+        crate::rtl::paint(ui.painter(), sr.center(), egui::Align2::CENTER_CENTER, l, label_font(ui), if i == active { t.accent } else { t.text });
         if i > 0 {
             ui.painter().line_segment([sr.left_top(), sr.left_bottom()], Stroke::new(1.0, t.field_border));
         }
@@ -622,6 +680,47 @@ mod tests {
         };
         let mut out = ctx.run_ui(raw, |ui| f(ui));
         out.textures_delta.clear();
+    }
+
+    /// The pair rule's chrome constants are what a `NumField` really draws around its value, and
+    /// its height follows `.height`.
+    #[test]
+    fn chrome_matches_the_num_field() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for (presets, chrome) in [(true, NUM_CHROME), (false, SPIN_CHROME)] {
+            let mut h = Harness::builder().with_size(vec2(200.0, 60.0)).build_ui(move |ui| {
+                let f = NumField::number("chrome", Some(7.0), "", 0).width(100.0).spinner();
+                let _ = if presets { f.presets(&[1.0, 2.0]) } else { f }.show(ui);
+            });
+            h.run();
+            let input = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput).rect();
+            assert!((input.width() - (100.0 - chrome)).abs() <= 0.5, "chrome {chrome}: {input:?}");
+        }
+        let ctx = egui::Context::default();
+        let mut field = Rect::NOTHING;
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut |ui| {
+            field = ui.scope(|ui| NumField::number("tall", Some(7.0), "", 0).width(100.0).spinner().height(24.0).show(ui)).response.rect;
+        });
+        assert_eq!(field.height(), 24.0);
+    }
+
+    /// Labels and values follow the density only inside a panel that raises them (the Properties
+    /// panel); everywhere else they keep `LABEL_SIZE`.
+    #[test]
+    fn label_size_is_scoped_to_its_panel() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx, &Tokens::for_brightness(Default::default()));
+        let mut sizes = [0.0; 4];
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut |ui| {
+            ui.scope(|ui| {
+                scope_label_size(ui, 12.0);
+                sizes[0] = label_font(ui).size;
+                sizes[1] = egui::TextStyle::Body.resolve(ui.style()).size;
+                sizes[2] = egui::TextStyle::Button.resolve(ui.style()).size;
+            });
+            sizes[3] = label_font(ui).size;
+        });
+        assert_eq!(sizes, [12.0, 12.0, 12.0, LABEL_SIZE]);
     }
 
     fn click(p: egui::Pos2, mods: egui::Modifiers) -> Vec<Vec<egui::Event>> {
