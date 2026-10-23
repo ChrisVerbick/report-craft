@@ -14,6 +14,13 @@ use crate::theme::Tokens;
 pub const FIELD_H: f32 = 21.0;
 /// Width of the spinner (⌃⌄) and preset (⌄) segments.
 pub const SEG_W: f32 = 18.0;
+/// What a [`NumField`] draws around its value: its spinner and preset segments, 5 pt before the
+/// value and 1 pt after it. The pair rule ([`crate::prop_grid::value_fits`]) measures with these.
+pub const NUM_CHROME: f32 = 2.0 * SEG_W + 6.0;
+/// The same for a spinner field without presets.
+pub const SPIN_CHROME: f32 = SEG_W + 6.0;
+/// What [`dropdown_h`] draws around its text: 7 pt before it, 2 pt after it, and its chevron.
+pub const DROPDOWN_CHROME: f32 = SEG_W + 9.0;
 /// Outline button height.
 pub const BUTTON_H: f32 = 20.0;
 /// UI label size (InDesign: about 10.5–11 pt).
@@ -25,7 +32,7 @@ pub(crate) fn label_style() -> egui::TextStyle {
     egui::TextStyle::Name("label".into())
 }
 
-fn label_font(ui: &Ui) -> egui::FontId {
+pub(crate) fn label_font(ui: &Ui) -> egui::FontId {
     ui.style().text_styles.get(&label_style()).cloned().unwrap_or_else(|| egui::FontId::proportional(LABEL_SIZE))
 }
 
@@ -89,6 +96,7 @@ pub struct NumField<'a> {
     value: Option<f64>,
     kind: NumKind<'a>,
     width: f32,
+    height: f32,
     spinner: bool,
     presets: &'a [f64],
     step: Option<f64>,
@@ -105,11 +113,28 @@ impl<'a> NumField<'a> {
         Self::new(id, value, NumKind::Number { suffix, decimals })
     }
     fn new(id: &'a str, value: Option<f64>, kind: NumKind<'a>) -> Self {
-        NumField { id, value, kind, width: 72.0, spinner: false, presets: &[], step: None, range: (f64::MIN, f64::MAX), enabled: true, parens: false }
+        NumField {
+            id,
+            value,
+            kind,
+            width: 72.0,
+            height: FIELD_H,
+            spinner: false,
+            presets: &[],
+            step: None,
+            range: (f64::MIN, f64::MAX),
+            enabled: true,
+            parens: false,
+        }
     }
     /// Total width (spinner and preset segments included).
     pub fn width(mut self, w: f32) -> Self {
         self.width = w;
+        self
+    }
+    /// The field's height (default [`FIELD_H`]); both segments fill it.
+    pub fn height(mut self, h: f32) -> Self {
+        self.height = if h.is_finite() { h.max(1.0) } else { FIELD_H };
         self
     }
     /// Show the ⌃⌄ spinner segment on the left.
@@ -157,7 +182,7 @@ impl<'a> NumField<'a> {
     pub fn show_or_clear(self, ui: &mut Ui) -> Option<Option<f64>> {
         let t = Tokens::get(ui.ctx());
         let key = ui.id().with(self.id);
-        let (rect, _) = ui.allocate_exact_size(vec2(self.width, FIELD_H), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(self.width, self.height), Sense::hover());
         let step = self.step.unwrap_or_else(|| self.kind.step());
         let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
         let mut out: Option<f64> = None;
@@ -169,7 +194,7 @@ impl<'a> NumField<'a> {
         let fg = if self.enabled { fg } else { t.text_disabled };
         // Spinner segment.
         if self.spinner {
-            let seg = Rect::from_min_size(rect.min, vec2(SEG_W, FIELD_H));
+            let seg = Rect::from_min_size(rect.min, vec2(SEG_W, self.height));
             text_rect.min.x = seg.max.x;
             ui.painter().rect_filled(seg, 0.0, t.input);
             let up = Rect::from_min_max(seg.min, pos2(seg.max.x, seg.center().y));
@@ -647,6 +672,28 @@ mod tests {
         };
         let mut out = ctx.run_ui(raw, |ui| f(ui));
         out.textures_delta.clear();
+    }
+
+    /// The pair rule's chrome constants are what a `NumField` really draws around its value, and
+    /// its height follows `.height`.
+    #[test]
+    fn chrome_matches_the_num_field() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for (presets, chrome) in [(true, NUM_CHROME), (false, SPIN_CHROME)] {
+            let mut h = Harness::builder().with_size(vec2(200.0, 60.0)).build_ui(move |ui| {
+                let f = NumField::number("chrome", Some(7.0), "", 0).width(100.0).spinner();
+                let _ = if presets { f.presets(&[1.0, 2.0]) } else { f }.show(ui);
+            });
+            h.run();
+            let input = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput).rect();
+            assert!((input.width() - (100.0 - chrome)).abs() <= 0.5, "chrome {chrome}: {input:?}");
+        }
+        let ctx = egui::Context::default();
+        let mut field = Rect::NOTHING;
+        run(&ctx, vec![], egui::Modifiers::NONE, &mut |ui| {
+            field = ui.scope(|ui| NumField::number("tall", Some(7.0), "", 0).width(100.0).spinner().height(24.0).show(ui)).response.rect;
+        });
+        assert_eq!(field.height(), 24.0);
     }
 
     /// Labels and values follow the density only inside a panel that raises them (the Properties
