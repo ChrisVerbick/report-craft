@@ -12,8 +12,8 @@ use super::{SelInfo, sel_info, text_attrs};
 use crate::prop_grid::{PropGrid, Track};
 use crate::theme::Tokens;
 use crate::widgets::{
-    self, FIELD_H, NumField, button_pair, caption, divider, dropdown, full_width, icon_toggle, link_label, measure, more_options, number,
-    outline_button, rule, section, section_row, selection_band,
+    self, FIELD_H, NumField, button_pair, caption, divider, full_width, icon_toggle, link_label, measure, more_options, number, outline_button, rule,
+    section, section_row, selection_band,
 };
 use crate::{DesignApp, icons};
 
@@ -229,13 +229,13 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     let n = page + 1;
     let t = Tokens::get(ui.ctx());
     // The band: "Page", and Back at its end.
-    let band = block(ui, 33.0);
+    let band = block(ui, t.title_band_h);
     crate::rtl::paint(
         ui.painter(),
         pos2(band.min.x, band.center().y + 1.0),
         egui::Align2::LEFT_CENTER,
         crate::i18n::tr(&lang, "Page"),
-        crate::theme::semibold(11.5),
+        crate::theme::semibold(t.title_size),
         t.text_strong,
     );
     let back = place(ui, Rect::from_min_size(pos2(band.max.x - 58.0, band.center().y - 10.0), vec2(54.0, 20.0)), |ui| {
@@ -248,25 +248,24 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
         return;
     }
     section(ui, crate::i18n::tr(&lang, "Page Size"), true);
-    // Which page.
-    let b = block(ui, FIELD_H);
+    // Which page; the preset and orientation; W; H; then Margins and Columns.
+    let g = PropGrid::new(ui, &t, 5);
     let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, names.get(page).map_or("", String::as_str), 93.0, &names, Some(page))
-    });
+    let c = g.span(0, Track::Lead, Track::FieldA);
+    let picked =
+        place(ui, c, |ui| widgets::dropdown_list_h(ui, names.get(page).map_or("", String::as_str), c.width(), c.height(), &names, Some(page)));
     if let Some(p) = picked {
         let _ = app.run("layout.selectPage", json!({"page": p + 1}));
         crate::canvas::go_to_page(app, p);
         return;
     }
-    ui.add_space(3.0);
     // Preset and orientation: this page alone.
     let (w, h) = (pg.width, pg.height);
     let landscape = w > h;
-    let b = block(ui, FIELD_H);
     let mut size = None;
-    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        let resp = dropdown(ui, crate::i18n::tr(&lang, preset_name(w, h)), 93.0);
+    let c = g.span(1, Track::Lead, Track::FieldA);
+    place(ui, c, |ui| {
+        let resp = widgets::dropdown_h(ui, crate::i18n::tr(&lang, preset_name(w, h)), c.width(), c.height());
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(140.0);
             for p in PAGE_PRESETS {
@@ -277,7 +276,7 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
             }
         });
     });
-    place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
+    place(ui, g.span(1, Track::SlotB, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         if icon_toggle(ui, "orient-portrait", !landscape, crate::i18n::tr(&lang, "Portrait")).clicked() && landscape {
             size = Some((h, w));
@@ -286,13 +285,12 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
             size = Some((h, w));
         }
     });
-    ui.add_space(3.0);
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
     for (row, (label, v, key)) in [("W:", w, "width"), ("H:", h, "height")].into_iter().enumerate() {
-        let y = row as f32 * 26.0;
-        place(ui, sub(b, 0.0, y, 20.0, FIELD_H), |ui| widgets::caption_w(ui, label, 20.0));
-        let nv = place(ui, sub(b, 21.0, y, 72.0, FIELD_H), |ui| {
-            NumField::measure(&format!("page_{key}"), Some(v), u).width(72.0).spinner().range(1.0, 15552.0).show(ui)
+        let c = g.cell(row + 2, Track::SlotA);
+        place(ui, c, |ui| widgets::caption_w(ui, label, c.width()));
+        let c = g.cell(row + 2, Track::FieldA);
+        let nv = place(ui, c, |ui| {
+            NumField::measure(&format!("page_{key}"), Some(v), u).width(c.width()).height(c.height()).spinner().range(1.0, 15552.0).show(ui)
         });
         if let Some(nv) = nv {
             size = Some(if key == "width" { (nv, h) } else { (w, nv) });
@@ -301,15 +299,16 @@ fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     if let Some((nw, nh)) = size {
         let _ = app.run("layout.pageSize", json!({"pages": [n], "width": nw, "height": nh, "anchor": app.ui.ref_point.min(8)}));
     }
-    ui.add_space(6.0);
-    let fw = full_width(ui);
-    if outline_button(ui, crate::i18n::tr(&lang, "Margins and Columns"), fw).clicked() {
+    let c = g.span(4, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&lang, "Margins and Columns"), c.width())).clicked() {
         crate::canvas::go_to_page(app, page);
         crate::menus::activate(app, "layout.marginsAndColumns", &Value::Null);
     }
     divider(ui);
     section(ui, crate::i18n::tr(&lang, "Quick Actions"), true);
-    if outline_button(ui, crate::i18n::tr(&lang, "Import File"), fw).clicked() {
+    let g = PropGrid::new(ui, &t, 1);
+    let c = g.span(0, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&lang, "Import File"), c.width())).clicked() {
         let _ = app.run("app.placeDialog", json!({}));
     }
 }
@@ -319,12 +318,14 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     let Some(st) = app.session.active() else { return };
     let d = st.doc.clone();
     let (pw, ph) = (d.settings.page_width, d.settings.page_height);
+    let t = Tokens::get(ui.ctx());
     section(ui, crate::i18n::tr(&app.ui.language, "Document"), true);
-    // Preset dropdown + orientation.
-    let b = block(ui, FIELD_H);
+    // The preset and orientation; W and the page count; H and Facing Pages.
+    let g = PropGrid::new(ui, &t, 3);
     let mut preset = None;
-    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        let resp = dropdown(ui, preset_name(pw, ph), 93.0);
+    let c = g.span(0, Track::Lead, Track::FieldA);
+    place(ui, c, |ui| {
+        let resp = widgets::dropdown_h(ui, preset_name(pw, ph), c.width(), c.height());
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(140.0);
             for p in PAGE_PRESETS {
@@ -337,7 +338,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     });
     let landscape = pw > ph;
     let mut orient = None;
-    place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
+    place(ui, g.span(0, Track::SlotB, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         if icon_toggle(ui, "orient-portrait", !landscape, crate::i18n::tr(&app.ui.language, "Portrait")).clicked() && landscape {
             orient = Some(());
@@ -353,22 +354,19 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if orient.is_some() {
         let _ = app.run("layout.documentSetup", json!({"width": ph, "height": pw}));
     }
-    ui.add_space(3.0);
-    // W / H, page count, facing pages.
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
     for (row, (label, v, key)) in [("W:", pw, "width"), ("H:", ph, "height")].into_iter().enumerate() {
-        let y = row as f32 * 26.0;
-        place(ui, sub(b, 0.0, y, 20.0, FIELD_H), |ui| widgets::caption_w(ui, label, 20.0));
-        let nv =
-            place(ui, sub(b, 21.0, y, 72.0, FIELD_H), |ui| NumField::measure(key, Some(v), u).width(72.0).spinner().range(1.0, 15552.0).show(ui));
+        let c = g.cell(row + 1, Track::SlotA);
+        place(ui, c, |ui| widgets::caption_w(ui, label, c.width()));
+        let c = g.cell(row + 1, Track::FieldA);
+        let nv = place(ui, c, |ui| NumField::measure(key, Some(v), u).width(c.width()).height(c.height()).spinner().range(1.0, 15552.0).show(ui));
         if let Some(nv) = nv {
             let _ = app.run("layout.documentSetup", json!({key: nv}));
         }
     }
     let n = d.page_count();
-    let t = Tokens::get(ui.ctx());
-    icons::paint(ui.painter(), sub(b, 127.0, 2.0, 17.0, 17.0), "page-count", t.icon);
-    let nv = place(ui, sub(b, 150.0, 0.0, 68.0, FIELD_H), |ui| number(ui, "pagecount", Some(n as f64), "", 68.0, 0));
+    icons::paint(ui.painter(), Rect::from_center_size(g.cell(1, Track::SlotB).center(), vec2(16.0, 16.0)), "page-count", t.icon);
+    let c = g.cell(1, Track::FieldB);
+    let nv = place(ui, c, |ui| NumField::number("pagecount", Some(n as f64), "", 0).width(c.width()).height(c.height()).show(ui));
     if let Some(nv) = nv {
         let want = (nv.round() as usize).clamp(1, 9999);
         if want > n {
@@ -378,7 +376,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
         }
     }
     let mut facing = d.settings.facing_pages;
-    let changed = place(ui, sub(b, 126.0, 26.0, 100.0, FIELD_H), |ui| {
+    let changed = place(ui, g.span(2, Track::SlotB, Track::Trail), |ui| {
         widgets::checkbox(ui, &mut facing, crate::i18n::tr(&app.ui.language, "Facing Pages")).changed()
     });
     if changed {
@@ -394,25 +392,26 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
         Some((pi, qi)) => d.parents.get(pi).and_then(|s| s.pages.get(qi)).cloned(),
         None => d.page(cur).cloned(),
     };
+    // The four margins and their link, then Adjust Layout.
+    let button_row = if shown.is_some() { 2 } else { 0 };
+    let g = PropGrid::new(ui, &t, button_row + 1);
     if let Some(p) = shown {
         let linked = temp_bool(ui, "margins_linked", true);
-        let b = block(ui, 2.0 * FIELD_H + 5.0);
         let mut set: Option<designcraft_doc::Margins> = None;
         let fields = [
-            ("margin-top", "Top", p.margins.top, 0.0, 0.0),
-            ("margin-bottom", "Bottom", p.margins.bottom, 0.0, 26.0),
-            ("margin-outside", if d.settings.facing_pages { "Outside" } else { "Right" }, p.margins.outside, 127.0, 0.0),
-            ("margin-inside", if d.settings.facing_pages { "Inside" } else { "Left" }, p.margins.inside, 127.0, 26.0),
+            ("margin-top", "Top", p.margins.top, 0, Track::SlotA, Track::FieldA),
+            ("margin-bottom", "Bottom", p.margins.bottom, 1, Track::SlotA, Track::FieldA),
+            ("margin-outside", if d.settings.facing_pages { "Outside" } else { "Right" }, p.margins.outside, 0, Track::SlotB, Track::FieldB),
+            ("margin-inside", if d.settings.facing_pages { "Inside" } else { "Left" }, p.margins.inside, 1, Track::SlotB, Track::FieldB),
         ];
-        for (k, (icon, tip, v, x, y)) in fields.into_iter().enumerate() {
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+        for (k, (icon, tip, v, row, slot, field)) in fields.into_iter().enumerate() {
+            let ir = Rect::from_center_size(g.cell(row, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.id().with(("micon", k)), Sense::hover()).on_hover_ui(|ui| {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, tip));
             });
-            let nv = place(ui, sub(b, x + 20.0, y, 73.0, FIELD_H), |ui| {
-                NumField::measure(tip, Some(v), u).width(73.0).spinner().range(0.0, 8000.0).show(ui)
-            });
+            let c = g.cell(row, field);
+            let nv = place(ui, c, |ui| NumField::measure(tip, Some(v), u).width(c.width()).height(c.height()).spinner().range(0.0, 8000.0).show(ui));
             if let Some(nv) = nv {
                 let mut m = p.margins;
                 if linked {
@@ -428,10 +427,16 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
                 set = Some(m);
             }
         }
-        let lr = sub(b, 99.0, 12.5, 22.0, FIELD_H);
+        let lr = g.span_rows(0..2, Track::Trail, Track::Trail);
         let clicked = place(ui, lr, |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, "Make all settings the same", vec2(22.0, 21.0))
-                .clicked()
+            widgets::icon_toggle_sized(
+                ui,
+                if linked { "link" } else { "link-broken" },
+                linked,
+                "Make all settings the same",
+                vec2(lr.width(), t.row_h),
+            )
+            .clicked()
         });
         if clicked {
             set_temp_bool(ui, "margins_linked", !linked);
@@ -448,23 +453,25 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             let _ = app.run("layout.marginsAndColumns", params);
         }
     }
-    ui.add_space(6.0);
-    let fw = full_width(ui);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Adjust Layout"), fw).clicked() {
+    let c = g.span(button_row, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Adjust Layout"), c.width())).clicked() {
         crate::dialogs::open_document_setup(app);
     }
     divider(ui);
-    // Page.
+    // Page: which page, with Insert and Delete at the end; then Edit Page.
     section(ui, crate::i18n::tr(&app.ui.language, "Page"), true);
-    let b = block(ui, FIELD_H);
+    let g = PropGrid::new(ui, &t, 2);
     let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, &names[cur.min(names.len().saturating_sub(1))], 93.0, &names, Some(cur))
+    let c = g.span(0, Track::Lead, Track::FieldA);
+    let picked = place(ui, c, |ui| {
+        let shown = names.get(cur.min(names.len().saturating_sub(1))).map_or("", String::as_str);
+        widgets::dropdown_list_h(ui, shown, c.width(), c.height(), &names, Some(cur))
     });
     if let Some(pg) = picked {
         crate::canvas::go_to_page(app, pg);
     }
-    let (add, del) = place(ui, sub(b, 172.0, 0.0, 50.0, FIELD_H), |ui| {
+    let s = g.span(0, Track::FieldB, Track::Trail);
+    let (add, del) = place(ui, Rect::from_min_max(pos2(s.max.x - 48.0, s.min.y), s.max), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let a = widgets::icon_toggle_sized(ui, "style-new", false, "Insert Page", vec2(22.0, 21.0)).clicked();
         let d = widgets::icon_toggle_sized(ui, "trash", false, "Delete Page", vec2(22.0, 21.0)).clicked();
@@ -476,8 +483,8 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if del {
         let _ = crate::dialogs::delete_pages(app, vec![cur]);
     }
-    ui.add_space(3.0);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit Page"), fw).clicked() {
+    let c = g.span(1, Track::Lead, Track::Trail);
+    if place(ui, c, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit Page"), c.width())).clicked() {
         // As in InDesign: the Page tool on this page; Properties shows the page's own settings.
         app.select_tool("page");
         let _ = app.run("layout.selectPage", json!({"page": cur + 1}));
@@ -3164,6 +3171,22 @@ mod tests {
                 assert!(r.max.x <= slot_b + 0.5, "{lang} {label}: ends at {}, past slot B at {slot_b}", r.max.x);
             }
         }
+    }
+
+    #[test]
+    fn controls_start_on_grid_edges_with_nothing_selected() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let h = props_harness(app);
+        assert_on_grid_edges(&h, "Document", &["Document", "Margins", "Page", "Quick Actions"]);
+        // The Page tool with no objects selected: the page's own settings ("Page" there is the
+        // band, painted, so the first header anchors).
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.select_tool("page");
+        app.run("layout.selectPage", json!({"page": 1})).unwrap();
+        let h = props_harness(app);
+        assert_on_grid_edges(&h, "Page Size", &["Page Size", "Quick Actions"]);
     }
 
     /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
