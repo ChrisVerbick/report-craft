@@ -68,9 +68,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     let t = Tokens::get(ui.ctx());
-    // Expanded panel stack (outermost, 253 pt) — declared first so it sits at the far right.
+    // Expanded panel stack (outermost; 253 pt in every upstream level) — declared first so it sits
+    // at the far right.
     if app.ui.dock_expanded {
-        egui::Panel::right("dock").default_size(253.0).size_range(220.0..=420.0).resizable(true).frame(egui::Frame::NONE.fill(t.panel)).show(
+        egui::Panel::right("dock").default_size(t.dock_width).size_range(220.0..=420.0).resizable(true).frame(egui::Frame::NONE.fill(t.panel)).show(
             ui,
             |ui| {
                 if dock_header(ui, &t, "»").clicked() {
@@ -116,7 +117,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 egui::Popup::menu(&menu)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| crate::panel_docking::three_line_menu(app, ui, &tab));
-                egui::Frame::NONE.inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 6 }).show(ui, |ui| {
+                let pad = t.pad_x.round().clamp(0.0, 40.0) as i8;
+                egui::Frame::NONE.inner_margin(egui::Margin { left: pad, right: pad, top: 4, bottom: 6 }).show(ui, |ui| {
                     // The Pages panel scrolls its parts itself and keeps its footer at the bottom.
                     if app.ui.dock_tab == "pages" {
                         panels::pages::show(app, ui);
@@ -221,7 +223,8 @@ pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     let label = crate::i18n::tr(&app.ui.language, panel_label(&id)).to_owned();
     let screen = ctx.content_rect();
-    let dock_w = if app.ui.dock_expanded { ctx.memory(|m| m.area_rect(egui::Id::new("dock")).map(|r| r.width())).unwrap_or(280.0) } else { 0.0 };
+    let dock_w =
+        if app.ui.dock_expanded { ctx.memory(|m| m.area_rect(egui::Id::new("dock")).map(|r| r.width())).unwrap_or(t.dock_width) } else { 0.0 };
     let pos = egui::pos2(screen.max.x - icon_column_width(app) - dock_w - 262.0, 120.0);
     let mut open = true;
     egui::Area::new(egui::Id::new("panel_flyout")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {

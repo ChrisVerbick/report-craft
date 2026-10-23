@@ -128,6 +128,31 @@ pub struct Tokens {
     pub frame_radius: u8,
     /// The fill behind selected tabs, labels, buttons and text, under `text`.
     pub selection_fill: Color32,
+    /// Properties panel rows: their height and the gap between them.
+    pub row_h: f32,
+    pub row_gap: f32,
+    /// The dock's padding, left and right.
+    pub pad_x: f32,
+    /// A section header: the space above it, its row, the space under it, and its type size.
+    pub section_above: f32,
+    pub section_header_h: f32,
+    pub section_header_gap: f32,
+    pub header_size: f32,
+    /// The space above a section rule.
+    pub divider_gap: f32,
+    /// The selection band at the top of the Properties panel, and its title's type size.
+    pub title_band_h: f32,
+    pub title_size: f32,
+    /// Labels and field values in the Properties panel.
+    pub label_size: f32,
+    /// Pages panel: the space above a spread row, the band under a page for its number, the
+    /// number's badge, and its type size.
+    pub pages_row_top: f32,
+    pub pages_label_band: f32,
+    pub pages_badge_h: f32,
+    pub pages_label_size: f32,
+    /// The expanded dock's width when it opens.
+    pub dock_width: f32,
 }
 
 fn hex(s: u32) -> Color32 {
@@ -199,6 +224,22 @@ impl Tokens {
             frame_radius: 4,
             // Each level's accent_strong (below).
             selection_fill: hex(0x1473e6),
+            row_h: 21.0,
+            row_gap: 4.0,
+            pad_x: 10.0,
+            section_above: 7.0,
+            section_header_h: 16.0,
+            section_header_gap: 3.0,
+            header_size: 11.5,
+            divider_gap: 8.0,
+            title_band_h: 33.0,
+            title_size: 11.5,
+            label_size: 11.0,
+            pages_row_top: 8.0,
+            pages_label_band: 22.0,
+            pages_badge_h: 12.5,
+            pages_label_size: 11.0,
+            dock_width: 253.0,
         };
         let level = match b {
             Brightness::Dark => dark,
@@ -708,6 +749,7 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
         (TextStyle::Button, FontId::proportional(11.0)),
         (TextStyle::Heading, FontId::new(15.0, FontFamily::Name("semibold".into()))),
         (TextStyle::Monospace, FontId::monospace(11.5)),
+        (crate::widgets::label_style(), FontId::proportional(crate::widgets::LABEL_SIZE)),
     ]
     .into();
     let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
@@ -1054,6 +1096,35 @@ mod token_tests {
             assert_eq!(t.frame_radius, 4, "{b:?}");
             assert_eq!(t.selection_fill, t.accent_strong, "{b:?}");
             assert_eq!(t.corner(16.0), 16.0, "{b:?}");
+        }
+    }
+
+    /// The Properties and Pages panels' spacing and the dock's width are tokens now, and every
+    /// upstream level keeps today's values, so a plain build is laid out as before.
+    #[test]
+    fn upstream_levels_keep_todays_spacing() {
+        for b in Brightness::ALL {
+            let t = Tokens::for_brightness(b);
+            for (name, got, want) in [
+                ("row_h", t.row_h, 21.0),
+                ("row_gap", t.row_gap, 4.0),
+                ("pad_x", t.pad_x, 10.0),
+                ("section_above", t.section_above, 7.0),
+                ("section_header_h", t.section_header_h, 16.0),
+                ("section_header_gap", t.section_header_gap, 3.0),
+                ("divider_gap", t.divider_gap, 8.0),
+                ("header_size", t.header_size, 11.5),
+                ("title_band_h", t.title_band_h, 33.0),
+                ("title_size", t.title_size, 11.5),
+                ("label_size", t.label_size, 11.0),
+                ("pages_row_top", t.pages_row_top, 8.0),
+                ("pages_label_band", t.pages_label_band, 22.0),
+                ("pages_badge_h", t.pages_badge_h, 12.5),
+                ("pages_label_size", t.pages_label_size, 11.0),
+                ("dock_width", t.dock_width, 253.0),
+            ] {
+                assert_eq!(got, want, "{b:?} {name}");
+            }
         }
     }
 }

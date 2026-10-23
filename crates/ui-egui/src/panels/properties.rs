@@ -77,6 +77,7 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    widgets::scope_label_size(ui, t.label_size);
     if app.session.active().is_none() {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No document open")).color(t.text_dim));
         return;
@@ -795,7 +796,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         b.min + vec2(34.0, FIELD_H / 2.0),
         egui::Align2::LEFT_CENTER,
         crate::i18n::tr(&app.ui.language, "Fill"),
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
     ui.add_space(4.0);
@@ -1140,7 +1141,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
         pos2(ag.max.x + 8.0, resp.rect.center().y),
         egui::Align2::LEFT_CENTER,
         &label,
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
     let mut pick = None;
@@ -1226,7 +1227,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
                 b.min + vec2(34.0, FIELD_H / 2.0),
                 egui::Align2::LEFT_CENTER,
                 crate::i18n::tr(&app.ui.language, label),
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(t.label_size + 0.5),
                 t.text,
             );
         } else {
@@ -1267,7 +1268,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         r.min + vec2(30.0, 10.5),
         egui::Align2::LEFT_CENTER,
         if fam.is_empty() { "—".to_string() } else { super::font_label(app, &menu, &fam) },
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
     if let Some(f) = super::font_popup(app, &resp, &menu, &fam) {
@@ -3900,7 +3901,7 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
                 sub(b, 56.0, y, 18.0, FIELD_H).right_center(),
                 egui::Align2::RIGHT_CENTER,
                 tr(label),
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(t.label_size + 0.5),
                 t.text,
             );
             let nv = place(ui, sub(b, 78.0, y, 66.0, FIELD_H), |ui| NumField::measure(key, len, u).width(66.0).range(0.0, 100_000.0).show(ui));
