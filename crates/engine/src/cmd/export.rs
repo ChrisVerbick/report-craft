@@ -10,7 +10,7 @@ use crate::{EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.exportPdf", "Export PDF…", ["File"], None,
-        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?, annotations?: [{page: 0-based, kind: highlight|strikeOut|text|ink, rects?: [[left, top, right, bottom]], x?, y?, path?: [[x, y]], author?, contents?, id?, modified?: seconds, inReplyTo?: id}] (the PDF's own markup annotations, page points from the page's top-left; review.exportPdf builds them from the review's comments)} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
         "{path?, title?, author?, language?: \"en\", identifier?: str (dc:identifier; a stable urn:uuid by default), coverImage?: path (a PNG or JPEG as the cover), tocTitle?: str (the table of contents' title; from the language by default), cover?: bool (the first page as the cover image), embedFonts?: bool (package the stylesheet's fonts whose licence allows it, whole files), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings}); warnings name images without alt text, exported as decorative, and fonts that could not be embedded",
@@ -382,8 +382,69 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
         media: p.get("media").and_then(Value::as_bool).unwrap_or(false),
+        annotations: annotations_param(p)?,
         ..PdfOptions::default()
     })
+}
+
+/// `annotations`: review comments as the PDF's markup annotations.
+fn annotations_param(p: &Value) -> Result<Vec<designcraft_pdf::Annotation>> {
+    use designcraft_pdf::{Annotation, AnnotationKind};
+    const ID: &str = "file.exportPdf";
+    let Some(list) = p.get("annotations").and_then(Value::as_array) else { return Ok(Vec::new()) };
+    if list.len() > 10_000 {
+        return Err(bad(ID, "`annotations`: at most 10000"));
+    }
+    let num = |v: &Value| v.as_f64().filter(|f| f.is_finite());
+    let rects = |a: &Value| -> Result<Vec<[f64; 4]>> {
+        a.get("rects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(1_000)
+            .map(|r| {
+                let r = r.as_array().filter(|r| r.len() == 4).ok_or_else(|| bad(ID, "`annotations`: rects are [left, top, right, bottom]"))?;
+                let n: Vec<f64> = r.iter().filter_map(num).collect();
+                if n.len() != 4 {
+                    return Err(bad(ID, "`annotations`: rects are [left, top, right, bottom]"));
+                }
+                Ok([n[0], n[1], n[2], n[3]])
+            })
+            .collect()
+    };
+    list.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let page = a.get("page").and_then(Value::as_u64).ok_or_else(|| bad(ID, "`annotations`: each needs a `page`"))? as usize;
+            let kind = match a.get("kind").and_then(Value::as_str) {
+                Some("highlight") => AnnotationKind::Highlight(rects(a)?),
+                Some("strikeOut") => AnnotationKind::StrikeOut(rects(a)?),
+                Some("text") => AnnotationKind::Text { x: a.get("x").and_then(num).unwrap_or(0.0), y: a.get("y").and_then(num).unwrap_or(0.0) },
+                Some("ink") => AnnotationKind::Ink(
+                    a.get("path")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .take(2_000)
+                        .filter_map(|pt| {
+                            let pt = pt.as_array()?;
+                            Some([num(pt.first()?)?, num(pt.get(1)?)?])
+                        })
+                        .collect(),
+                ),
+                _ => return Err(bad(ID, "`annotations`: kind is highlight, strikeOut, text or ink")),
+            };
+            Ok(Annotation {
+                page,
+                kind,
+                author: str_param(a, "author").unwrap_or("").to_string(),
+                contents: str_param(a, "contents").unwrap_or("").to_string(),
+                id: str_param(a, "id").map_or_else(|| format!("a{}", i + 1), str::to_string),
+                modified: a.get("modified").and_then(Value::as_i64).unwrap_or(0),
+                in_reply_to: str_param(a, "inReplyTo").map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 /// Does this object (or anything in it) need the transparency flattener?

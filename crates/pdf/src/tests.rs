@@ -833,3 +833,64 @@ fn a_swatch_colours_a_greyscale_image() {
     let (s, _) = export(&rgb, Some("PANTONE Test"));
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
 }
+
+/// Review comments go out as the PDF's own markup annotations, in PDF coordinates, replies
+/// threaded to their comment.
+#[test]
+fn review_annotations_are_written_as_markup_annotations() {
+    let d = doc_with_text("Hello annotated world");
+    let h = d.spreads[0].pages[0].bounds().height();
+    let at = |id: &str, kind: AnnotationKind, reply: Option<&str>| Annotation {
+        page: 0,
+        kind,
+        author: "Ann Example".into(),
+        contents: "Nice".into(),
+        id: id.into(),
+        modified: 1_700_000_000,
+        in_reply_to: reply.map(str::to_string),
+    };
+    let opts = PdfOptions {
+        annotations: vec![
+            at("c1", AnnotationKind::Highlight(vec![[10.0, 20.0, 110.0, 32.0]]), None),
+            at("c2", AnnotationKind::Text { x: 50.0, y: 60.0 }, None),
+            at("c3", AnnotationKind::Text { x: 0.0, y: 0.0 }, Some("c2")),
+            at("c4", AnnotationKind::Ink(vec![[1.0, 1.0], [20.0, 30.0], [40.0, 10.0]]), None),
+            at("c5", AnnotationKind::StrikeOut(vec![[10.0, 40.0, 60.0, 52.0]]), None),
+        ],
+        ..PdfOptions::default()
+    };
+    let s = uncompressed(&d, opts);
+    for sub in ["/Subtype/Highlight", "/Subtype/StrikeOut", "/Subtype/Text", "/Subtype/Ink"] {
+        assert!(s.contains(sub), "{sub} missing");
+    }
+    assert!(
+        s.contains("/T(Ann Example)") && s.contains("/Contents(Nice)") && s.contains("/NM(c1)") && s.contains("/M(D:20231114"),
+        "{}",
+        &s[s.len() - 3000..]
+    );
+    // Top-left page points become bottom-left PDF points.
+    let quad = format!("/QuadPoints[10.00 {:.2} 110.00 {:.2} 10.00 {:.2} 110.00 {:.2}]", h - 20.0, h - 20.0, h - 32.0, h - 32.0);
+    assert!(s.contains(&quad), "{quad}");
+    assert!(s.contains(&format!("/InkList[[1.00 {:.2} 20.00 {:.2} 40.00 {:.2}]]", h - 1.0, h - 30.0, h - 10.0)));
+    // The reply points at its comment, and the page lists them all.
+    let c2 = s.find("/NM(c2)").unwrap();
+    let obj = s[..c2].rfind(" 0 obj").and_then(|i| s[..i].rfind('\n').map(|j| s[j + 1..i].to_string())).unwrap();
+    assert!(s.contains(&format!("/IRT {obj} 0 R")), "reply threaded to object {obj}");
+    assert_eq!(s.matches("/Annots[").count(), 1);
+    // Annotations off the exported pages are left out, and a page past the end is no error.
+    let s2 = uncompressed(
+        &d,
+        PdfOptions {
+            pages: Some(vec![1]),
+            annotations: vec![at("x", AnnotationKind::Text { x: 1.0, y: 1.0 }, None), at("y", AnnotationKind::Text { x: 1.0, y: 1.0 }, None)]
+                .into_iter()
+                .map(|mut a| {
+                    a.page = 7;
+                    a
+                })
+                .collect(),
+            ..PdfOptions::default()
+        },
+    );
+    assert!(!s2.contains("/Subtype/Text"));
+}

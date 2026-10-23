@@ -70,6 +70,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "review.invite", "Invite Reviewers…", ["File", "Review"], None,
             "{members: [{email, name?}], project?, server?} — puts them on the project's member list (those already on it stay) and mails each an invite link → {link, sent}",
             has_doc, invite),
+        cmd!(noundo "review.exportPdf", "Export PDF with Comments…", ["File", "Review"], None,
+            "{path, status?: open (default) | all (resolved and applied too), …file.exportPdf options} — the document as a PDF with the review's comments as its own markup annotations: highlights and strike-outs where their text is now (whole lines when it moved), notes and drawings where they were made, replies threaded → {path, annotations, moved, orphaned, warnings}",
+            has_doc, export_pdf),
+        cmd!(noundo "review.report", "Review Report…", ["File", "Review"], None,
+            "{path?, round?: id (the latest round by default)} — the round's decisions and this document's comments with their replies, as Markdown ({markdown, round, comments}), or with `path` laid out by the app and written as a PDF ({path, pages, round, comments}); the report's document is closed again",
+            has_doc, report),
         cmd!(noundo "review.link", "Review Share Link…", ["File", "Review"], None,
             "{project?, mode?: invite|public, password?, expiresDays?, server?} — a share link for the document's project (shown once: the service keeps only its hash) → {id, token, url, mode, expires}",
             has_doc, link),
@@ -532,6 +538,226 @@ fn lock_round(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
+/// The lines of `c`'s story that `start..end` touches, as (page, rect) pairs: where a text
+/// comment goes when its exact rectangles can't be trusted any more.
+fn line_rects(layer: &designcraft_review::TextLayer, c: &Comment, start: usize, end: usize) -> Vec<(usize, [f64; 4])> {
+    let mut out = Vec::new();
+    for page in &layer.pages {
+        for l in &page.lines {
+            let same = Some(l.story) == c.story && l.cell == c.cell && l.footnote == c.footnote;
+            if same && l.start < end && l.end > start {
+                out.push((page.index, l.rect));
+            }
+        }
+    }
+    out
+}
+
+fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "review.exportPdf";
+    let path = str_param(p, "path").filter(|v| !v.is_empty()).ok_or_else(|| bad(ID, "`path`: where to write the PDF"))?.to_string();
+    let all = match str_param(p, "status") {
+        None | Some("open") => false,
+        Some("all") => true,
+        Some(_) => return Err(bad(ID, "`status`: open or all")),
+    };
+    let (comments, version) = {
+        let st = synced(s, ID)?;
+        (st.comments.clone(), st.version.as_ref().and_then(|v| v["id"].as_str()).map(str::to_string))
+    };
+    let (layer, _) = designcraft_review::text_layer(&s.doc()?.doc, &s.cache);
+    let doc = &s.doc()?.doc;
+    let (mut moved, mut orphaned) = (0, 0);
+    let mut out: Vec<Value> = Vec::new();
+    let mut placed: Vec<(String, usize)> = Vec::new();
+    for c in comments.iter().filter(|c| c.in_reply_to.is_none()) {
+        let included = match c.status.as_str() {
+            "open" => true,
+            "resolved" | "applied" => all,
+            _ => false,
+        };
+        if !included {
+            continue;
+        }
+        let mut contents = c.body.clone();
+        if let Some(r) = c.replacement.as_deref().filter(|_| c.kind == "replace") {
+            contents = if contents.is_empty() { format!("Replace with: {r}") } else { format!("{contents}\nReplace with: {r}") };
+        }
+        if c.status != "open" {
+            contents = format!("[{}] {contents}", c.status);
+        }
+        let page = usize::try_from(c.page).unwrap_or(0);
+        let mut a = json!({"page": page, "author": c.author.name, "contents": contents, "id": c.id, "modified": c.modified});
+        match c.kind.as_str() {
+            "highlight" | "strike" | "replace" => {
+                let rects: Vec<(usize, [f64; 4])> = match anchored_in(doc, c) {
+                    Some(Anchored::Found { .. })
+                        if version.as_deref() == Some(c.version.as_str()) && c.rects.as_ref().is_some_and(|r| !r.is_empty()) =>
+                    {
+                        c.rects.iter().flatten().map(|r| (page, *r)).collect()
+                    }
+                    Some(Anchored::Found { start, end }) => line_rects(&layer, c, start, end),
+                    Some(Anchored::Moved { start, end }) => {
+                        moved += 1;
+                        line_rects(&layer, c, start, end)
+                    }
+                    _ => Vec::new(),
+                };
+                let Some(&(first_page, _)) = rects.first() else {
+                    orphaned += 1;
+                    continue;
+                };
+                a["page"] = json!(first_page);
+                a["kind"] = json!(if c.kind == "highlight" { "highlight" } else { "strikeOut" });
+                a["rects"] = json!(rects.iter().filter(|(pg, _)| *pg == first_page).map(|(_, r)| r).collect::<Vec<_>>());
+            }
+            "pin" | "note" => {
+                let (Some(x), Some(y)) = (c.x, c.y) else {
+                    orphaned += 1;
+                    continue;
+                };
+                a["kind"] = json!("text");
+                a["x"] = json!(x);
+                a["y"] = json!(y);
+            }
+            "draw" => {
+                let Some(path) = c.path.as_ref().filter(|p| p.len() >= 2) else {
+                    orphaned += 1;
+                    continue;
+                };
+                a["kind"] = json!("ink");
+                a["path"] = json!(path);
+            }
+            _ => continue,
+        }
+        placed.push((c.id.clone(), a["page"].as_u64().unwrap_or(0) as usize));
+        out.push(a);
+    }
+    for c in comments.iter().filter(|c| c.in_reply_to.is_some()) {
+        let Some((_, page)) = c.in_reply_to.as_ref().and_then(|p| placed.iter().find(|(id, _)| id == p)) else { continue };
+        let contents = if c.status == "open" { c.body.clone() } else { format!("[{}] {}", c.status, c.body) };
+        out.push(json!({"page": page, "kind": "text", "x": 0, "y": 0, "author": c.author.name, "contents": contents, "id": c.id, "modified": c.modified, "inReplyTo": c.in_reply_to}));
+    }
+    let count = out.len();
+    let mut params = p.as_object().cloned().unwrap_or_default();
+    params.remove("status");
+    params.insert("annotations".into(), Value::Array(out));
+    let r = s.execute("file.exportPdf", &Value::Object(params))?;
+    Ok(json!({"path": path, "annotations": count, "moved": moved, "orphaned": orphaned, "warnings": r["warnings"]}))
+}
+
+/// The report's text: Markdown, or plain lines for the PDF.
+fn report_text(st: &ReviewState, round: Option<&Value>, title: &str, plain: bool) -> (String, usize) {
+    let h = |level: usize, text: &str| if plain { format!("{text}\n\n") } else { format!("{} {text}\n\n", "#".repeat(level)) };
+    let b = |text: &str| if plain { text.to_string() } else { format!("**{text}**") };
+    let date = |secs: i64| designcraft_doc::vars::format_date(secs, "yyyy-MM-dd");
+    let mut out = String::new();
+    out.push_str(&h(1, &format!("Review report: {}", st.project["name"].as_str().unwrap_or("?"))));
+    let client = st.project["client"].as_str().unwrap_or("");
+    out.push_str(&format!(
+        "{}{title} · {}\n\n",
+        if client.is_empty() { String::new() } else { format!("{client} · ") },
+        date(designcraft_doc::vars::now())
+    ));
+    if let Some(r) = round {
+        let name = r["name"].as_str().unwrap_or("");
+        out.push_str(&h(
+            2,
+            &format!(
+                "Round {}{}",
+                r["n"].as_i64().unwrap_or(0),
+                if name.is_empty() || name.starts_with("Round ") { String::new() } else { format!(" · {name}") }
+            ),
+        ));
+        let mut line = format!("Opened {}", r["opened"].as_i64().map(date).unwrap_or_default());
+        if let Some(due) = r["due"].as_i64() {
+            line.push_str(&format!(" · due {}", date(due)));
+        }
+        match r["locked"].as_i64() {
+            Some(at) => line.push_str(&format!(" · locked {}", date(at))),
+            None => line.push_str(" · open"),
+        }
+        out.push_str(&format!("{line}\n\n"));
+        out.push_str(&h(3, "Decisions"));
+        let decisions: Vec<&Value> = r["decisions"].as_array().into_iter().flatten().filter(|d| d["document"] == st.document.as_str()).collect();
+        if decisions.is_empty() {
+            out.push_str("None yet.\n\n");
+        }
+        for d in decisions {
+            let word = if d["value"] == "approved" { "approved" } else { "changes wanted" };
+            let note = d["note"].as_str().filter(|n| !n.is_empty()).map(|n| format!(" — {n}")).unwrap_or_default();
+            out.push_str(&format!("- {}: {word}{note}\n", d["name"].as_str().unwrap_or("?")));
+        }
+        out.push('\n');
+    }
+    let round_id = round.and_then(|r| r["id"].as_str());
+    let in_round = |c: &Comment| round_id.is_none_or(|id| c.round.as_deref() == Some(id));
+    let roots: Vec<&Comment> = st.comments.iter().filter(|c| c.in_reply_to.is_none() && in_round(c)).collect();
+    out.push_str(&h(2, &format!("Comments ({})", roots.len())));
+    let mut page = None;
+    for c in &roots {
+        if page != Some(c.page) {
+            page = Some(c.page);
+            out.push_str(&h(3, &format!("p. {}", c.page + 1)));
+        }
+        let kind = match c.kind.as_str() {
+            "replace" => "suggestion",
+            "strike" => "strike-out",
+            "draw" => "drawing",
+            k => k,
+        };
+        let mut line = format!("- {} ({kind}, {})", b(&c.author.name), c.status);
+        if let Some(q) = c.quote.exact.as_deref().filter(|q| !q.is_empty()) {
+            line.push_str(&format!(": \u{201c}{q}\u{201d}"));
+        }
+        if let Some(rp) = c.replacement.as_deref() {
+            line.push_str(&format!(" → {rp}"));
+        }
+        if !c.body.is_empty() {
+            line.push_str(&format!(" — {}", c.body.replace('\n', " ")));
+        }
+        out.push_str(&line);
+        out.push('\n');
+        for reply in st.comments.iter().filter(|r| r.in_reply_to.as_deref() == Some(c.id.as_str())) {
+            out.push_str(&format!("    - {}: {}\n", reply.author.name, reply.body.replace('\n', " ")));
+        }
+    }
+    (out, roots.len())
+}
+
+fn report(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "review.report";
+    let (st, title) = {
+        let d = s.doc()?;
+        (d.review.clone().ok_or_else(|| bad(ID, "not synced yet (review.sync)"))?, d.doc.title.clone())
+    };
+    let round = match str_param(p, "round") {
+        Some(id) => Some(st.rounds.iter().find(|r| r["id"] == id).cloned().ok_or_else(|| bad(ID, "`round`: no such round (review.rounds)"))?),
+        None => st.rounds.last().cloned(),
+    };
+    let round_id = round.as_ref().and_then(|r| r["id"].as_str().map(str::to_string));
+    let Some(path) = str_param(p, "path").filter(|v| !v.is_empty()).map(str::to_string) else {
+        let (markdown, count) = report_text(&st, round.as_ref(), &title, false);
+        return Ok(json!({"markdown": markdown, "round": round_id, "comments": count}));
+    };
+    let (plain, count) = report_text(&st, round.as_ref(), &title, true);
+    // Laid out in a document of its own, which goes away again whatever happens.
+    let active = s.active_index();
+    s.execute("file.new", &json!({}))?;
+    let report_index = s.active_index();
+    let written = s
+        .execute("file.place", &json!({"base64": super::base64_encode(plain.as_bytes()), "name": "review-report.txt", "page": 1, "rect": [56, 56, 539, 780], "autoflow": true}))
+        .and_then(|_| s.execute("file.exportPdf", &json!({"path": path, "title": format!("Review report: {title}")})));
+    if let Some(i) = report_index {
+        s.close_document(i);
+    }
+    if let Some(a) = active {
+        s.set_active(a);
+    }
+    let r = written?;
+    Ok(json!({"path": path, "pages": r["pages"], "round": round_id, "comments": count}))
+}
+
 fn invite(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "review.invite";
     let svc = service(s, p, ID)?;
@@ -886,6 +1112,72 @@ mod tests {
         assert_eq!(fake.members(), vec![("bob@acme.example".to_string(), "Bob".to_string()), ("cara@acme.example".to_string(), String::new())]);
         let err = s.execute("review.invite", &json!({"members": [{"name": "no address"}]})).unwrap_err().to_string();
         assert!(err.contains("email"), "{err}");
+    }
+
+    /// The reviewers' comments go into a PDF as its own annotations: text comments where their
+    /// text is now, pins and drawings where they were made, replies threaded.
+    #[test]
+    fn export_pdf_carries_the_comments_as_annotations() {
+        let (mut s, sid, fake) = with_service("Hello review world");
+        publish(&mut s);
+        fake.add_comment(json!({"kind": "highlight", "page": 0, "story": sid.0, "start": 6, "end": 12, "quote": {"exact": "review", "prefix": "Hello ", "suffix": " world"}, "rects": [[40.0, 40.0, 90.0, 52.0]], "body": "Good word", "author": {"name": "Ann"}}));
+        let c1 = fake.comments()[0]["id"].as_str().unwrap().to_string();
+        fake.add_comment(json!({"kind": "pin", "page": 0, "x": 100.0, "y": 200.0, "body": "Logo here", "author": {"name": "Bob"}}));
+        fake.add_comment(json!({"kind": "draw", "page": 0, "path": [[10.0, 10.0], [50.0, 60.0]], "body": "Move up", "author": {"name": "Bob"}}));
+        fake.add_comment(json!({"kind": "reply", "page": 0, "inReplyTo": c1, "body": "Agreed", "author": {"name": "Cara"}}));
+        s.execute("review.sync", &json!({})).unwrap();
+        let list = s.execute("review.comments", &json!({})).unwrap();
+        let draw = list.as_array().unwrap().iter().find(|c| c["kind"] == "draw").unwrap();
+        assert!(draw["anchored"].is_null() && draw["path"][1] == json!([50.0, 60.0]));
+        assert_eq!(s.execute("review.goTo", &json!({"id": draw["id"]})).unwrap()["page"], 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("annotated.pdf");
+        let r = s.execute("review.exportPdf", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(r["annotations"], 4, "{r}");
+        let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+        assert!(pdf.starts_with("%PDF"));
+        for needle in ["/Subtype/Highlight", "/Subtype/Text", "/Subtype/Ink", "/T(Ann)", "/Contents(Good word)", "/Contents(Agreed)", "/IRT "] {
+            assert!(pdf.contains(needle), "{needle} missing");
+        }
+        // Text comments follow the text: after an edit the highlight is re-anchored on its line.
+        write(&mut s, sid, "Edited: Hello review world");
+        let r = s.execute("review.exportPdf", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(r["annotations"], 4);
+        assert_eq!(r["moved"], 1, "{r}");
+    }
+
+    /// The review report: a round's decisions and comments as Markdown, and as a PDF laid out by
+    /// the app without leaving a document behind.
+    #[test]
+    fn the_report_sums_up_a_round_in_markdown_and_as_a_pdf() {
+        let (mut s, sid, fake) = with_service("Hello review world");
+        publish(&mut s);
+        let r1 = s.execute("review.openRound", &json!({"name": "First read", "days": 3})).unwrap();
+        fake.add_comment(json!({"kind": "replace", "page": 0, "story": sid.0, "start": 0, "end": 5, "quote": {"exact": "Hello"}, "replacement": "Hi", "body": "Shorter", "author": {"name": "Ann"}}));
+        let c1 = fake.comments()[0]["id"].as_str().unwrap().to_string();
+        fake.add_comment(json!({"kind": "reply", "page": 0, "inReplyTo": c1, "body": "Fine by me", "author": {"name": "Bob"}}));
+        fake.add_comment(json!({"kind": "pin", "page": 0, "x": 10.0, "y": 10.0, "body": "Logo bigger", "author": {"name": "Bob"}}));
+        fake.decide(r1["id"].as_str().unwrap(), "Ann", "approved");
+        fake.decide(r1["id"].as_str().unwrap(), "Bob", "changes");
+        s.execute("review.sync", &json!({})).unwrap();
+        let md = s.execute("review.report", &json!({})).unwrap();
+        let text = md["markdown"].as_str().unwrap();
+        for needle in
+            ["# Review report", "First read", "Ann: approved", "Bob: changes wanted", "Shorter", "Hello", "→ Hi", "Fine by me", "Logo bigger", "p. 1"]
+        {
+            assert!(text.contains(needle), "{needle} missing in:\n{text}");
+        }
+        assert_eq!(md["comments"], 2);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.pdf");
+        let before = s.docs.len();
+        let r = s.execute("review.report", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(r["pages"].as_u64().unwrap() >= 1, "{r}");
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF"));
+        assert_eq!(s.docs.len(), before, "the report's document is closed again");
+        assert!(s.doc().unwrap().review.is_some(), "the reviewed document is active again");
+        let err = s.execute("review.report", &json!({"round": "nope"})).unwrap_err().to_string();
+        assert!(err.contains("round"), "{err}");
     }
 
     #[test]

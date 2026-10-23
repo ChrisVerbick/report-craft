@@ -34,6 +34,7 @@ mod links;
 mod marks;
 mod text;
 
+mod annotations;
 mod forms;
 mod pdfx;
 mod transitions;
@@ -123,6 +124,38 @@ pub struct PdfOptions {
     /// Compare's PDF: tracked changes marked as on screen, added text highlighted and deleted text
     /// (laid out when the cache shows it) struck through. Off for every other export.
     pub change_markup: bool,
+    /// Review comments to write as the PDF's own markup annotations (not in PDF/X or PDF/A).
+    pub annotations: Vec<Annotation>,
+}
+
+/// A review comment for the PDF: on page `page` (absolute index), its geometry in page points
+/// from the page's top-left trim corner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Annotation {
+    pub page: usize,
+    pub kind: AnnotationKind,
+    pub author: String,
+    pub contents: String,
+    /// The comment's id (`/NM`), which replies name in `in_reply_to`.
+    pub id: String,
+    /// Unix seconds (UTC).
+    pub modified: i64,
+    /// A reply: threaded to that comment (a Text annotation on its rectangle).
+    pub in_reply_to: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnnotationKind {
+    /// Rectangles [left, top, right, bottom].
+    Highlight(Vec<[f64; 4]>),
+    StrikeOut(Vec<[f64; 4]>),
+    /// A note icon hanging from that point.
+    Text {
+        x: f64,
+        y: f64,
+    },
+    /// A freehand line through those points.
+    Ink(Vec<[f64; 2]>),
 }
 
 impl Default for PdfOptions {
@@ -141,6 +174,7 @@ impl Default for PdfOptions {
             tagged: false,
             media: false,
             change_markup: false,
+            annotations: Vec::new(),
         }
     }
 }

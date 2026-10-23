@@ -15,6 +15,8 @@ enum Act {
     Sync,
     Link,
     Detach,
+    ExportPdf,
+    Report,
     OpenRound(i64),
     LockRound,
     GoTo(String),
@@ -120,6 +122,20 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .clicked()
                 {
                     act = Some(Act::Detach);
+                }
+                if ui
+                    .button(crate::rtl::widget(ui, tr("PDF with comments…")))
+                    .on_hover_text(tr("The document as a PDF with the comments as its own annotations"))
+                    .clicked()
+                {
+                    act = Some(Act::ExportPdf);
+                }
+                if ui
+                    .button(crate::rtl::widget(ui, tr("Report…")))
+                    .on_hover_text(tr("The round's decisions and this document's comments as a PDF"))
+                    .clicked()
+                {
+                    act = Some(Act::Report);
                 }
             });
             // The review round: who decided what on this document, and opening or locking one.
@@ -367,6 +383,24 @@ fn run(app: &mut DesignApp, ctx: &egui::Context, a: Act) {
             v
         }),
         Act::Detach => app.run("review.detach", json!({})),
+        Act::Report => {
+            let name = app.session.active().map(|st| format!("{} review report.pdf", st.doc.title)).unwrap_or_else(|| "review report.pdf".into());
+            match app.services.pick_save.as_mut().and_then(|f| f(&name)) {
+                Some(path) => app
+                    .run("review.report", json!({"path": path}))
+                    .inspect(|r| app.status(tr("Report written: {n} pages").replace("{n}", &r["pages"].to_string()))),
+                None => Ok(Value::Null),
+            }
+        }
+        Act::ExportPdf => {
+            let name = app.session.active().map(|st| format!("{} comments.pdf", st.doc.title)).unwrap_or_else(|| "comments.pdf".into());
+            match app.services.pick_save.as_mut().and_then(|f| f(&name)) {
+                Some(path) => app
+                    .run("review.exportPdf", json!({"path": path, "status": "all"}))
+                    .inspect(|r| app.status(tr("{n} comments in the PDF").replace("{n}", &r["annotations"].to_string()))),
+                None => Ok(Value::Null),
+            }
+        }
         Act::OpenRound(days) => app
             .run("review.openRound", json!({"days": days}))
             .inspect(|r| app.status(tr("Opened {round}").replace("{round}", r["name"].as_str().unwrap_or("")))),

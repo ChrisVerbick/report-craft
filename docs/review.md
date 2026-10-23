@@ -69,3 +69,24 @@ must count as sign-off runs on an invite link.
 
 `review.invite {members: [{email, name?}]}` puts reviewers on the project's member list and
 mails each an invite link (a fresh link each time; a link can be revoked on the service).
+
+## Drawings, PDFs and the report
+
+Reviewers can draw on a page (the pencil in the viewer); a drawing is a comment of kind `draw`
+with its points, shown in the panel with its text, and Go To opens its page.
+
+`review.exportPdf {path, status?: open|all}` writes the document as a PDF with the comments as
+the PDF's own markup annotations, for a client who reads in Acrobat or Preview: highlights and
+strike-outs where their text is now (whole lines when the text moved since the comment; a
+suggestion's replacement is in the note), notes and pins where they were made, drawings as ink,
+replies threaded to their comment. Orphaned comments are counted and left out. The panel's
+"PDF with comments…" asks where to save it. PDF/X and PDF/A files carry no annotations.
+
+`review.report {path?, round?}` sums up a round: its dates and decisions, then this document's
+comments by page with their replies, as Markdown without a path (for scripts and agents) or,
+with one, laid out by the app and written as a PDF; the report's document is closed again.
+The panel's "Report…" button does the latter.
+
+The service mails a member named with an @ in a comment or reply at once, and the project's
+owners (members with role `owner` and their own address) a daily digest of what's new. The
+service's README says how to turn on Turnstile, backups, retention and monitoring.

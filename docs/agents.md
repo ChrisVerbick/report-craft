@@ -93,7 +93,8 @@ its review id the first time and keeps a `Review vN` version for Compare. `revie
 `review.apply {id}` makes a suggestion a tracked change and `review.addNote {id}` a note ([review.md](review.md)).
 `review.invite {members}` mails reviewers an invite link; `review.openRound {days?}` and `review.lockRound {}`
 run a round (every document at its latest version, a due date, then a lock); `review.rounds {}` lists them
-with the reviewers' decisions.
+with the reviewers' decisions. `review.exportPdf {path}` writes the PDF with the comments as its own annotations;
+`review.report {path?}` the round's decisions and comments as Markdown or a PDF.
 
 ## The running app
 

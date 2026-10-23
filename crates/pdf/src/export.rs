@@ -252,6 +252,17 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
             }
         }
     }
+    // Review comments as markup annotations: not in PDF/X or PDF/A either.
+    if !opts.annotations.is_empty() {
+        if opts.standard != Standard::None {
+            warnings.push("review annotations were left out of this PDF/X or PDF/A file".into());
+        } else {
+            match crate::annotations::add(&bytes, doc, &sheets, opts) {
+                Some(b) => bytes = b,
+                None => warnings.push("the review annotations couldn't be added to this PDF".into()),
+            }
+        }
+    }
     if opts.standard == Standard::PdfX4 {
         // Output intent and PDF/X identification, then check the result.
         match crate::pdfx::make_pdfx4(&bytes, &title, created) {

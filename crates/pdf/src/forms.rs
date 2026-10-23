@@ -57,7 +57,7 @@ pub(crate) fn collect_media(doc: &Document, sheets: &[Sheet]) -> Vec<PlacedMedia
 }
 
 /// A PDF text string: literal for ASCII, UTF-16BE otherwise.
-fn pdf_string(s: &str) -> String {
+pub(crate) fn pdf_string(s: &str) -> String {
     if s.is_ascii() {
         let mut o = String::from("(");
         for c in s.chars() {

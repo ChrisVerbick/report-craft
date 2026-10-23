@@ -33,6 +33,8 @@ pub struct Comment {
     pub in_reply_to: Option<String>,
     /// The review round the comment was made in, when rounds are used.
     pub round: Option<String>,
+    /// A drawing's points, page points from the page's top-left corner.
+    pub path: Option<Vec<[f64; 2]>>,
     pub author: Author,
 }
 
