@@ -9,11 +9,11 @@ use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
-use crate::prop_grid::{PropGrid, Track};
+use crate::prop_grid::{PropGrid, Track, value_fits};
 use crate::theme::Tokens;
 use crate::widgets::{
-    self, FIELD_H, NumField, button_pair, caption, divider, full_width, icon_toggle, link_label, measure, more_options, number, outline_button, rule,
-    section, section_row, selection_band,
+    self, DROPDOWN_CHROME, FIELD_H, NUM_CHROME, NumField, SPIN_CHROME, button_pair, caption, divider, full_width, icon_toggle, link_label, measure,
+    more_options, number, outline_button, rule, section, section_row, selection_band,
 };
 use crate::{DesignApp, icons};
 
@@ -32,11 +32,6 @@ fn units(app: &DesignApp) -> Unit {
 /// Allocate a full-width block `h` tall.
 fn block(ui: &mut Ui, h: f32) -> Rect {
     ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover()).0
-}
-
-/// A sub-rect of a block at (`x`, `y`) relative to its top-left.
-fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
-    Rect::from_min_size(b.min + vec2(x, y), vec2(w, h))
 }
 
 /// Run `f` in a child ui occupying `r` (left-to-right, vertically centred). The parent's cursor
@@ -1257,13 +1252,15 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(a) = text_attrs(app) else { return };
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     let c = &a["chars"];
+    // Fill and Stroke, as for objects, then Stroke Behind Fill.
+    let g = PropGrid::new(ui, &t, 3);
     for (k, (key, label)) in [("fill", "Fill"), ("stroke", "Stroke")].into_iter().enumerate() {
         let sw = c[key].as_str().unwrap_or(designcraft_color::swatch::NONE).to_string();
-        let b = block(ui, FIELD_H);
-        let (col, g) = widgets::swatch_colors(&doc, &sw, 1.0);
-        let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+        let (col, grad) = widgets::swatch_colors(&doc, &sw, 1.0);
+        let lead = g.cell(k, Track::Lead);
+        let chip = Rect::from_min_size(pos2(lead.min.x, lead.center().y - 8.5), vec2(17.0, 17.0));
         if k == 0 {
-            widgets::paint_chip(ui.painter(), chip, col, g);
+            widgets::paint_chip(ui.painter(), chip, col, grad);
         } else {
             widgets::paint_stroke_chip(ui.painter(), chip, col, egui::Color32::from_gray(20));
         }
@@ -1275,30 +1272,39 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
         }
         let resp = ui.interact(chip, ui.id().with(("tchip", k)), Sense::click()).on_hover_text(format!("{label}: {sw}"));
         swatch_menu(app, &resp, &doc, &sw, k != 0, false, true);
+        let lr = g.span(k, Track::SlotA, Track::FieldA);
         if k == 0 {
             crate::rtl::paint(
-                ui.painter(),
-                b.min + vec2(34.0, FIELD_H / 2.0),
+                &ui.painter().with_clip_rect(lr.intersect(ui.clip_rect())),
+                lr.left_center(),
                 egui::Align2::LEFT_CENTER,
                 crate::i18n::tr(&app.ui.language, label),
                 egui::FontId::proportional(t.label_size + 0.5),
                 t.text,
             );
         } else {
-            if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, label), 56.0)).clicked() {
+            if place(ui, lr, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, label), lr.width())).clicked() {
                 show_panel(app, "stroke");
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
-            if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
+            let cr = g.span(k, Track::SlotB, Track::FieldB);
+            if let Some(v) = place(ui, cr, |ui| {
+                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3)
+                    .width(cr.width())
+                    .height(cr.height())
+                    .spinner()
+                    .presets(WEIGHTS)
+                    .range(0.0, 100.0)
+                    .show(ui)
             }) {
                 let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
             }
         }
-        ui.add_space(4.0);
     }
     let mut behind = c["strokeBehindFill"].as_bool().unwrap_or(false);
-    if ui.checkbox(&mut behind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stroke Behind Fill"))).changed() {
+    if place(ui, g.span(2, Track::Lead, Track::Trail), |ui| {
+        ui.checkbox(&mut behind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stroke Behind Fill"))).changed()
+    }) {
         let _ = app.run("type.char", json!({"attrs": {"strokeBehindFill": behind}}));
     }
 }
@@ -1310,16 +1316,28 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     let c = a["chars"].clone();
     let fam = c["fontFamily"].as_str().unwrap_or("").to_string();
     let sty = c["fontStyle"].as_str().unwrap_or("").to_string();
-    let fw = full_width(ui);
+    let lang = app.ui.language.clone();
+    // The pair rule: size and leading, and kerning and tracking, share a row when both boxes show
+    // their usual values whole, and take a row each otherwise.
+    let (first, second) = PropGrid::pair_widths(full_width(ui));
+    let size_side = value_fits(ui, NUM_CHROME, "10.5 pt", first) && value_fits(ui, NUM_CHROME, "(14.4 pt)", second);
+    let kern_side = ["Metrics", "Optical"].into_iter().all(|s| value_fits(ui, DROPDOWN_CHROME, crate::i18n::tr(&lang, s), first))
+        && value_fits(ui, NUM_CHROME, "-100", second);
+    // Family, style, the two pairs, then language.
+    let kern_row = if size_side { 3 } else { 4 };
+    let lang_row = kern_row + if kern_side { 1 } else { 2 };
+    let g = PropGrid::new(ui, &t, lang_row + 1);
+    let icon = |ui: &Ui, slot: Rect, name: &str| icons::paint(ui.painter(), Rect::from_center_size(slot.center(), vec2(16.0, 16.0)), name, t.icon);
     // Family dropdown with a search segment on the left.
     let fonts = super::fonts(app);
     let menu = super::font_menu(app);
-    let resp = widgets::dropdown(ui, "", fw);
-    let r = resp.rect;
-    icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(14.0, 14.0)), "search", t.icon);
-    widgets::chevron_down(ui.painter(), r.min + vec2(22.0, 10.5), t.icon);
+    let r = g.span(0, Track::Lead, Track::Trail);
+    let resp = place(ui, r, |ui| widgets::dropdown_h(ui, "", r.width(), r.height()));
+    let (r, mid) = (resp.rect, resp.rect.center().y);
+    icons::paint(ui.painter(), Rect::from_min_size(pos2(r.min.x + 3.0, mid - 7.5), vec2(14.0, 14.0)), "search", t.icon);
+    widgets::chevron_down(ui.painter(), pos2(r.min.x + 22.0, mid), t.icon);
     ui.painter().text(
-        r.min + vec2(30.0, 10.5),
+        pos2(r.min.x + 30.0, mid),
         egui::Align2::LEFT_CENTER,
         if fam.is_empty() { "—".to_string() } else { super::font_label(app, &menu, &fam) },
         egui::FontId::proportional(t.label_size + 0.5),
@@ -1328,58 +1346,65 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     if let Some(f) = super::font_popup(app, &resp, &menu, &fam) {
         super::apply_font(app, &f);
     }
-    ui.add_space(1.0);
     let styles = fonts.styles(&fam);
     let cur = styles.iter().position(|s| *s == sty);
-    if let Some(k) = widgets::dropdown_list(ui, if sty.is_empty() { "—" } else { &sty }, fw, &styles, cur) {
-        let _ = app.run("type.char", json!({"attrs": {"fontStyle": styles[k]}}));
+    let r = g.span(1, Track::Lead, Track::Trail);
+    if let Some(k) = place(ui, r, |ui| widgets::dropdown_list_h(ui, if sty.is_empty() { "—" } else { &sty }, r.width(), r.height(), &styles, cur))
+        && let Some(style) = styles.get(k)
+    {
+        let _ = app.run("type.char", json!({"attrs": {"fontStyle": style}}));
     }
-    ui.add_space(1.0);
     const SIZES: &[f64] = &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 21.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
-    let half = (fw - 10.0) / 2.0;
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
     let size = c["size"].as_f64();
     let auto = c["leading"]["kind"].as_str() != Some("points");
     let lv = if auto { size.map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
-    icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "font-size", t.icon);
-    if let Some(v) = place(ui, sub(b, 24.0, 0.0, half - 24.0, FIELD_H), |ui| {
-        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+    let [(si, sb), (li, lb)] = g.pair(2, size_side);
+    icon(ui, si, "font-size");
+    if let Some(v) = place(ui, sb, |ui| {
+        NumField::number("csize", size, " pt", 2).width(sb.width()).height(sb.height()).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
-    icons::paint(ui.painter(), sub(b, half + 10.0, 1.0, 19.0, 19.0), "leading", t.icon);
-    let lw = half - 24.0;
+    icon(ui, li, "leading");
     let lshow = lv.map(|v| (v * 100.0).round() / 100.0);
-    if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, lw, FIELD_H), |ui| {
+    if let Some(v) = place(ui, lb, |ui| {
         let key = if auto { "cleadauto" } else { "clead" };
         // Auto leading is shown in parentheses, like "(14.4 pt)".
-        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
+        NumField::number(key, lshow, " pt", 2).width(lb.width()).height(lb.height()).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
     }
     // Kerning / tracking.
-    icons::paint(ui.painter(), sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", t.icon);
-    place(ui, sub(b, 24.0, 26.0, half - 24.0, FIELD_H), |ui| kerning_control(app, ui, "ckern", &c["kerning"], half - 24.0));
-    icons::paint(ui.painter(), sub(b, half + 10.0, 27.0, 19.0, 19.0), "tracking", t.icon);
+    let [(ki, kb), (ti, tb)] = g.pair(kern_row, kern_side);
+    icon(ui, ki, "kerning");
+    place(ui, kb, |ui| kerning_control(app, ui, "ckern", &c["kerning"], kb.width(), kb.height()));
+    icon(ui, ti, "tracking");
     const TRACK: &[f64] = &[-100.0, -75.0, -50.0, -25.0, -10.0, -5.0, 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 200.0];
-    if let Some(v) = place(ui, sub(b, half + 34.0, 26.0, lw, FIELD_H), |ui| {
-        NumField::number("ctrack", c["tracking"].as_f64(), "", 0).width(lw).spinner().presets(TRACK).step(5.0).range(-1000.0, 10000.0).show(ui)
+    if let Some(v) = place(ui, tb, |ui| {
+        NumField::number("ctrack", c["tracking"].as_f64(), "", 0)
+            .width(tb.width())
+            .height(tb.height())
+            .spinner()
+            .presets(TRACK)
+            .step(5.0)
+            .range(-1000.0, 10000.0)
+            .show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
     }
     // Language: hyphenation, spelling and typographer's quotes follow it.
-    ui.add_space(1.0);
-    let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
-    let label = crate::i18n::tr(&app.ui.language, "Language");
-    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &lang), fw).on_hover_ui(|ui| {
+    let language = c["language"].as_str().unwrap_or("English: USA").to_string();
+    let label = crate::i18n::tr(&lang, "Language");
+    let r = g.span(lang_row, Track::Lead, Track::Trail);
+    let resp = place(ui, r, |ui| widgets::dropdown_h(ui, crate::i18n::tr(&lang, &language), r.width(), r.height())).on_hover_ui(|ui| {
         crate::rtl::label(ui, label);
     });
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(fw);
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &lang));
+        ui.set_min_width(r.width());
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| language_menu(app, ui, &language));
     });
-    if more_options(ui, &app.ui.language).clicked() {
+    if more_options(ui, &lang).clicked() {
         show_panel(app, "character");
     }
 }
@@ -1387,10 +1412,12 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
 /// Paragraph section: the 9 alignment buttons and •••.
 fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(a) = text_attrs(app) else { return };
+    let t = Tokens::get(ui.ctx());
     let cur: Align = serde_json::from_value(a["para"]["align"].clone()).unwrap_or_default();
-    let fw = full_width(ui);
-    let pitch = fw / 9.0;
-    ui.horizontal(|ui| {
+    let g = PropGrid::new(ui, &t, 1);
+    let r = g.span(0, Track::Lead, Track::Trail);
+    let pitch = r.width() / 9.0;
+    place(ui, r, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for (al, icon) in [
             (Align::Left, "palign-left"),
@@ -1418,8 +1445,10 @@ fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
 
 fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(a) = text_attrs(app) else { return };
+    let t = Tokens::get(ui.ctx());
     let lt = a["para"]["listType"].as_str().unwrap_or("none").to_string();
-    ui.horizontal(|ui| {
+    let g = PropGrid::new(ui, &t, 1);
+    place(ui, g.span(0, Track::Lead, Track::FieldA), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, kind, tip) in [("bullets", "bullets", "Bulleted List"), ("numbering", "numbers", "Numbered List")] {
             let on = lt == kind;
@@ -1427,61 +1456,62 @@ fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
                 let _ = app.run("type.para", json!({"attrs": {"listType": if on { "none" } else { kind }}}));
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 66.0).clicked() {
-                show_panel(app, "paragraph");
-            }
-        });
     });
+    let r = g.span(0, Track::SlotB, Track::Trail);
+    if place(ui, r, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), r.width())).clicked() {
+        show_panel(app, "paragraph");
+    }
 }
 
 fn quick_actions_text(app: &mut DesignApp, ui: &mut Ui) {
-    let fw = full_width(ui);
-    let hw = (fw - 10.0) / 2.0;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Change Case"), hw);
-        egui::Popup::menu(&r).show(|ui| {
-            for (label, v) in [("UPPERCASE", "allCaps"), ("Small Caps", "smallCaps"), ("Normal", "normal")] {
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    let _ = app.run("type.char", json!({"attrs": {"capitalization": v}}));
-                    ui.close();
-                }
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, 2);
+    let s = g.span(0, Track::Lead, Track::Trail);
+    let hw = ((s.width() - 10.0) / 2.0).max(0.0);
+    let (a, b) = (Rect::from_min_size(s.min, vec2(hw, s.height())), Rect::from_min_max(pos2(s.max.x - hw, s.min.y), s.max));
+    let r = place(ui, a, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Change Case"), hw));
+    egui::Popup::menu(&r).show(|ui| {
+        for (label, v) in [("UPPERCASE", "allCaps"), ("Small Caps", "smallCaps"), ("Normal", "normal")] {
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                let _ = app.run("type.char", json!({"attrs": {"capitalization": v}}));
+                ui.close();
             }
-        });
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Story Editor"), hw).clicked() {
-            let _ = app.run("app.storyEditor", json!({}));
         }
     });
-    ui.add_space(4.0);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), fw).clicked() {
+    if place(ui, b, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Story Editor"), hw)).clicked() {
+        let _ = app.run("app.storyEditor", json!({}));
+    }
+    let f = g.span(1, Track::Lead, Track::Trail);
+    if place(ui, f, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), f.width())).clicked() {
         let _ = app.run("type.fillWithPlaceholder", json!({}));
     }
 }
 
-/// Text Frame section: columns, gutter, [Options].
+/// Text Frame section: columns and gutter (a pair), then [Options] on the B side of its own row.
 fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
     let Some(st) = app.session.active() else { return };
     let fid = st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame));
     let Some(opts) = fid.and_then(|f| st.doc.item(f)).and_then(|i| i.text_frame()).map(|t| t.options.clone()) else { return };
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
-    if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {
-        NumField::number("tfcols", Some(opts.columns as f64), "", 0).width(54.0).spinner().range(1.0, 40.0).show(ui)
+    let (first, second) = PropGrid::pair_widths(full_width(ui));
+    let side = value_fits(ui, SPIN_CHROME, "40", first) && value_fits(ui, SPIN_CHROME, "0.1667 in", second);
+    let g = PropGrid::new(ui, &t, if side { 2 } else { 3 });
+    let [(ci, cb), (gi, gb)] = g.pair(0, side);
+    icons::paint(ui.painter(), Rect::from_center_size(ci.center(), vec2(16.0, 16.0)), "text-columns", t.icon);
+    if let Some(v) = place(ui, cb, |ui| {
+        NumField::number("tfcols", Some(opts.columns as f64), "", 0).width(cb.width()).height(cb.height()).spinner().range(1.0, 40.0).show(ui)
     }) {
         let _ = app.run("object.textFrameOptions", json!({"columns": v.max(1.0) as u64}));
     }
-    icons::paint(ui.painter(), sub(b, 83.0, 1.0, 19.0, 19.0), "text-gutter", t.icon);
-    if let Some(v) = place(ui, sub(b, 105.0, 0.0, 54.0, FIELD_H), |ui| {
-        NumField::measure("tfgut", Some(opts.gutter), u).width(54.0).spinner().range(0.0, 1440.0).show(ui)
+    icons::paint(ui.painter(), Rect::from_center_size(gi.center(), vec2(16.0, 16.0)), "text-gutter", t.icon);
+    if let Some(v) = place(ui, gb, |ui| {
+        NumField::measure("tfgut", Some(opts.gutter), u).width(gb.width()).height(gb.height()).spinner().range(0.0, 1440.0).show(ui)
     }) {
         let _ = app.run("object.textFrameOptions", json!({"gutter": v}));
     }
-    let ow = (b.max.x - 8.0) - (b.min.x + 164.0);
-    if place(ui, sub(b, 164.0, 0.5, ow, 20.0), |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), ow)).clicked() {
+    let r = g.span(if side { 1 } else { 2 }, Track::SlotB, Track::Trail);
+    if place(ui, r, |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), r.width())).clicked() {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
     }
 }
@@ -1536,7 +1566,7 @@ fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
 /// Kerning for the text selection, or at a caret for the pair at the caret: the label shows
 /// Metrics, Optical, 0 or the manual value; its menu sets one of the first three or a manual value
 /// in 1/1000 em (typed or stepped).
-fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32) {
+fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32, h: f32) {
     let kind = k["kind"].as_str().unwrap_or("metrics");
     let manual = k["value"].as_f64().filter(|v| kind == "manual" && v.is_finite());
     let label = match (kind, manual) {
@@ -1545,7 +1575,7 @@ fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, 
         ("manual", Some(v)) => format!("{v}"),
         _ => "Metrics".to_string(),
     };
-    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &label), width);
+    let resp = widgets::dropdown_h(ui, crate::i18n::tr(&app.ui.language, &label), width, h);
     let name = crate::i18n::tr(&app.ui.language, "Kerning");
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, name));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
@@ -1615,7 +1645,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         left.horizontal(|ui| {
             caption_cell(ui, crate::i18n::tr(&app.ui.language, "Kerning"), left_w);
             let width = (ui.available_width() - ui.spacing().item_spacing.x).max(40.0);
-            kerning_control(app, ui, "pck", &c["kerning"], width);
+            kerning_control(app, ui, "pck", &c["kerning"], width, FIELD_H);
         });
         if let Some(v) = char_field(app, left, "Baseline", left_w, NumField::number("pcb", c["baselineShift"].as_f64(), " pt", 2)) {
             let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
@@ -3093,8 +3123,13 @@ mod tests {
 
     /// The Properties panel at the width it opens at (fonts and tokens set before the first frame).
     fn props_harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        props_harness_at(app, 253.0)
+    }
+
+    /// The Properties panel `width` wide.
+    fn props_harness_at(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
         let mut ready = false;
-        let mut h = Harness::builder().with_size(vec2(253.0, 1600.0)).build_ui_state(
+        let mut h = Harness::builder().with_size(vec2(width, 1600.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 if !ready {
                     crate::theme::install_fonts(ui.ctx(), "");
@@ -3187,6 +3222,83 @@ mod tests {
         app.run("layout.selectPage", json!({"page": 1})).unwrap();
         let h = props_harness(app);
         assert_on_grid_edges(&h, "Page Size", &["Page Size", "Quick Actions"]);
+    }
+
+    /// A text frame: selected as an object, or with its text selected for editing (`editing`),
+    /// in `language` and type `size` pt.
+    fn text_frame_app(editing: bool, language: Option<&str>, size: f64) -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        if let Some(l) = language {
+            app.ui.language = l.into();
+        }
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Heading", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        app.run("type.char", json!({"attrs": {"size": size}})).unwrap();
+        if !editing {
+            app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
+        }
+        app
+    }
+
+    #[test]
+    fn controls_start_on_grid_edges_with_a_text_frame_selected() {
+        let h = props_harness(text_frame_app(false, None, 12.0));
+        assert_on_grid_edges(&h, "Transform", &["Transform", "Text Style", "Appearance", "Character", "Paragraph", "Text Frame", "Quick Actions"]);
+        let h = props_harness(text_frame_app(true, None, 12.0));
+        assert_on_grid_edges(&h, "Character", &["Text Style", "Appearance", "Character", "Paragraph", "Bullets and Numbering", "Quick Actions"]);
+    }
+
+    /// `text`'s width in the Properties panel's label font, as `value_fits` measures it.
+    fn text_w(h: &Harness<'_, DesignApp>, text: &str) -> f32 {
+        let p = egui::Painter::new(h.ctx.clone(), egui::LayerId::background(), Rect::EVERYTHING);
+        p.layout_no_wrap(text.to_owned(), egui::FontId::proportional(crate::widgets::LABEL_SIZE), egui::Color32::PLACEHOLDER).size().x
+    }
+
+    /// Size and leading, and kerning and tracking, share a row exactly when both boxes can show
+    /// their usual values ("10.5 pt", "(14.4 pt)"; "Metrics" or "Optical", "-100"), and take a
+    /// row each otherwise, at every width from 200 to 420 pt; no two ever overlap.
+    #[test]
+    fn character_pairs_follow_the_rule() {
+        use crate::widgets::{DROPDOWN_CHROME, NUM_CHROME};
+        for (lang, size, leading) in [(None, 12.0, "(14.4 pt)"), (None, 99.5, "(119.4 pt)"), (Some("ru"), 12.0, "(14.4 pt)")] {
+            let mut cases = std::collections::BTreeSet::new();
+            for width in (200..=420).step_by(10) {
+                let h = props_harness_at(text_frame_app(true, lang, size), width as f32);
+                let l = h.state().ui.language.clone();
+                let hdr = h.get_by_label(crate::i18n::tr(&l, "Character")).rect();
+                let tracks = PropGrid::tracks(hdr.width() - 8.0);
+                let field_a = tracks[Track::FieldA as usize].1;
+                let wide = tracks[Track::Trail as usize].0 + tracks[Track::Trail as usize].1 - tracks[Track::FieldB as usize].0;
+                let kern_label = ["Metrics", "Optical"].map(|s| text_w(&h, crate::i18n::tr(&l, s))).into_iter().fold(0.0, f32::max);
+                let size_side = NUM_CHROME + text_w(&h, "10.5 pt") <= field_a && NUM_CHROME + text_w(&h, "(14.4 pt)") <= wide;
+                let kern_side = DROPDOWN_CHROME + kern_label <= field_a && NUM_CHROME + text_w(&h, "-100") <= wide;
+                let input = |v: &str| h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(v)).rect();
+                let (size_r, lead_r, track_r) = (input(&format!("{size} pt")), input(leading), input("0"));
+                let kern_r = h.get_by_label(crate::i18n::tr(&l, "Kerning")).rect();
+                assert_eq!((size_r.center().y - lead_r.center().y).abs() < 0.5, size_side, "{l} {width}: size and leading {size_r:?} {lead_r:?}");
+                assert_eq!(
+                    (kern_r.center().y - track_r.center().y).abs() < 0.5,
+                    kern_side,
+                    "{l} {width}: kerning and tracking {kern_r:?} {track_r:?}"
+                );
+                let rects = [size_r, lead_r, kern_r, track_r];
+                for (i, a) in rects.iter().enumerate() {
+                    for b in &rects[i + 1..] {
+                        assert!(!a.shrink(0.5).intersects(b.shrink(0.5)), "{l} {width}: {a:?} overlaps {b:?}");
+                    }
+                }
+                // A field's node is its value's box (the field less its chrome); the kerning
+                // dropdown's is the whole dropdown.
+                assert!(text_w(&h, "10.5 pt") <= size_r.width() + 0.5, "{l} {width}: a size like 10.5 pt is cut off");
+                assert!(text_w(&h, "(14.4 pt)") <= lead_r.width() + 0.5, "{l} {width}: a leading like (14.4 pt) is cut off");
+                assert!(DROPDOWN_CHROME + kern_label <= kern_r.width() + 0.5, "{l} {width}: the kerning label is cut off");
+                cases.insert((size_side, kern_side));
+            }
+            if lang.is_none() && size == 12.0 {
+                assert_eq!(cases, [(false, false), (false, true), (true, true)].into_iter().collect(), "all three layouts occur");
+            }
+        }
     }
 
     /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.

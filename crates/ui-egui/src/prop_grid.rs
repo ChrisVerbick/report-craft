@@ -72,6 +72,30 @@ impl PropGrid {
         let bottom = last as f32 * self.step + self.row_h;
         Rect::from_min_max(self.origin + vec2(x0, top), self.origin + vec2(x1 + w1, bottom))
     }
+
+    /// The widths a pair's first and second box get across `width`: field A, and field B with
+    /// the trail. A section decides [`PropGrid::pair`]'s `side` from them before allocating.
+    pub fn pair_widths(width: f32) -> (f32, f32) {
+        let t = Self::tracks(width);
+        let (field_b, trail) = (t[Track::FieldB as usize], t[Track::Trail as usize]);
+        (t[Track::FieldA as usize].1, trail.0 + trail.1 - field_b.0)
+    }
+
+    /// A pair's (icon, box) rects from `row`: side by side, the first box in field A and the
+    /// second in field B with the trail; or a row each, the box spanning field A to the trail.
+    pub fn pair(&self, row: usize, side: bool) -> [(Rect, Rect); 2] {
+        if side {
+            [
+                (self.cell(row, Track::SlotA), self.cell(row, Track::FieldA)),
+                (self.cell(row, Track::SlotB), self.span(row, Track::FieldB, Track::Trail)),
+            ]
+        } else {
+            [
+                (self.cell(row, Track::SlotA), self.span(row, Track::FieldA, Track::Trail)),
+                (self.cell(row + 1, Track::SlotA), self.span(row + 1, Track::FieldA, Track::Trail)),
+            ]
+        }
+    }
 }
 
 /// Whether `text`, in the label font, fits a box `width` wide that draws `chrome` px around its
