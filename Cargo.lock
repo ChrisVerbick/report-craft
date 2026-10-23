@@ -1003,6 +1003,7 @@ dependencies = [
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
+ "designcraft-edition",
  "designcraft-engine",
  "designcraft-format",
  "designcraft-geom",
@@ -1010,6 +1011,7 @@ dependencies = [
  "designcraft-pdf",
  "designcraft-render",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

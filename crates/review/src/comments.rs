@@ -31,6 +31,8 @@ pub struct Comment {
     pub created: i64,
     pub modified: i64,
     pub in_reply_to: Option<String>,
+    /// The review round the comment was made in, when rounds are used.
+    pub round: Option<String>,
     pub author: Author,
 }
 

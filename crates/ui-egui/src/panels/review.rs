@@ -15,6 +15,8 @@ enum Act {
     Sync,
     Link,
     Detach,
+    OpenRound(i64),
+    LockRound,
     GoTo(String),
     Note(String),
     Apply(String),
@@ -120,6 +122,52 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     act = Some(Act::Detach);
                 }
             });
+            // The review round: who decided what on this document, and opening or locking one.
+            let current = st.rounds.last().cloned();
+            ui.horizontal_wrapped(|ui| match &current {
+                Some(r) => {
+                    let n = tr("Round {n}").replace("{n}", &r["n"].as_i64().unwrap_or(0).to_string());
+                    let name = r["name"].as_str().unwrap_or("");
+                    let mut line =
+                        if name.is_empty() || name == format!("Round {}", r["n"].as_i64().unwrap_or(0)) { n } else { format!("{n} · {name}") };
+                    if let Some(due) = r["due"].as_i64() {
+                        line.push_str(&format!(" · {} {}", tr("due"), designcraft_doc::vars::format_date(due, "yyyy-MM-dd")));
+                    }
+                    if r["locked"].is_i64() {
+                        line.push_str(&format!(" · {}", tr("locked")));
+                    }
+                    crate::rtl::label(ui, RichText::new(line).size(11.0));
+                    for d in r["decisions"].as_array().into_iter().flatten().filter(|d| d["document"] == st.document.as_str()) {
+                        let value = if d["value"] == "approved" { tr("approved") } else { tr("changes wanted") };
+                        // A guest of a public link typed their own name: nobody verified it.
+                        let who = if d["role"] == "guest" {
+                            format!("{} ({})", d["name"].as_str().unwrap_or("?"), tr("guest"))
+                        } else {
+                            d["name"].as_str().unwrap_or("?").to_string()
+                        };
+                        crate::rtl::label(ui, RichText::new(format!("{who}: {value}")).size(11.0).color(t.text_dim));
+                    }
+                }
+                None => {
+                    crate::rtl::label(ui, RichText::new(tr("No review round yet.")).size(11.0).color(t.text_dim));
+                }
+            });
+            ui.horizontal(|ui| {
+                let days_id = egui::Id::new("review_panel_round_days");
+                let mut days: i64 = ui.data(|d| d.get_temp(days_id)).unwrap_or(7);
+                if ui
+                    .button(crate::rtl::widget(ui, tr("Open round")))
+                    .on_hover_text(tr("Every document at its latest version, due in the days given"))
+                    .clicked()
+                {
+                    act = Some(Act::OpenRound(days));
+                }
+                ui.add(egui::DragValue::new(&mut days).range(1..=365).suffix(format!(" {}", tr("days"))));
+                ui.data_mut(|d| d.insert_temp(days_id, days));
+                if current.as_ref().is_some_and(|r| r["locked"].is_null()) && ui.button(crate::rtl::widget(ui, tr("Lock round"))).clicked() {
+                    act = Some(Act::LockRound);
+                }
+            });
             if let Some(url) = ui.data(|d| d.get_temp::<String>(link_id)) {
                 ui.horizontal(|ui| {
                     let mut shown = url.clone();
@@ -140,6 +188,25 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         filter = f.to_string();
                     }
                 }
+                let round_key = egui::Id::new("review_panel_round");
+                let mut round: String = ui.data(|d| d.get_temp(round_key)).unwrap_or_default();
+                if !st.rounds.is_empty() {
+                    let name_of = |id: &str| {
+                        st.rounds
+                            .iter()
+                            .find(|r| r["id"] == id)
+                            .map_or_else(|| tr("All rounds"), |r| tr("Round {n}").replace("{n}", &r["n"].as_i64().unwrap_or(0).to_string()))
+                    };
+                    egui::ComboBox::from_id_salt("review_panel_round_box").selected_text(name_of(&round)).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut round, String::new(), tr("All rounds"));
+                        for r in &st.rounds {
+                            let id = r["id"].as_str().unwrap_or("").to_string();
+                            let label = name_of(&id);
+                            ui.selectable_value(&mut round, id, label);
+                        }
+                    });
+                }
+                ui.data_mut(|d| d.insert_temp(round_key, round.clone()));
                 let mut names: Vec<String> = st.comments.iter().map(|c| c.author.name.clone()).filter(|n| !n.is_empty()).collect();
                 names.sort();
                 names.dedup();
@@ -154,6 +221,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             });
             ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
             ui.data_mut(|d| d.insert_temp(who_id, who.clone()));
+            let round_shown: String = ui.data(|d| d.get_temp(egui::Id::new("review_panel_round"))).unwrap_or_default();
             // The comments, with where their text is now (cached per document state and sync).
             let list = comments(app, ui, st.synced);
             let shown: Vec<&Value> = list
@@ -166,6 +234,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     _ => true,
                 })
                 .filter(|c| who.is_empty() || c["author"]["name"] == who.as_str())
+                .filter(|c| round_shown.is_empty() || c["round"] == round_shown.as_str())
                 .collect();
             if shown.is_empty() {
                 crate::rtl::label(ui, RichText::new(tr("No comments here. Sync fetches new ones.")).size(11.0).color(t.text_dim));
@@ -298,6 +367,10 @@ fn run(app: &mut DesignApp, ctx: &egui::Context, a: Act) {
             v
         }),
         Act::Detach => app.run("review.detach", json!({})),
+        Act::OpenRound(days) => app
+            .run("review.openRound", json!({"days": days}))
+            .inspect(|r| app.status(tr("Opened {round}").replace("{round}", r["name"].as_str().unwrap_or("")))),
+        Act::LockRound => app.run("review.lockRound", json!({})).inspect(|_| app.status(tr("Round locked"))),
         Act::GoTo(id) => app.run("review.goTo", json!({"id": id})),
         Act::Note(id) => app.run("review.addNote", json!({"id": id})).inspect(|_| app.status(tr("Added as a note"))),
         Act::Apply(id) => app
@@ -361,5 +434,14 @@ mod tests {
         h.state_mut().run("changes.acceptAll", json!({})).unwrap();
         let text = h.state().session.active().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
         assert_eq!(text, "Hi review world");
+        // Rounds: opened and locked from the panel, shown on its round line.
+        h.get_by_label("Open round").click();
+        h.run_steps(3);
+        h.get_by_label_contains("Round 1 · due");
+        h.get_by_label("Lock round").click();
+        h.run_steps(3);
+        let rounds = h.state_mut().run("review.rounds", json!({})).unwrap();
+        assert!(rounds[0]["locked"].is_i64(), "{rounds}");
+        h.get_by_label_contains("· locked");
     }
 }

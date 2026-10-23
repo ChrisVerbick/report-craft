@@ -39,6 +39,8 @@ pub struct ReviewState {
     /// The last version published or seen: `{id, n, label, uploaded, pages}`.
     pub version: Option<Value>,
     pub comments: Vec<designcraft_review::Comment>,
+    /// The project's review rounds as the service lists them (`comments.json`), oldest first.
+    pub rounds: Vec<Value>,
     pub synced: i64,
 }
 
@@ -77,6 +79,15 @@ impl Client<'_> {
         self.ok("GET", path, None)
     }
 
+    /// `POST` that may answer 409 (already there): `None` then.
+    pub fn post_opt(&self, path: &str, body: &Value) -> Result<Option<Value>> {
+        match self.raw("POST", path, Some(("application/json", body.to_string().into_bytes())))? {
+            (409, _) => Ok(None),
+            (s, v) if s >= 400 => Err(EngineError::Other(format!("review service: {}", v["error"].as_str().unwrap_or("error")))),
+            (_, v) => Ok(Some(v)),
+        }
+    }
+
     /// `GET` that may answer 404: `None` then.
     pub fn get_opt(&self, path: &str) -> Result<Option<Value>> {
         match self.raw("GET", path, None)? {
@@ -112,8 +123,25 @@ struct FakeState {
     /// app document id → (project id, document id, title, versions)
     bindings: Vec<(String, String, String, String, i64)>,
     comments: Vec<Value>,
+    rounds: Vec<Value>,
+    decisions: Vec<Value>,
+    /// (email, name)
+    members: Vec<(String, String)>,
     log: Vec<(String, String)>,
     next: u32,
+}
+
+impl FakeState {
+    fn rounds_json(&self) -> Vec<Value> {
+        self.rounds
+            .iter()
+            .map(|r| {
+                let mut r = r.clone();
+                r["decisions"] = Value::Array(self.decisions.iter().filter(|d| d["round"] == r["id"]).cloned().collect());
+                r
+            })
+            .collect()
+    }
 }
 
 impl FakeService {
@@ -134,11 +162,24 @@ impl FakeService {
         st.next += 1;
         let (doc, version) = st.bindings.first().map(|b| (b.2.clone(), format!("v{}", b.4))).unwrap_or_default();
         let o = c.as_object_mut().map(std::mem::take).unwrap_or_default();
-        let mut filled = json!({"id": format!("c{}", st.next), "document": doc, "version": version, "status": "open", "created": 1_700_000_000, "modified": 1_700_000_000, "body": "", "author": {"id": "m1", "name": "Reviewer", "role": "reviewer"}});
+        let round = st.rounds.last().map(|r| r["id"].clone()).unwrap_or(Value::Null);
+        let mut filled = json!({"id": format!("c{}", st.next), "document": doc, "version": version, "round": round, "status": "open", "created": 1_700_000_000, "modified": 1_700_000_000, "body": "", "author": {"id": "m1", "name": "Reviewer", "role": "reviewer"}});
         for (k, v) in o {
             filled[k] = v;
         }
         st.comments.push(filled);
+    }
+
+    /// A reviewer's decision on the first document of `round`.
+    pub fn decide(&self, round: &str, name: &str, value: &str) {
+        let mut st = self.lock();
+        let document = st.bindings.first().map(|b| b.2.clone()).unwrap_or_default();
+        st.decisions.push(json!({"round": round, "document": document, "member": name.to_lowercase(), "name": name, "role": "reviewer", "value": value, "note": "", "at": 1_700_000_002}));
+    }
+
+    /// The members added so far: (email, name).
+    pub fn members(&self) -> Vec<(String, String)> {
+        self.lock().members.clone()
     }
 
     pub fn comment(&self, id: &str) -> Value {
@@ -214,7 +255,28 @@ impl FakeService {
                     json!({"document": {"id": doc, "appDocumentId": app, "title": title}, "version": {"id": "v1", "n": 1, "label": "Review v1", "uploaded": 0, "pages": pages}}),
                 )
             }
-            ("GET", ["api", "projects", _, "comments.json"]) => (200, json!({"comments": st.comments})),
+            ("GET", ["api", "projects", _, "comments.json"]) => (200, json!({"comments": st.comments, "rounds": st.rounds_json()})),
+            ("GET", ["api", "projects", _, "rounds"]) => (200, Value::Array(st.rounds_json())),
+            ("POST", ["api", "projects", _, "rounds"]) => {
+                let n = st.rounds.len() + 1;
+                let name = json_body["name"].as_str().filter(|s| !s.is_empty()).map_or_else(|| format!("Round {n}"), str::to_string);
+                let now = designcraft_doc::vars::now();
+                let due = json_body["due"].as_i64().or_else(|| json_body["dueDays"].as_i64().map(|d| now + d * 86_400));
+                let documents: Vec<Value> = st
+                    .bindings
+                    .iter()
+                    .map(|b| json!({"document": b.2, "version": format!("v{}", b.4), "title": b.3, "n": b.4, "label": format!("Review v{}", b.4)}))
+                    .collect();
+                let r = json!({"id": format!("r{n}"), "n": n, "name": name, "note": json_body["note"].as_str().unwrap_or(""), "opened": now, "due": due, "locked": null, "documents": documents, "decisions": [], "mine": {}});
+                st.rounds.push(r.clone());
+                (201, r)
+            }
+            ("POST", ["api", "rounds", id, "lock"]) => {
+                let Some(r) = st.rounds.iter_mut().find(|r| r["id"] == *id) else { return (404, json!({"error": "no such round"})) };
+                r["locked"] = json!(designcraft_doc::vars::now());
+                let r = r.clone();
+                (200, r)
+            }
             ("PATCH", ["api", "comments", id]) => match st.comments.iter_mut().find(|c| c["id"] == *id) {
                 Some(c) => {
                     c["status"] = json_body["status"].clone();
@@ -228,6 +290,19 @@ impl FakeService {
                 let r = json!({"id": format!("c{}", st.next), "document": parent["document"], "version": parent["version"], "inReplyTo": id, "kind": "reply", "page": parent["page"], "body": json_body["body"], "status": "open", "created": 1_700_000_001, "modified": 1_700_000_001, "author": {"id": "owner", "name": json_body["name"].as_str().unwrap_or("Owner"), "role": "owner"}});
                 st.comments.push(r.clone());
                 (201, r)
+            }
+            ("POST", ["api", "projects", _, "members"]) => {
+                let email = json_body["email"].as_str().unwrap_or("").to_string();
+                if st.members.iter().any(|(e, _)| *e == email) {
+                    return (409, json!({"error": format!("{email} is already a member")}));
+                }
+                st.members.push((email.clone(), json_body["name"].as_str().unwrap_or("").to_string()));
+                (201, json!({"id": format!("m{}", st.members.len()), "email": email}))
+            }
+            ("POST", ["api", "share-links", _, "invite"]) => {
+                let only: Option<Vec<&str>> = json_body["emails"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect());
+                let sent = st.members.iter().filter(|(e, _)| only.as_ref().is_none_or(|o| o.contains(&e.as_str()))).count();
+                (200, json!({"sent": sent}))
             }
             ("POST", ["api", "projects", _, "share-links"]) => {
                 (201, json!({"id": "l1", "token": "tok", "url": "https://review.test/r/tok", "mode": json_body["mode"].as_str().unwrap_or("invite")}))

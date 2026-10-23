@@ -22,4 +22,6 @@ designcraft-compose = { workspace = true }
 designcraft-format = { workspace = true }
 designcraft-pdf = { workspace = true }
 designcraft-mcp = { workspace = true }
+designcraft-edition = { workspace = true }
+ureq = { version = "3.5.0", default-features = false, features = ["native-tls"] }
 serde_json = { workspace = true }

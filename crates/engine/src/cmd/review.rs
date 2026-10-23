@@ -58,6 +58,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "{id, on?: true} — resolve (or reopen) a comment on the service → {status}", has_doc, resolve),
         cmd!(noundo "review.reply", "Reply to Review Comment", [], None,
             "{id, body} — a reply on the service, signed with Preferences' userName → the reply", has_doc, reply),
+        cmd!(query "review.rounds", "Review Rounds", [], None,
+            "{} — the project's review rounds as last synced, oldest first: {id, n, name, note, opened, due, locked, documents: [{document, version, title, n, label}], decisions: [{document, member, name, role, value: approved|changes, note, at}]} → [round]",
+            has_doc, rounds),
+        cmd!(noundo "review.openRound", "Open Review Round…", ["File", "Review"], None,
+            "{name?, days?: due in that many days | due?: seconds, note?, server?} — a new round showing every document of the project at its latest version → the round",
+            has_doc, open_round),
+        cmd!(noundo "review.lockRound", "Lock Review Round", ["File", "Review"], None,
+            "{id?: the latest round by default, server?} — no more comments or decisions on the round's versions; they stay readable → the round",
+            has_doc, lock_round),
+        cmd!(noundo "review.invite", "Invite Reviewers…", ["File", "Review"], None,
+            "{members: [{email, name?}], project?, server?} — puts them on the project's member list (those already on it stay) and mails each an invite link → {link, sent}",
+            has_doc, invite),
         cmd!(noundo "review.link", "Review Share Link…", ["File", "Review"], None,
             "{project?, mode?: invite|public, password?, expiresDays?, server?} — a share link for the document's project (shown once: the service keeps only its hash) → {id, token, url, mode, expires}",
             has_doc, link),
@@ -241,13 +253,14 @@ fn publish(s: &mut Session, p: &Value) -> Result<Value> {
         let project = b["project"].clone();
         let document = r["document"]["id"].as_str().unwrap_or_default().to_string();
         let st = s.doc_mut()?;
-        let comments = st.review.take().filter(|r| r.document == document).map(|r| r.comments).unwrap_or_default();
+        let (comments, rounds) = st.review.take().filter(|r| r.document == document).map(|r| (r.comments, r.rounds)).unwrap_or_default();
         st.review = Some(ReviewState {
             server: svc.server.clone(),
             project: project.clone(),
             document: document.clone(),
             version: Some(r["version"].clone()),
             comments,
+            rounds,
             synced: 0,
         });
         Ok(
@@ -327,6 +340,7 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
         document: document.clone(),
         version: b["versions"].as_array().and_then(|v| v.last()).cloned(),
         comments,
+        rounds: all["rounds"].as_array().cloned().unwrap_or_default(),
         synced: designcraft_doc::vars::now(),
     });
     Ok(json!({"project": project, "document": document, "comments": n, "open": open, "orphaned": orphaned}))
@@ -469,6 +483,75 @@ fn reply(s: &mut Session, p: &Value) -> Result<Value> {
         st.comments.push(c);
     }
     Ok(r)
+}
+
+fn rounds(s: &mut Session, _: &Value) -> Result<Value> {
+    Ok(Value::Array(synced(s, "review.rounds")?.rounds.clone()))
+}
+
+/// The project the document is published in, from the service.
+fn project_of(svc: &Service, s: &Session, id: &str) -> Result<String> {
+    binding(svc, s)?.and_then(|b| b["project"]["id"].as_str().map(str::to_string)).ok_or_else(|| bad(id, "not published yet (review.publish)"))
+}
+
+fn open_round(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "review.openRound";
+    let svc = service(s, p, ID)?;
+    let project = project_of(&svc, s, ID)?;
+    let mut body = json!({"name": str_param(p, "name"), "note": str_param(p, "note").unwrap_or("")});
+    if let Some(due) = p.get("due").and_then(Value::as_i64) {
+        body["due"] = json!(due);
+    } else if let Some(days) = p.get("days").and_then(Value::as_i64) {
+        body["dueDays"] = json!(days);
+    }
+    let r = svc.client().post(&format!("/api/projects/{project}/rounds"), &body)?;
+    if let Some(st) = s.doc_mut()?.review.as_mut() {
+        st.rounds.push(r.clone());
+    }
+    Ok(r)
+}
+
+fn lock_round(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "review.lockRound";
+    let svc = service(s, p, ID)?;
+    let id = match str_param(p, "id") {
+        Some(id) => id.to_string(),
+        None => synced(s, ID)?
+            .rounds
+            .last()
+            .and_then(|r| r["id"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| bad(ID, "no round to lock (review.openRound)"))?,
+    };
+    let r = svc.client().post(&format!("/api/rounds/{id}/lock"), &json!({}))?;
+    if let Some(st) = s.doc_mut()?.review.as_mut()
+        && let Some(x) = st.rounds.iter_mut().find(|x| x["id"] == id.as_str())
+    {
+        *x = r.clone();
+    }
+    Ok(r)
+}
+
+fn invite(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "review.invite";
+    let svc = service(s, p, ID)?;
+    let project = match str_param(p, "project").map(str::trim).filter(|v| !v.is_empty()) {
+        Some(given) => given.to_string(),
+        None => project_of(&svc, s, ID)?,
+    };
+    let members = p.get("members").and_then(Value::as_array).filter(|m| !m.is_empty()).ok_or_else(|| bad(ID, "`members`: [{email, name?}]"))?;
+    let mut emails = Vec::new();
+    for m in members {
+        let email = m["email"].as_str().map(str::trim).filter(|e| e.contains('@')).ok_or_else(|| bad(ID, "`members`: each needs an `email`"))?;
+        let name = m["name"].as_str().unwrap_or("");
+        svc.client().post_opt(&format!("/api/projects/{project}/members"), &json!({"email": email, "name": name, "role": "reviewer"}))?;
+        emails.push(email.to_string());
+    }
+    // A fresh invite link each time: its token must be known to be mailed, and a link can be revoked on its own.
+    let link = svc.client().post(&format!("/api/projects/{project}/share-links"), &json!({"mode": "invite"}))?;
+    let id = link["id"].as_str().ok_or_else(|| bad(ID, "the review service returned no link id"))?;
+    let r = svc.client().post(&format!("/api/share-links/{id}/invite"), &json!({"emails": emails}))?;
+    Ok(json!({"link": link["url"], "sent": r["sent"]}))
 }
 
 fn link(s: &mut Session, p: &Value) -> Result<Value> {
@@ -766,6 +849,43 @@ mod tests {
         let l = s.execute("review.link", &json!({})).unwrap();
         assert!(l["url"].as_str().unwrap().starts_with("https://review.test/r/"), "{l}");
         assert_eq!(s.execute("review.comments", &json!({})).unwrap().as_array().unwrap().len(), 2, "the reply is synced too");
+    }
+
+    /// Rounds are opened and locked from the app; synced comments say which round they came in,
+    /// and the decisions reviewers made are there to read.
+    #[test]
+    fn rounds_are_opened_and_locked_from_the_app_and_comments_carry_their_round() {
+        let (mut s, sid, fake) = with_service("Hello review world");
+        publish(&mut s);
+        let r1 = s.execute("review.openRound", &json!({"name": "First read", "days": 7})).unwrap();
+        assert_eq!((r1["n"].as_i64(), r1["name"].as_str(), r1["documents"].as_array().map(Vec::len)), (Some(1), Some("First read"), Some(1)), "{r1}");
+        assert!(r1["due"].as_i64().unwrap() > designcraft_doc::vars::now() + 6 * 86_400);
+        fake.add_comment(json!({"kind": "note", "page": 0, "story": sid.0, "body": "In round one", "author": {"name": "Ann"}}));
+        fake.decide(r1["id"].as_str().unwrap(), "Ann", "approved");
+        s.execute("review.sync", &json!({})).unwrap();
+        let list = s.execute("review.comments", &json!({})).unwrap();
+        assert_eq!(list[0]["round"], r1["id"]);
+        let rounds = s.execute("review.rounds", &json!({})).unwrap();
+        assert_eq!(rounds[0]["decisions"][0]["value"], "approved", "{rounds}");
+        let locked = s.execute("review.lockRound", &json!({})).unwrap();
+        assert!(locked["locked"].is_i64(), "{locked}");
+        let r2 = s.execute("review.openRound", &json!({})).unwrap();
+        assert_eq!((r2["n"].as_i64(), r2["name"].as_str()), (Some(2), Some("Round 2")));
+        let st = s.doc().unwrap().review.as_ref().unwrap();
+        assert_eq!(st.rounds.len(), 2);
+    }
+
+    /// Inviting reviewers puts them on the project's member list and mails them an invite link.
+    #[test]
+    fn invites_add_members_and_mail_them_the_link() {
+        let (mut s, _, fake) = with_service("Hello review world");
+        publish(&mut s);
+        let r =
+            s.execute("review.invite", &json!({"members": [{"email": "bob@acme.example", "name": "Bob"}, {"email": "cara@acme.example"}]})).unwrap();
+        assert_eq!((r["sent"].as_u64(), r["link"].as_str()), (Some(2), Some("https://review.test/r/tok")), "{r}");
+        assert_eq!(fake.members(), vec![("bob@acme.example".to_string(), "Bob".to_string()), ("cara@acme.example".to_string(), String::new())]);
+        let err = s.execute("review.invite", &json!({"members": [{"name": "no address"}]})).unwrap_err().to_string();
+        assert!(err.contains("email"), "{err}");
     }
 
     #[test]

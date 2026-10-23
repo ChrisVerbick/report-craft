@@ -4,7 +4,10 @@ Clients review a report in their browser; their comments come back into the layo
 portal is a separate service ([designcraft-review](https://github.com/ChrisVerbick/designcraft-review)),
 and the app talks to it with the commands below. Everything is a command, so the control
 channel, scripts and MCP reach it all; the Review panel (Window › Editorial › Review) is the
-same commands with buttons.
+same commands with buttons. The desktop app and the command-line tool (`designcraft-cli run`,
+`script`, `mcp`) carry the connection to the service; a job can publish right after its export.
+With automation roots set, `review.publish` is refused: it exports through a temporary folder
+outside them.
 
 ## Set up once
 
@@ -43,6 +46,26 @@ the words around it telling repeats apart), or orphaned (gone; the service is to
 - `review.resolve {id, on?}` and `review.reply {id, body}` act on the service; replies are signed
   with Preferences' `userName`.
 
-The panel filters by status and reviewer and shows replies under their comment. Network calls
-run on the interface thread: a publish of a large report pauses the app for the seconds the
-upload takes.
+The panel filters by status, reviewer and round and shows replies under their comment. Network
+calls run on the interface thread: a publish of a large report pauses the app for the seconds
+the upload takes.
+
+## Rounds and decisions
+
+A round is what the reviewers look at together: every document of the project at its latest
+version, a due date, and a lock when the owner closes it. `review.openRound {name?, days?, note?}`
+opens one (`due` in seconds instead of `days`); the share page lists the round with its documents
+and, for signed-in reviewers, Approve and Request changes (with a note) on each: one decision per
+reviewer and document, changeable while the round is open. `review.lockRound {id?}` locks the
+latest round: its versions take no more comments or decisions, and stay readable with their
+comments. The next round shows whatever was published since. `review.rounds {}` lists the rounds
+as last synced, with their decisions; the panel shows the current round, the decisions on this
+document and the comments by round (a comment carries the round it was made in).
+
+The day before a round is due, the service mails every member who hasn't decided on all of its
+documents, once. Members are those invited by address. A guest of a public link typed their own
+name, so their decision is shown as "(guest)" and they get no reminder: a round whose approvals
+must count as sign-off runs on an invite link.
+
+`review.invite {members: [{email, name?}]}` puts reviewers on the project's member list and
+mails each an invite link (a fresh link each time; a link can be revoked on the service).

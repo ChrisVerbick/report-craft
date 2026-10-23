@@ -91,6 +91,9 @@ back to a `text.select` address, and the PDF ([review-bundle.md](review-bundle.m
 its review id the first time and keeps a `Review vN` version for Compare. `review.detach {}` clears the id.
 `review.publish {project?}` uploads the bundle to the review service, `review.sync {}` fetches the comments,
 `review.apply {id}` makes a suggestion a tracked change and `review.addNote {id}` a note ([review.md](review.md)).
+`review.invite {members}` mails reviewers an invite link; `review.openRound {days?}` and `review.lockRound {}`
+run a round (every document at its latest version, a due date, then a lock); `review.rounds {}` lists them
+with the reviewers' decisions.
 
 ## The running app
 

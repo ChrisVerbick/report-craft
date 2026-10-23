@@ -34,6 +34,8 @@ macro_rules! outln {
 
 mod automation_args;
 mod perf;
+#[path = "../../designcraft/src/review_transport.rs"]
+mod review_transport;
 
 use designcraft_engine::Session;
 use serde_json::{Value, json};
@@ -294,6 +296,9 @@ fn run(args: &[String]) -> Result<(), String> {
         }
     }
     let mut s = Session::new();
+    // The review service is reachable from a job too (`review.publish` after an export).
+    s.transport = Some(std::sync::Arc::new(review_transport::UreqTransport::new()));
+    s.review_server_default = designcraft_edition::current().and_then(|e| e.review_server).map(str::to_string);
     let mut page = 0usize;
     let mut scale = 1.0f64;
     let mut it = args.iter();
