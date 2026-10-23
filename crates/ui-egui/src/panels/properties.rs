@@ -741,12 +741,16 @@ fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str) {
 }
 
 /// A dropdown whose face is a light preview box (stroke type, corner shape).
+/// The narrowest preview dropdown: its chevron and a face wide enough to show a dash pattern or a
+/// corner.
+const PREVIEW_MIN_W: f32 = widgets::SEG_W + 28.0;
+
 fn preview_dropdown(ui: &mut Ui, w: f32, h: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let face = Rect::from_min_max(r.min, pos2(r.max.x - widgets::SEG_W, r.max.y));
     ui.painter().rect_filled(face, 0.0, egui::Color32::from_gray(0xdf));
-    paint(ui.painter(), face);
+    paint(&ui.painter().with_clip_rect(face.intersect(ui.clip_rect())), face);
     let seg = Rect::from_min_max(pos2(face.max.x, r.min.y), r.max);
     ui.painter().rect_filled(seg, 0.0, if resp.hovered() { t.hover } else { t.input });
     widgets::chevron_down(ui.painter(), seg.center(), t.icon);
@@ -796,19 +800,33 @@ pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: Corn
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+    // A row's value field and its preview (stroke type, corner shape) share the row's span, slot B
+    // to the trail, when the field keeps its usual value whole and the preview a readable face;
+    // otherwise the preview takes the next row.
+    let tracks = PropGrid::tracks(full_width(ui));
+    let span_w = tracks[Track::Trail as usize].0 + tracks[Track::Trail as usize].1 - tracks[Track::SlotB as usize].0;
+    let preview_w = |w: f32| PREVIEW_MIN_W.max((w - 4.0) / 3.0);
+    let stroke_side = value_fits(ui, NUM_CHROME, "0.5 pt", span_w - 4.0 - preview_w(span_w));
+    let corner_side = value_fits(ui, SPIN_CHROME, "12 pt", span_w - 4.0 - preview_w(span_w));
     // Fill, Stroke, Corner and Opacity, then the effects.
-    let g = PropGrid::new(ui, &t, 5);
+    let corner_row = if stroke_side { 2 } else { 3 };
+    let opacity_row = corner_row + if corner_side { 1 } else { 2 };
+    let g = PropGrid::new(ui, &t, opacity_row + 2);
     // A swatch or icon at the padding edge, centred on its row.
     let lead = |row: usize, side: f32| {
         let c = g.cell(row, Track::Lead);
         Rect::from_min_size(pos2(c.min.x, c.center().y - side / 2.0), vec2(side, side))
     };
-    // A row's two controls split its controls' span 2:1, so a stroke weight such as "0.5 pt"
-    // keeps its room in a 253 pt panel.
-    let split = |row: usize| {
+    // A row's field and preview: side by side (the preview a third, at least PREVIEW_MIN_W), or
+    // the preview on the next row.
+    let controls = |row: usize, side: bool| {
         let c = g.span(row, Track::SlotB, Track::Trail);
-        let w = ((c.width() - 4.0) * 2.0 / 3.0).floor().max(0.0);
-        (Rect::from_min_size(c.min, vec2(w, c.height())), Rect::from_min_max(pos2(c.min.x + w + 4.0, c.min.y), c.max))
+        if side {
+            let w = preview_w(c.width());
+            (Rect::from_min_max(c.min, pos2(c.max.x - w - 4.0, c.max.y)), Rect::from_min_max(pos2(c.max.x - w, c.min.y), c.max))
+        } else {
+            (c, g.span(row + 1, Track::SlotB, Track::Trail))
+        }
     };
     // Fill.
     let (fc, fg) = widgets::swatch_colors(&doc, &i.fill, 1.0);
@@ -848,7 +866,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         show_panel(app, "stroke");
     }
     const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
-    let (a, b) = split(1);
+    let (a, b) = controls(1, stroke_side);
     if let Some(v) = place(ui, a, |ui| {
         NumField::number("sw", Some(i.stroke_weight), " pt", 3)
             .width(a.width())
@@ -863,13 +881,13 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let kind = i.stroke_kind.clone();
     place(ui, b, |ui| stroke_type_dropdown(app, ui, &kind, b.width(), b.height()));
     // Corner.
-    icons::paint(ui.painter(), lead(2, 19.0), "corner", t.accent);
-    let label = g.span(2, Track::SlotA, Track::FieldA);
+    icons::paint(ui.painter(), lead(corner_row, 19.0), "corner", t.accent);
+    let label = g.span(corner_row, Track::SlotA, Track::FieldA);
     if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), label.width())).clicked() {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("frameSize", json!({})));
     }
     let (shape, size) = i.corner;
-    let (a, b) = split(2);
+    let (a, b) = controls(corner_row, corner_side);
     if let Some(v) = place(ui, a, |ui| {
         NumField::measure("corner", Some(size), Unit::Points).width(a.width()).height(a.height()).spinner().range(0.0, 1000.0).show(ui)
     }) {
@@ -880,18 +898,18 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         corner_type_dropdown(app, ui, shape, size, b.width(), b.height());
     });
     // Opacity.
-    icons::paint(ui.painter(), lead(3, 19.0), "opacity", t.icon);
-    let label = g.span(3, Track::SlotA, Track::FieldA);
+    icons::paint(ui.painter(), lead(opacity_row, 19.0), "opacity", t.icon);
+    let label = g.span(opacity_row, Track::SlotA, Track::FieldA);
     if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), label.width())).clicked() {
         show_panel(app, "effects");
     }
-    let c = g.span(3, Track::SlotB, Track::FieldB);
+    let c = g.span(opacity_row, Track::SlotB, Track::FieldB);
     if let Some(v) = place(ui, c, |ui| {
         NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(c.width()).height(c.height()).range(0.0, 100.0).show(ui)
     }) {
         let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
     }
-    let more = g.cell(3, Track::Trail);
+    let more = g.cell(opacity_row, Track::Trail);
     let mresp = ui.interact(more, ui.id().with("opmore"), Sense::click());
     ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
@@ -899,7 +917,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         show_panel(app, "effects");
     }
     // Effects.
-    place(ui, g.span(4, Track::Lead, Track::Trail), |ui| {
+    place(ui, g.span(opacity_row + 1, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
             show_panel(app, "textWrap");
@@ -3204,6 +3222,33 @@ mod tests {
             for label in ["Stroke", "Corner", "Opacity"] {
                 let r = h.get_by_label(crate::i18n::tr(lang, label)).rect();
                 assert!(r.max.x <= slot_b + 0.5, "{lang} {label}: ends at {}, past slot B at {slot_b}", r.max.x);
+            }
+        }
+    }
+
+    /// Appearance's stroke-type and corner-shape previews keep a face wide enough to show a dash
+    /// pattern or a corner (the value field beside them keeps its usual value), and never paint
+    /// over a field, at every width the dock allows.
+    #[test]
+    fn appearance_previews_stay_readable() {
+        for width in [220.0, 253.0, 280.0, 300.0, 420.0] {
+            let h = props_harness_at(rectangle_app(None), width);
+            let faces: Vec<Rect> = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) if r.fill == egui::Color32::from_gray(0xdf) => Some(r.rect),
+                    _ => None,
+                })
+                .collect();
+            assert!(faces.len() >= 2, "{width}: the stroke-type and corner-shape previews");
+            let fields: Vec<Rect> = h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.rect()).collect();
+            for f in &faces {
+                assert!(f.width() >= 27.5, "{width}: a preview face only {} pt wide", f.width());
+                for r in &fields {
+                    assert!(!f.shrink(0.5).intersects(*r), "{width}: a preview at {f:?} covers a field at {r:?}");
+                }
             }
         }
     }
