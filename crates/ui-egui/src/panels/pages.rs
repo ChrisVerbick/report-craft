@@ -346,7 +346,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             r.left_center() + vec2(3.0, 0.0),
                             egui::Align2::LEFT_CENTER,
                             label,
-                            egui::FontId::proportional(11.5),
+                            egui::FontId::proportional(t.pages_label_size + 0.5),
                             t.text_strong,
                         );
                         parent_icon(app, ui, egui::pos2(r.max.x - 10.0, r.center().y), row, icon_h, parent_thumbnails, &t);
@@ -358,7 +358,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             egui::pos2(r.center().x, r.max.y - 9.0),
                             egui::Align2::CENTER_CENTER,
                             short,
-                            egui::FontId::proportional(11.0),
+                            egui::FontId::proportional(t.pages_label_size),
                             t.text_strong,
                         );
                     }
@@ -422,8 +422,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let scale = (th / doc.settings.page_height.max(1.0) as f32).min(1.8 * th / tallest as f32);
                     let row_h = sp.pages.iter().map(|p| p.height as f32 * scale).fold(0.0, f32::max).max(th * 0.25);
                     let spine = sp.spine_x() as f32;
-                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0 + row_h + 22.0), Sense::hover());
-                    let top = row.min.y + 8.0;
+                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.pages_row_top + row_h + t.pages_label_band), Sense::hover());
+                    let top = row.min.y + t.pages_row_top;
                     // Marker above the current spread.
                     if cur_spread == Some(si) && !editing_parents {
                         let c = egui::pos2(row.min.x + center, row.min.y + 3.5);
@@ -504,10 +504,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         }
                         let name = app.session.page_label(abs);
                         let colour = if selected { t.badge_text } else { t.page_number };
-                        let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), colour);
-                        let c = egui::pos2(pr.center().x, pr.max.y + 11.0);
+                        let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(t.pages_label_size), colour);
+                        let c = egui::pos2(pr.center().x, pr.max.y + t.pages_label_band / 2.0);
                         if selected {
-                            let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
+                            let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, t.pages_badge_h));
                             ui.painter().rect_filled(br, 0.0, t.selection_badge);
                         }
                         ui.painter().galley(c - g.size() / 2.0, g, colour);
@@ -521,10 +521,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         };
                         let on_badge = cur_spread == Some(si) && !editing_parents;
                         let colour = if on_badge { t.badge_text } else { t.page_number };
-                        let g = ui.painter().layout_no_wrap(label, crate::theme::semibold(11.0), colour);
-                        let c = egui::pos2(row.min.x + center, top + row_h + 11.0);
+                        let g = ui.painter().layout_no_wrap(label, crate::theme::semibold(t.pages_label_size), colour);
+                        let c = egui::pos2(row.min.x + center, top + row_h + t.pages_label_band / 2.0);
                         if on_badge {
-                            ui.painter().rect_filled(egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, 12.5)), 0.0, t.selection_badge);
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, t.pages_badge_h)),
+                                0.0,
+                                t.selection_badge,
+                            );
                         }
                         ui.painter().galley(c - g.size() / 2.0, g, colour);
                     }
@@ -851,6 +855,43 @@ mod tests {
 
     fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
         sized_harness(app, vec2(280.0, 520.0))
+    }
+
+    /// The spread rows' spacing and the page-number badge come from the theme: roomier tokens
+    /// move the next spread down by the extra space and make the badge taller.
+    #[test]
+    fn pages_spacing_follows_the_tokens() {
+        let today = Tokens::for_brightness(Default::default());
+        let roomy = Tokens { pages_row_top: 14.0, pages_label_band: 30.0, pages_badge_h: 17.0, pages_label_size: 12.0, ..today };
+        let mut gaps = vec![];
+        for t in [today, roomy] {
+            // Facing pages: page 1 alone, then pages 2–3, so the two pages sit in consecutive rows.
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"pages": 3})).unwrap();
+            let mut ready = false;
+            let mut h = Harness::builder().with_size(vec2(280.0, 520.0)).build_ui_state(
+                move |ui, app: &mut DesignApp| {
+                    if !ready {
+                        crate::theme::install_fonts(ui.ctx(), "");
+                        crate::theme::apply(ui.ctx(), &t);
+                        ready = true;
+                        return;
+                    }
+                    show(app, ui);
+                },
+                app,
+            );
+            h.run_steps(3);
+            let (p1, p2) = (h.get_by_label("Page 1").rect(), h.get_by_label("Page 2").rect());
+            gaps.push(p2.min.y - p1.max.y);
+            // The current page's number sits on the selection badge.
+            let badge = h.output().shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == t.selection_badge => Some(r.rect.height()),
+                _ => None,
+            });
+            assert_eq!(badge, Some(t.pages_badge_h));
+        }
+        assert_eq!(gaps[1] - gaps[0], (14.0 - 8.0) + (30.0 - 22.0));
     }
 
     fn sized_harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
