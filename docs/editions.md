@@ -1,9 +1,8 @@
 # Editions
 
 An edition is DesignCraft built under another name and look: its own name, colours, mark and
-typeface, compiled in. Like `CRAFT_FONTS_DIR`, it is an optional build input: a folder outside
-this repository that `DESIGNCRAFT_EDITION` names, as an absolute path. Without it, the build is
-plain DesignCraft.
+typeface. Like `CRAFT_FONTS_DIR`, it is an optional build input: a folder outside this repository
+that `DESIGNCRAFT_EDITION` names, as an absolute path. Without it, the build is plain DesignCraft.
 
 The folder holds `edition.toml` and the files it names, like `crates/edition/tests/fixture/`:
 
@@ -20,9 +19,10 @@ mark = "mark.svg"                       # square SVG: app bar, About box, app ic
 bg = "#101418"                          # also raised, hover, text, accent, on_accent, success, error
 secondary = 0.72                        # also muted, faint, hairline: text's alphas over bg
 radius = 0                              # corners, 0 to 16
+density = "compact"                     # optional, or "comfortable": roomier Properties and Pages
 ```
 
-The fixture's `[theme]` sets all thirteen keys. An optional `[fonts]` table names the interface
+The fixture's `[theme]` sets every required key. An optional `[fonts]` table names the interface
 typeface: `regular`, `semibold` and an optional `bold` for the wordmark, OpenType or TrueType.
 Without it, the About box shows the mark alone. The build stops on an unknown key, an empty value,
 a missing file, a colour that isn't `#rrggbb`, an alpha outside 0 to 1, or a `data_folder` that

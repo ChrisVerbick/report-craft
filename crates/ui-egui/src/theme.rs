@@ -392,6 +392,30 @@ impl Tokens {
         let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
         let text = |a: f32| over(t.text, a, t.bg);
         let (bg, raised) = (rgb(t.bg), rgb(t.raised));
+        // A comfortable edition's roomier Properties and Pages panels; compact keeps every upstream
+        // level's spacing.
+        let space = match t.density {
+            designcraft_edition::Density::Compact => dark,
+            designcraft_edition::Density::Comfortable => Tokens {
+                row_h: 24.0,
+                row_gap: 6.0,
+                pad_x: 12.0,
+                section_above: 11.0,
+                section_header_h: 17.0,
+                section_header_gap: 5.0,
+                header_size: 12.5,
+                divider_gap: 12.0,
+                title_band_h: 36.0,
+                title_size: 12.5,
+                label_size: 12.0,
+                pages_row_top: 14.0,
+                pages_label_band: 30.0,
+                pages_badge_h: 17.0,
+                pages_label_size: 12.0,
+                dock_width: 300.0,
+                ..dark
+            },
+        };
         Tokens {
             dark: true,
             app_bar: bg,
@@ -443,7 +467,7 @@ impl Tokens {
             frame_radius: t.radius,
             // egui sets selected widgets' text in `text`: the accent, darkened, keeps it readable.
             selection_fill: over(t.accent, 0.65, t.bg),
-            ..dark
+            ..space
         }
     }
 
@@ -1097,6 +1121,39 @@ mod token_tests {
             assert_eq!(t.selection_fill, t.accent_strong, "{b:?}");
             assert_eq!(t.corner(16.0), 16.0, "{b:?}");
         }
+    }
+
+    /// A comfortable edition gets the roomier spacing (spec §1); a compact one keeps today's.
+    #[test]
+    fn comfortable_editions_get_the_roomy_values() {
+        use designcraft_edition::Density;
+        let compact = crate::identity::FIXTURE_EDITION.theme;
+        let t = Tokens::from_edition(&designcraft_edition::Theme { density: Density::Comfortable, ..compact });
+        for (name, got, want) in [
+            ("row_h", t.row_h, 24.0),
+            ("row_gap", t.row_gap, 6.0),
+            ("pad_x", t.pad_x, 12.0),
+            ("section_above", t.section_above, 11.0),
+            ("section_header_h", t.section_header_h, 17.0),
+            ("section_header_gap", t.section_header_gap, 5.0),
+            ("divider_gap", t.divider_gap, 12.0),
+            ("header_size", t.header_size, 12.5),
+            ("title_band_h", t.title_band_h, 36.0),
+            ("title_size", t.title_size, 12.5),
+            ("label_size", t.label_size, 12.0),
+            ("pages_row_top", t.pages_row_top, 14.0),
+            ("pages_label_band", t.pages_label_band, 30.0),
+            ("pages_badge_h", t.pages_badge_h, 17.0),
+            ("pages_label_size", t.pages_label_size, 12.0),
+            ("dock_width", t.dock_width, 300.0),
+        ] {
+            assert_eq!(got, want, "comfortable {name}");
+        }
+        let (t, today) = (Tokens::from_edition(&compact), Tokens::for_brightness(Brightness::Dark));
+        assert_eq!(
+            (t.row_h, t.label_size, t.pages_label_band, t.dock_width),
+            (today.row_h, today.label_size, today.pages_label_band, today.dock_width)
+        );
     }
 
     /// The Properties and Pages panels' spacing and the dock's width are tokens now, and every

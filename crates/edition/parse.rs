@@ -32,6 +32,15 @@ pub struct ParsedTheme {
     pub faint: f32,
     pub hairline: f32,
     pub radius: u8,
+    pub density: Density,
+}
+
+/// `[theme] density`, as the crate's `Density`: the generated code names it by this one's `Debug`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Density {
+    #[default]
+    Compact,
+    Comfortable,
 }
 
 /// `[fonts]`: the interface typeface's files.
@@ -80,7 +89,7 @@ pub fn edition_dir(env: Option<&str>) -> Result<Option<PathBuf>, String> {
 
 const TOP: &[&str] = &["name", "bundle_id", "data_folder", "wordmark", "logo", "theme", "fonts"];
 const THEME: &[&str] =
-    &["bg", "raised", "hover", "text", "accent", "on_accent", "success", "error", "secondary", "muted", "faint", "hairline", "radius"];
+    &["bg", "raised", "hover", "text", "accent", "on_accent", "success", "error", "secondary", "muted", "faint", "hairline", "radius", "density"];
 
 /// `edition.toml`, its files looked up in `dir`.
 pub fn parse_edition(toml_text: &str, dir: &Path) -> Result<Parsed, String> {
@@ -113,6 +122,12 @@ pub fn parse_edition(toml_text: &str, dir: &Path) -> Result<Parsed, String> {
         .and_then(|r| u8::try_from(r).ok())
         .filter(|r| *r <= 16)
         .ok_or_else(|| "edition.toml: theme.radius must be a whole number from 0 to 16".to_string())?;
+    let density = match theme.get("density").map(toml::Value::as_str) {
+        None => Density::Compact,
+        Some(Some("compact")) => Density::Compact,
+        Some(Some("comfortable")) => Density::Comfortable,
+        Some(_) => return Err("edition.toml: theme.density must be \"compact\" or \"comfortable\"".to_string()),
+    };
     let fonts = match top.get("fonts") {
         None => None,
         Some(v) => {
@@ -142,6 +157,7 @@ pub fn parse_edition(toml_text: &str, dir: &Path) -> Result<Parsed, String> {
             faint: alpha("faint")?,
             hairline: alpha("hairline")?,
             radius,
+            density,
         },
         fonts,
     })
@@ -162,7 +178,7 @@ pub fn generated_rust(p: &Parsed) -> String {
         ),
     };
     format!(
-        "pub static EDITION: Option<&Edition> = Some(&Edition {{\n    name: {:?},\n    bundle_id: {:?},\n    data_folder: {:?},\n    wordmark: {:?},\n    mark_svg: {},\n    theme: Theme {{\n        bg: {}, raised: {}, hover: {}, text: {}, accent: {}, on_accent: {}, success: {}, error: {},\n        secondary: {:?}, muted: {:?}, faint: {:?}, hairline: {:?}, radius: {},\n    }},\n    fonts: {},\n}});\n",
+        "pub static EDITION: Option<&Edition> = Some(&Edition {{\n    name: {:?},\n    bundle_id: {:?},\n    data_folder: {:?},\n    wordmark: {:?},\n    mark_svg: {},\n    theme: Theme {{\n        bg: {}, raised: {}, hover: {}, text: {}, accent: {}, on_accent: {}, success: {}, error: {},\n        secondary: {:?}, muted: {:?}, faint: {:?}, hairline: {:?}, radius: {},\n        density: Density::{:?},\n    }},\n    fonts: {},\n}});\n",
         p.name,
         p.bundle_id,
         p.data_folder,
@@ -181,6 +197,7 @@ pub fn generated_rust(p: &Parsed) -> String {
         t.faint,
         t.hairline,
         t.radius,
+        t.density,
         fonts,
     )
 }
@@ -288,9 +305,20 @@ mod tests {
         assert_eq!(p.theme.bg, [0x10, 0x14, 0x18]);
         assert_eq!(p.theme.secondary, 0.72);
         assert_eq!(p.theme.radius, 0);
+        assert_eq!(p.theme.density, Density::Compact, "no density key: compact");
         assert_eq!(p.fonts, None);
         assert!(p.mark.is_absolute() && p.mark.ends_with("mark.svg"), "{}", p.mark.display());
         assert_eq!(p.files(), vec![p.mark.as_path()], "the build watches the mark (no fonts here)");
+    }
+
+    /// `density` is "compact" or "comfortable"; anything else stops the build, naming the key.
+    #[test]
+    fn density_values_are_checked() {
+        let parse = |v: &str| parse_edition(&with("[theme]", &format!("[theme]\ndensity = {v}")), &fixture());
+        assert_eq!(parse("\"comfortable\"").unwrap().theme.density, Density::Comfortable);
+        assert_eq!(parse("\"compact\"").unwrap().theme.density, Density::Compact);
+        assert!(parse("\"roomy\"").unwrap_err().contains("density"));
+        assert!(parse("2").unwrap_err().contains("density"));
     }
 
     /// Each kind of mistake stops the build with a message naming the key or file.

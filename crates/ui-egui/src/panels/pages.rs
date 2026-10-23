@@ -169,7 +169,12 @@ pub struct PanelOptions {
 impl Default for PanelOptions {
     fn default() -> Self {
         PanelOptions {
-            page_size: IconSize::Medium,
+            // A comfortable edition starts at Large thumbnails; plain builds at Medium.
+            page_size: if designcraft_edition::current().is_some_and(|e| e.theme.density == designcraft_edition::Density::Comfortable) {
+                IconSize::Large
+            } else {
+                IconSize::Medium
+            },
             page_thumbnails: true,
             parent_size: IconSize::Small,
             parent_thumbnails: true,
@@ -855,6 +860,14 @@ mod tests {
 
     fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
         sized_harness(app, vec2(280.0, 520.0))
+    }
+
+    /// Without an edition, as tests build, the Pages panel starts at Medium thumbnails; only a
+    /// comfortable edition starts at Large.
+    #[test]
+    fn panel_options_default_to_medium_in_plain_builds() {
+        assert!(designcraft_edition::current().is_none());
+        assert_eq!(PanelOptions::default().page_size, IconSize::Medium);
     }
 
     /// The spread rows' spacing and the page-number badge come from the theme: roomier tokens
