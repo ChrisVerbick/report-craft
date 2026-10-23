@@ -9,6 +9,7 @@ use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
+use crate::prop_grid::{PropGrid, Track};
 use crate::theme::Tokens;
 use crate::widgets::{
     self, FIELD_H, NumField, button_pair, caption, divider, dropdown, full_width, icon_toggle, link_label, measure, more_options, number,
@@ -43,6 +44,16 @@ fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
 pub(crate) fn place<R>(ui: &mut Ui, r: Rect, f: impl FnOnce(&mut Ui) -> R) -> R {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)));
     f(&mut child)
+}
+
+/// A child of `ui` over the rows a section's grid has allocated: it draws without moving the
+/// cursor, and is disabled unless `on`.
+fn over_grid(ui: &mut Ui, on: bool) -> Ui {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(ui.max_rect()));
+    if !on {
+        child.disable();
+    }
+    child
 }
 
 fn temp_bool(ui: &Ui, key: &str, default: bool) -> bool {
@@ -155,7 +166,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     } else {
         if i.is_graphic {
             section(ui, crate::i18n::tr(&app.ui.language, "Frame Fitting"), true);
-            ui.horizontal(|ui| {
+            let g = PropGrid::new(ui, &t, 1);
+            place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 for (icon, mode, tip) in [
                     ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
@@ -561,14 +573,17 @@ pub(crate) fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
 }
 
 fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    let t = Tokens::get(ui.ctx());
     let u = units(app);
     let rp = app.ui.ref_point;
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
+    // X/Y and W/H, the angles and scales, then the quarter turns and flips.
+    let g = PropGrid::new(ui, &t, 5);
     // Reference-point position of the bounds.
     let r = i.page_rect;
     let (fx, fy) = ((rp % 3) as f64 / 2.0, (rp / 3) as f64 / 2.0);
     let (x, y) = (r.x0 + r.width() * fx, r.y0 + r.height() * fy);
-    if let Some(p) = ref_point_proxy(ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
+    let lead = g.span_rows(0..2, Track::Lead, Track::Lead);
+    if let Some(p) = ref_point_proxy(ui, Rect::from_min_size(pos2(lead.min.x, lead.center().y - 13.0), vec2(26.0, 26.0)), rp) {
         app.ui.ref_point = p;
     }
     let constrain = temp_bool(ui, "constrain_wh", false);
@@ -576,13 +591,16 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     for (row, (lx, vx, kx, lw, vw, kw)) in
         [("X:", x, "x", "W:", r.width(), "width"), ("Y:", y, "y", "H:", r.height(), "height")].into_iter().enumerate()
     {
-        let yy = row as f32 * 25.0;
-        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
-        if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, kx, Some(vx), u, 54.0)) {
+        let c = g.cell(row, Track::SlotA);
+        place(ui, c, |ui| widgets::caption_w(ui, lx, c.width()));
+        let c = g.cell(row, Track::FieldA);
+        if let Some(v) = place(ui, c, |ui| NumField::measure(kx, Some(vx), u).width(c.width()).height(c.height()).show(ui)) {
             set.insert(kx.into(), json!(v));
         }
-        place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
-        if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| measure(ui, kw, Some(vw), u, 54.0)) {
+        let c = g.cell(row, Track::SlotB);
+        place(ui, c, |ui| widgets::caption_w(ui, lw, c.width()));
+        let c = g.cell(row, Track::FieldB);
+        if let Some(v) = place(ui, c, |ui| NumField::measure(kw, Some(vw), u).width(c.width()).height(c.height()).show(ui)) {
             set.insert(kw.into(), json!(v));
             if constrain && vw > 0.0 {
                 let k = v / vw;
@@ -591,13 +609,14 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
             }
         }
     }
-    let clicked = place(ui, sub(b, 200.0, 12.0, 22.0, FIELD_H), |ui| {
+    let link = g.span_rows(0..2, Track::Trail, Track::Trail);
+    let clicked = place(ui, link, |ui| {
         widgets::icon_toggle_sized(
             ui,
             if constrain { "link" } else { "link-broken" },
             constrain,
             "Constrain proportions for width and height",
-            vec2(22.0, 21.0),
+            vec2(link.width(), t.row_h),
         )
         .clicked()
     });
@@ -608,34 +627,33 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         set.insert("ref".into(), json!(rp));
         let _ = app.run("transform.set", Value::Object(set));
     }
-    transform_angles(app, ui, rp);
-    if more_options(ui, &app.ui.language).clicked() {
+    transform_angles(app, ui, rp, &g);
+    if place(ui, g.cell(4, Track::Trail), |ui| more_options(ui, &app.ui.language)).clicked() {
         show_panel(app, "info");
     }
 }
 
 /// Properties › Transform, below X/Y/W/H as in InDesign: rotation and shear angles beside the
 /// X and Y scales (totals, as Transformations are Totals), then rotate a quarter turn and flip.
-fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
+/// They fill rows 2–4 of the section's grid `g`.
+fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8, g: &PropGrid) {
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let tv = app.session.execute("transform.info", &json!({})).ok();
     let tv_get = |k: &str| tv.as_ref().and_then(|v| v[k].as_f64());
-    ui.add_space(4.0);
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
     let mut set = serde_json::Map::new();
     let rows = [
         [("tool-rotate", "Rotation Angle", "rotation", "°", "p_rot"), ("tool-scale", "Scale X Percentage", "scaleX", "%", "p_sx")],
         [("tool-shear", "Shear X Angle", "shear", "°", "p_shear"), ("tool-scale", "Scale Y Percentage", "scaleY", "%", "p_sy")],
     ];
     for (row, cells) in rows.into_iter().enumerate() {
-        let yy = row as f32 * 25.0;
         for (col, (icon, tip, key, suffix, id)) in cells.into_iter().enumerate() {
-            let x = if col == 0 { 40.0 } else { 120.0 };
-            let ir = sub(b, x, yy + 2.0, 17.0, 17.0);
+            let (slot, field) = if col == 0 { (Track::SlotA, Track::FieldA) } else { (Track::SlotB, Track::FieldB) };
+            let ir = Rect::from_center_size(g.cell(row + 2, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.id().with(id), Sense::hover()).on_hover_text(crate::i18n::tr(&lang, tip));
-            if let Some(v) = place(ui, sub(b, x + 19.0, yy, 54.0, FIELD_H), |ui| widgets::number(ui, id, tv_get(key), suffix, 54.0, 1)) {
+            let c = g.cell(row + 2, field);
+            if let Some(v) = place(ui, c, |ui| NumField::number(id, tv_get(key), suffix, 1).width(c.width()).height(c.height()).show(ui)) {
                 set.insert(key.into(), json!(v));
             }
         }
@@ -644,9 +662,7 @@ fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
         set.insert("ref".into(), json!(rp));
         let _ = app.run("transform.set", Value::Object(set));
     }
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.add_space(36.0);
+    place(ui, g.span(4, Track::SlotA, Track::FieldB), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (icon, tip, cmd, params) in [
             ("rotate-clockwise", "Rotate 90° Clockwise", "transform.rotate", json!({"angle": -90})),
@@ -665,7 +681,7 @@ fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
 }
 
 /// A stroke-type preview dropdown (light box with the line style).
-pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
+pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32, h: f32) {
     const TYPES: &[(&str, &str)] = &[
         ("Solid", "solid"),
         ("Dashed", "dashed"),
@@ -675,7 +691,7 @@ pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, 
         ("Thin - Thin", "thinThin"),
         ("Thick - Thick", "thickThick"),
     ];
-    let resp = preview_dropdown(ui, w, |p, r| paint_stroke_type(p, r, cur));
+    let resp = preview_dropdown(ui, w, h, |p, r| paint_stroke_type(p, r, cur));
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(140.0);
         for (label, kind) in TYPES {
@@ -723,9 +739,9 @@ fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str) {
 }
 
 /// A dropdown whose face is a light preview box (stroke type, corner shape).
-fn preview_dropdown(ui: &mut Ui, w: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
+fn preview_dropdown(ui: &mut Ui, w: f32, h: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
     let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let face = Rect::from_min_max(r.min, pos2(r.max.x - widgets::SEG_W, r.max.y));
     ui.painter().rect_filled(face, 0.0, egui::Color32::from_gray(0xdf));
     paint(ui.painter(), face);
@@ -762,8 +778,8 @@ fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape) {
     p.add(egui::Shape::line(pts, s));
 }
 
-pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
-    let resp = preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape));
+pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32, h: f32) {
+    let resp = preview_dropdown(ui, width, h, |p, r| paint_corner_shape(p, r, shape));
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(140.0);
         for s in CornerShape::ALL {
@@ -778,10 +794,23 @@ pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: Corn
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+    // Fill, Stroke, Corner and Opacity, then the effects.
+    let g = PropGrid::new(ui, &t, 5);
+    // A swatch or icon at the padding edge, centred on its row.
+    let lead = |row: usize, side: f32| {
+        let c = g.cell(row, Track::Lead);
+        Rect::from_min_size(pos2(c.min.x, c.center().y - side / 2.0), vec2(side, side))
+    };
+    // A row's two controls split its controls' span 2:1, so a stroke weight such as "0.5 pt"
+    // keeps its room in a 253 pt panel.
+    let split = |row: usize| {
+        let c = g.span(row, Track::SlotB, Track::Trail);
+        let w = ((c.width() - 4.0) * 2.0 / 3.0).floor().max(0.0);
+        (Rect::from_min_size(c.min, vec2(w, c.height())), Rect::from_min_max(pos2(c.min.x + w + 4.0, c.min.y), c.max))
+    };
     // Fill.
-    let b = block(ui, FIELD_H);
     let (fc, fg) = widgets::swatch_colors(&doc, &i.fill, 1.0);
-    let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+    let chip = lead(0, 17.0);
     widgets::paint_chip(ui.painter(), chip, fc, fg);
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!(
@@ -791,19 +820,18 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
     swatch_menu(app, &resp, &doc, &i.fill, false, i.is_text && i.count == 1, false);
+    let label = g.span(0, Track::SlotA, Track::FieldA);
     crate::rtl::paint(
-        ui.painter(),
-        b.min + vec2(34.0, FIELD_H / 2.0),
+        &ui.painter().with_clip_rect(label.intersect(ui.clip_rect())),
+        label.left_center(),
         egui::Align2::LEFT_CENTER,
         crate::i18n::tr(&app.ui.language, "Fill"),
         egui::FontId::proportional(t.label_size + 0.5),
         t.text,
     );
-    ui.add_space(4.0);
     // Stroke.
-    let b = block(ui, FIELD_H);
     let (sc, _) = widgets::swatch_colors(&doc, &i.stroke, 1.0);
-    let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+    let chip = lead(1, 17.0);
     widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!(
@@ -813,55 +841,63 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
     swatch_menu(app, &resp, &doc, &i.stroke, true, i.is_text && i.count == 1, false);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
+    let label = g.span(1, Track::SlotA, Track::FieldA);
+    if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), label.width())).clicked() {
         show_panel(app, "stroke");
     }
     const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::number("sw", Some(i.stroke_weight), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
+    let (a, b) = split(1);
+    if let Some(v) = place(ui, a, |ui| {
+        NumField::number("sw", Some(i.stroke_weight), " pt", 3)
+            .width(a.width())
+            .height(a.height())
+            .spinner()
+            .presets(WEIGHTS)
+            .range(0.0, 800.0)
+            .show(ui)
     }) {
         let _ = app.run("object.stroke", json!({"weight": v}));
     }
     let kind = i.stroke_kind.clone();
-    place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| stroke_type_dropdown(app, ui, &kind, 54.0));
-    ui.add_space(4.0);
+    place(ui, b, |ui| stroke_type_dropdown(app, ui, &kind, b.width(), b.height()));
     // Corner.
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "corner", t.accent);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), 56.0)).clicked() {
+    icons::paint(ui.painter(), lead(2, 19.0), "corner", t.accent);
+    let label = g.span(2, Track::SlotA, Track::FieldA);
+    if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), label.width())).clicked() {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("frameSize", json!({})));
     }
     let (shape, size) = i.corner;
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::measure("corner", Some(size), Unit::Points).width(69.0).spinner().range(0.0, 1000.0).show(ui)
+    let (a, b) = split(2);
+    if let Some(v) = place(ui, a, |ui| {
+        NumField::measure("corner", Some(size), Unit::Points).width(a.width()).height(a.height()).spinner().range(0.0, 1000.0).show(ui)
     }) {
         let sh = if shape == CornerShape::None { CornerShape::Rounded } else { shape };
         let _ = app.run("object.cornerOptions", json!({"shape": sh, "size": v}));
     }
-    place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| {
-        corner_type_dropdown(app, ui, shape, size, 54.0);
+    place(ui, b, |ui| {
+        corner_type_dropdown(app, ui, shape, size, b.width(), b.height());
     });
-    ui.add_space(4.0);
     // Opacity.
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "opacity", t.icon);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), 56.0)).clicked() {
+    icons::paint(ui.painter(), lead(3, 19.0), "opacity", t.icon);
+    let label = g.span(3, Track::SlotA, Track::FieldA);
+    if place(ui, label, |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), label.width())).clicked() {
         show_panel(app, "effects");
     }
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 51.0, FIELD_H), |ui| {
-        NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(51.0).range(0.0, 100.0).show(ui)
+    let c = g.span(3, Track::SlotB, Track::FieldB);
+    if let Some(v) = place(ui, c, |ui| {
+        NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(c.width()).height(c.height()).range(0.0, 100.0).show(ui)
     }) {
         let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
     }
-    let more = sub(b, 147.0, 0.0, 18.0, FIELD_H);
+    let more = g.cell(3, Track::Trail);
     let mresp = ui.interact(more, ui.id().with("opmore"), Sense::click());
     ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
     if mresp.clicked() {
         show_panel(app, "effects");
     }
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    // Effects.
+    place(ui, g.span(4, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
             show_panel(app, "textWrap");
@@ -950,52 +986,61 @@ fn swatch_menu(
 
 fn align_row(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let to = app.ui.align_to.clone();
-        let to_label = match to.as_str() {
-            "selection" => "Selection",
-            "keyObject" => "Key Object",
-            "margins" => "Margins",
-            "page" => "Page",
-            "spread" => "Spread",
-            other => other,
-        };
-        let tip = format!("{}: {}", crate::i18n::tr(&app.ui.language, "Align To"), crate::i18n::tr(&app.ui.language, to_label));
-        let resp = icon_toggle(ui, "align-to", false, &tip);
-        egui::Popup::menu(&resp).show(|ui| {
-            for (label, id) in [
-                ("Align to Selection", "selection"),
-                ("Align to Key Object", "keyObject"),
-                ("Align to Margins", "margins"),
-                ("Align to Page", "page"),
-                ("Align to Spread", "spread"),
-            ] {
-                if ui.selectable_label(app.ui.align_to == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    app.ui.align_to = id.into();
-                    ui.close();
-                }
-            }
-        });
-        let (r, _) = ui.allocate_exact_size(vec2(1.0, FIELD_H), Sense::hover());
-        ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.section_divider.gamma_multiply(1.6)));
-        for (edge, icon, tip) in [
-            ("left", "objalign-left", "Align left edges"),
-            ("hcenter", "objalign-hcenter", "Align horizontal centers"),
-            ("right", "objalign-right", "Align right edges"),
-            ("top", "objalign-top", "Align top edges"),
-            ("vcenter", "objalign-vcenter", "Align vertical centers"),
-            ("bottom", "objalign-bottom", "Align bottom edges"),
+    let g = PropGrid::new(ui, &t, 1);
+    let to = app.ui.align_to.clone();
+    let to_label = match to.as_str() {
+        "selection" => "Selection",
+        "keyObject" => "Key Object",
+        "margins" => "Margins",
+        "page" => "Page",
+        "spread" => "Spread",
+        other => other,
+    };
+    let tip = format!("{}: {}", crate::i18n::tr(&app.ui.language, "Align To"), crate::i18n::tr(&app.ui.language, to_label));
+    let resp = place(ui, g.cell(0, Track::Lead), |ui| icon_toggle(ui, "align-to", false, &tip));
+    egui::Popup::menu(&resp).show(|ui| {
+        for (label, id) in [
+            ("Align to Selection", "selection"),
+            ("Align to Key Object", "keyObject"),
+            ("Align to Margins", "margins"),
+            ("Align to Page", "page"),
+            ("Align to Spread", "spread"),
         ] {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.align", json!({"edge": edge, "to": to}));
+            if ui.selectable_label(app.ui.align_to == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                app.ui.align_to = id.into();
+                ui.close();
             }
         }
     });
+    // A rule between Align To and the buttons, in the gap before slot A.
+    let lead = g.cell(0, Track::Lead);
+    let x = lead.max.x + 2.0;
+    ui.painter().line_segment([pos2(x, lead.min.y), pos2(x, lead.max.y)], Stroke::new(1.0, t.section_divider.gamma_multiply(1.6)));
+    // The six buttons spread evenly over slot A to the trail.
+    let s = g.span(0, Track::SlotA, Track::Trail);
+    let w = s.width() / 6.0;
+    for (k, (edge, icon, tip)) in [
+        ("left", "objalign-left", "Align left edges"),
+        ("hcenter", "objalign-hcenter", "Align horizontal centers"),
+        ("right", "objalign-right", "Align right edges"),
+        ("top", "objalign-top", "Align top edges"),
+        ("vcenter", "objalign-vcenter", "Align vertical centers"),
+        ("bottom", "objalign-bottom", "Align bottom edges"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let c = Rect::from_center_size(pos2(s.min.x + (k as f32 + 0.5) * w, s.center().y), vec2(23.0, s.height()));
+        if place(ui, c, |ui| icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip))).clicked() {
+            let _ = app.run("object.align", json!({"edge": edge, "to": to}));
+        }
+    }
 }
 
 fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    ui.horizontal(|ui| {
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, 1);
+    place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 7.0;
         for (icon, mode, tip) in [
             ("wrap-none", "none", "No Text Wrap"),
@@ -1061,41 +1106,43 @@ fn convert_shape_menu(app: &mut DesignApp, resp: &egui::Response) {
 }
 
 fn quick_actions_object(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    let fw = full_width(ui);
-    let hw = (fw - 10.0) / 2.0;
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, if i.is_text { 3 } else { 2 });
+    let full = |row: usize| g.span(row, Track::Lead, Track::Trail);
+    // Two buttons share a row in halves, 10 pt apart.
+    let halves = |row: usize| {
+        let s = full(row);
+        let w = ((s.width() - 10.0) / 2.0).max(0.0);
+        (Rect::from_min_size(s.min, vec2(w, s.height())), Rect::from_min_max(pos2(s.max.x - w, s.min.y), s.max))
+    };
+    let lang = app.ui.language.clone();
+    let button = |ui: &mut Ui, r: Rect, label: &str| place(ui, r, |ui| outline_button(ui, crate::i18n::tr(&lang, label), r.width()));
     if i.is_text {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), hw);
-            convert_shape_menu(app, &r);
-            let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
-            arrange_menu(app, &r);
-        });
-        ui.add_space(4.0);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), fw).clicked() {
+        let (a, b) = halves(0);
+        let r = button(ui, a, "Convert Shape");
+        convert_shape_menu(app, &r);
+        let r = button(ui, b, "Arrange");
+        arrange_menu(app, &r);
+        if button(ui, full(1), "Fill with Placeholder Text").clicked() {
             let _ = app.run("type.fillWithPlaceholder", json!({}));
         }
-        ui.add_space(4.0);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit in Story Editor"), fw).clicked() {
+        if button(ui, full(2), "Edit in Story Editor").clicked() {
             let _ = app.run("app.storyEditor", json!({}));
         }
         return;
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
-        arrange_menu(app, &r);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, if i.count > 1 { "Group" } else { "Lock" }), hw).clicked() {
-            let _ = app.run(if i.count > 1 { "object.group" } else { "object.lock" }, json!({}));
-        }
-    });
-    ui.add_space(4.0);
+    let (a, b) = halves(0);
+    let r = button(ui, a, "Arrange");
+    arrange_menu(app, &r);
+    if button(ui, b, if i.count > 1 { "Group" } else { "Lock" }).clicked() {
+        let _ = app.run(if i.count > 1 { "object.group" } else { "object.lock" }, json!({}));
+    }
     if i.kind == "<group>" {
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Ungroup"), fw).clicked() {
+        if button(ui, full(1), "Ungroup").clicked() {
             let _ = app.run("object.ungroup", json!({}));
         }
     } else {
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), fw);
+        let r = button(ui, full(1), "Convert Shape");
         convert_shape_menu(app, &r);
     }
 }
@@ -2184,7 +2231,9 @@ const PATHFINDER: [(&str, &str, &str); 5] = [
 
 /// Properties › Pathfinder (several objects selected): combine them into one shape.
 fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
-    ui.horizontal(|ui| {
+    let t = Tokens::get(ui.ctx());
+    let g = PropGrid::new(ui, &t, 1);
+    place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         for (icon, op, tip) in PATHFINDER {
             if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
@@ -3035,6 +3084,88 @@ mod tests {
         h
     }
 
+    /// The Properties panel at the width it opens at (fonts and tokens set before the first frame).
+    fn props_harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(253.0, 1600.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        h.run_steps(3);
+        h
+    }
+
+    /// A new document with one rectangle selected, in `language` (the default when `None`).
+    fn rectangle_app(language: Option<&str>) -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        if let Some(l) = language {
+            app.ui.language = l.into();
+        }
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app
+    }
+
+    /// Every text field and combo box starts on a grid edge (a dropdown on it, a field's value 5
+    /// pt in, a spinner field's 23 pt in), and every section header at the padding edge, so a
+    /// hard-coded position fails. `anchor` is a section header the panel shows.
+    fn assert_on_grid_edges(h: &Harness<'_, DesignApp>, anchor: &str, headers: &[&str]) {
+        let lang = h.state().ui.language.clone();
+        let hdr = h.get_by_label(crate::i18n::tr(&lang, anchor)).rect();
+        let x0 = hdr.min.x;
+        let tracks = PropGrid::tracks(hdr.width() - 8.0);
+        let edges: Vec<f32> = [Track::Lead, Track::FieldA, Track::SlotB, Track::FieldB]
+            .into_iter()
+            .flat_map(|k| [0.0, 5.0, 23.0].map(|d| x0 + tracks[k as usize].0 + d))
+            .collect();
+        let mut seen = 0;
+        for role in [egui::accesskit::Role::TextInput, egui::accesskit::Role::ComboBox] {
+            for n in h.query_all_by_role(role) {
+                let x = n.rect().min.x;
+                assert!(edges.iter().any(|e| (x - e).abs() <= 1.0), "{lang}: {role:?} {:?} starts at {x}, off the grid {edges:?}", n.value());
+                seen += 1;
+            }
+        }
+        assert!(seen > 0, "{lang}: no fields");
+        for title in headers {
+            let r = h.get_by_label(crate::i18n::tr(&lang, title)).rect();
+            assert!((r.min.x - x0).abs() <= 0.5, "{lang}: the {title} header starts at {}, not {x0}", r.min.x);
+        }
+    }
+
+    #[test]
+    fn controls_start_on_grid_edges_with_a_rectangle_selected() {
+        for lang in [None, Some("ar")] {
+            let h = props_harness(rectangle_app(lang));
+            assert_on_grid_edges(&h, "Transform", &["Transform", "Appearance", "Align", "Flex Layout", "Spacing", "Text Wrap", "Quick Actions"]);
+        }
+    }
+
+    /// Long translations of Appearance's labels end before the controls (slot B): the label is
+    /// given its span and clips to it.
+    #[test]
+    fn appearance_labels_stay_in_their_span() {
+        for lang in ["de", "ru", "uk"] {
+            let h = props_harness(rectangle_app(Some(lang)));
+            let hdr = h.get_by_label(crate::i18n::tr(lang, "Transform")).rect();
+            let slot_b = hdr.min.x + PropGrid::tracks(hdr.width() - 8.0)[Track::SlotB as usize].0;
+            for label in ["Stroke", "Corner", "Opacity"] {
+                let r = h.get_by_label(crate::i18n::tr(lang, label)).rect();
+                assert!(r.max.x <= slot_b + 0.5, "{lang} {label}: ends at {}, past slot B at {slot_b}", r.max.x);
+            }
+        }
+    }
+
     /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
     #[test]
     fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
@@ -3871,21 +4002,24 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
     let has_sel = app.session.active().is_some_and(|s| !s.selection.items.is_empty());
     let container = selected_container(app);
     let f = container.as_ref().and_then(|(it, _)| it.flex.clone());
+    // The checkbox; W and H beside the alignment grid; justification, direction and wrap.
+    let g = PropGrid::new(ui, &t, 4);
     let mut on = f.is_some();
-    let resp = ui.add_enabled_ui(has_sel, |ui| widgets::checkbox(ui, &mut on, &tr("Create Flex Layout"))).inner;
+    let resp = place(ui, g.span(0, Track::Lead, Track::Trail), |ui| {
+        ui.add_enabled_ui(has_sel, |ui| widgets::checkbox(ui, &mut on, &tr("Create Flex Layout"))).inner
+    });
     if resp.changed() {
         let _ = app.run(if on { "flex.add" } else { "flex.remove" }, json!({}));
         return;
     }
-    ui.add_space(4.0);
     let enabled = f.is_some();
     let rect = container.as_ref().map(|(it, _)| it.inner_bounds());
     let arranged = container.as_ref().and_then(|(it, kids)| it.flex.as_ref().map(|f| flex::arrange(f, it.inner_bounds(), kids)));
     let mut set: Option<Value> = None;
-    // Alignment grid, W and H with Auto/Fixed, constrain proportions.
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
-    ui.add_enabled_ui(enabled, |ui| {
-        if let Some(c) = flex_grid(ui, sub(b, 0.0, 0.0, 48.0, 48.0), f.as_ref()) {
+    {
+        let ui = &mut over_grid(ui, enabled);
+        let lead = g.span_rows(1..3, Track::Lead, Track::Lead);
+        if let Some(c) = flex_grid(ui, Rect::from_min_size(pos2(lead.min.x, lead.center().y - 13.0), vec2(26.0, 26.0)), f.as_ref()) {
             set = Some(json!({"cell": c}));
         }
         let linked = temp_bool(ui, "flex_size_linked", false);
@@ -3896,15 +4030,16 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         .into_iter()
         .enumerate()
         {
-            let y = k as f32 * (FIELD_H + 5.0);
+            let row = k + 1;
             ui.painter().text(
-                sub(b, 56.0, y, 18.0, FIELD_H).right_center(),
+                g.cell(row, Track::SlotA).right_center(),
                 egui::Align2::RIGHT_CENTER,
                 tr(label),
                 egui::FontId::proportional(t.label_size + 0.5),
                 t.text,
             );
-            let nv = place(ui, sub(b, 78.0, y, 66.0, FIELD_H), |ui| NumField::measure(key, len, u).width(66.0).range(0.0, 100_000.0).show(ui));
+            let c = g.cell(row, Track::FieldA);
+            let nv = place(ui, c, |ui| NumField::measure(key, len, u).width(c.width()).height(c.height()).range(0.0, 100_000.0).show(ui));
             if let Some(v) = nv {
                 let mut p = json!({ key: v });
                 if linked
@@ -3918,27 +4053,32 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
             }
             let names = [tr("Fixed"), tr("Auto")];
             let cur = if mode == Some(FlexSize::Auto) { 1 } else { 0 };
-            if let Some(i) = place(ui, sub(b, 148.0, y, 62.0, FIELD_H), |ui| widgets::dropdown_list(ui, &names[cur], 62.0, &names, Some(cur))) {
+            let c = g.span(row, Track::SlotB, Track::FieldB);
+            if let Some(i) = place(ui, c, |ui| widgets::dropdown_list_h(ui, &names[cur], c.width(), c.height(), &names, Some(cur))) {
                 set = Some(json!({ key: if i == 1 { "auto" } else { "fixed" } }));
             }
         }
-        let clicked = place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Constrain proportions"), vec2(22.0, 21.0))
-                .clicked()
+        let link = g.span_rows(1..3, Track::Trail, Track::Trail);
+        let clicked = place(ui, link, |ui| {
+            widgets::icon_toggle_sized(
+                ui,
+                if linked { "link" } else { "link-broken" },
+                linked,
+                &tr("Constrain proportions"),
+                vec2(link.width(), t.row_h),
+            )
+            .clicked()
         });
         if clicked {
             set_temp_bool(ui, "flex_size_linked", !linked);
         }
-    });
-    ui.add_space(6.0);
-    // Justification, direction, wrap.
-    let b = block(ui, FIELD_H);
-    ui.add_enabled_ui(enabled, |ui| {
+        // Justification, direction, wrap.
         let cur = f.as_ref().map(|f| f.justify).unwrap_or_default();
         let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map(|j| j.1).unwrap_or("flex-start");
-        let resp = place(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H), |ui| {
-            preview_dropdown(ui, 58.0, |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
+        let c = g.span(3, Track::Lead, Track::SlotA);
+        let resp = place(ui, c, |ui| {
+            preview_dropdown(ui, c.width(), c.height(), |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
         });
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(150.0);
@@ -3955,50 +4095,52 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         });
         let dir = f.as_ref().map(|f| f.direction).unwrap_or_default();
-        place(ui, sub(b, 78.0, 0.0, 132.0, FIELD_H), |ui| {
+        let arrows = g.span(3, Track::FieldA, Track::FieldB);
+        place(ui, arrows, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            // The four arrows share the span, 31 pt each once it is wide enough.
+            let w = ((arrows.width() - 6.0) / 4.0).clamp(0.0, 31.0);
             for (d, icon, tip) in [
                 (designcraft_doc::FlexDirection::Row, "flex-right", "Row"),
                 (designcraft_doc::FlexDirection::RowReverse, "flex-left", "Reverse Row"),
                 (designcraft_doc::FlexDirection::Column, "flex-down", "Column"),
                 (designcraft_doc::FlexDirection::ColumnReverse, "flex-up", "Reverse Column"),
             ] {
-                if widgets::icon_toggle_sized(ui, icon, enabled && dir == d, &tr(tip), vec2(31.0, 21.0)).clicked() {
+                if widgets::icon_toggle_sized(ui, icon, enabled && dir == d, &tr(tip), vec2(w, t.row_h)).clicked() {
                     set = Some(json!({"direction": d}));
                 }
             }
         });
         let wrap = f.as_ref().is_some_and(|f| f.wrap);
-        if place(ui, sub(b, 214.0, 0.0, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, "flex-wrap", wrap, &tr("Wrap Content"), vec2(22.0, 21.0)).clicked()
-        }) {
+        let c = g.cell(3, Track::Trail);
+        if place(ui, c, |ui| widgets::icon_toggle_sized(ui, "flex-wrap", wrap, &tr("Wrap Content"), vec2(c.width(), t.row_h)).clicked()) {
             set = Some(json!({"wrap": !wrap}));
         }
-    });
+    }
     // Spacing: padding (linked by default) and the spacing between objects.
     section(ui, &tr("Spacing"), true);
-    let b = block(ui, 3.0 * FIELD_H + 10.0);
-    ui.add_enabled_ui(enabled, |ui| {
+    let g = PropGrid::new(ui, &t, 3);
+    {
+        let ui = &mut over_grid(ui, enabled);
         let pad = f.as_ref().map(|f| f.padding).unwrap_or_default();
         let linked = temp_bool(ui, "flex_padding_linked", true);
-        for (k, (icon, tip, x, y)) in [
-            ("margin-top", "Top", 0.0, 0.0),
-            ("margin-inside", "Left", 112.0, 0.0),
-            ("margin-bottom", "Bottom", 0.0, 26.0),
-            ("margin-outside", "Right", 112.0, 26.0),
+        for (k, (icon, tip, row, slot, field)) in [
+            ("margin-top", "Top", 0, Track::SlotA, Track::FieldA),
+            ("margin-inside", "Left", 0, Track::SlotB, Track::FieldB),
+            ("margin-bottom", "Bottom", 1, Track::SlotA, Track::FieldA),
+            ("margin-outside", "Right", 1, Track::SlotB, Track::FieldB),
         ]
         .into_iter()
         .enumerate()
         {
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            let ir = Rect::from_center_size(g.cell(row, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.id().with(("flex_pad", k)), Sense::hover()).on_hover_ui(|ui| {
                 crate::rtl::label(ui, tr(tip));
             });
             let value = f.as_ref().map(|_| pad[k]);
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(tip, value, u).width(76.0).spinner().range(0.0, 8000.0).show(ui)
-            });
+            let c = g.cell(row, field);
+            let nv = place(ui, c, |ui| NumField::measure(tip, value, u).width(c.width()).height(c.height()).spinner().range(0.0, 8000.0).show(ui));
             if let Some(v) = nv {
                 let p = if linked {
                     [v; 4]
@@ -4010,9 +4152,16 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
                 set = Some(json!({"padding": p}));
             }
         }
-        if place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
-                .clicked()
+        let link = g.span_rows(0..2, Track::Trail, Track::Trail);
+        if place(ui, link, |ui| {
+            widgets::icon_toggle_sized(
+                ui,
+                if linked { "link" } else { "link-broken" },
+                linked,
+                &tr("Make all settings the same"),
+                vec2(link.width(), t.row_h),
+            )
+            .clicked()
         }) {
             set_temp_bool(ui, "flex_padding_linked", !linked);
         }
@@ -4020,8 +4169,10 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         // the cross axis' only counts when objects wrap.
         let (row, distributes, wrap) = f.as_ref().map(|f| (f.direction.is_row(), f.justify.distributes(), f.wrap)).unwrap_or((true, false, false));
         let main_gap = arranged.as_ref().map(|a| a.main_gap);
-        for (k, (icon, key, tip, x)) in
-            [("gap-h", "gapH", "Horizontal Spacing", 0.0), ("gap-v", "gapV", "Vertical Spacing", 112.0)].into_iter().enumerate()
+        for (k, (icon, key, tip, slot, field)) in
+            [("gap-h", "gapH", "Horizontal Spacing", Track::SlotA, Track::FieldA), ("gap-v", "gapV", "Vertical Spacing", Track::SlotB, Track::FieldB)]
+                .into_iter()
+                .enumerate()
         {
             let main = (k == 0) == row;
             let live = if main { !distributes } else { wrap };
@@ -4030,20 +4181,20 @@ fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
                 Some(f) => Some(if k == 0 { f.gap_h } else { f.gap_v }),
                 None => None,
             };
-            let y = 2.0 * FIELD_H + 10.0;
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            let ir = Rect::from_center_size(g.cell(2, slot).center(), vec2(16.0, 16.0));
             icons::paint(ui.painter(), ir, icon, if live { t.icon } else { t.text_dim });
             ui.interact(ir, ui.id().with(("flex_gap", k)), Sense::hover()).on_hover_ui(|ui| {
                 crate::rtl::label(ui, tr(tip));
             });
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(key, value, u).width(76.0).spinner().range(0.0, 8000.0).enabled(live).show(ui)
+            let c = g.cell(2, field);
+            let nv = place(ui, c, |ui| {
+                NumField::measure(key, value, u).width(c.width()).height(c.height()).spinner().range(0.0, 8000.0).enabled(live).show(ui)
             });
             if let Some(v) = nv {
                 set = Some(json!({ key: v }));
             }
         }
-    });
+    }
     if let Some(p) = set {
         let _ = app.run("flex.set", p);
     }

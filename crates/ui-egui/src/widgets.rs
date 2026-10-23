@@ -351,7 +351,12 @@ pub fn dropdown_h(ui: &mut Ui, text: &str, width: f32, h: f32) -> Response {
 
 /// A dropdown that lists `items` and returns the picked index.
 pub fn dropdown_list(ui: &mut Ui, text: &str, width: f32, items: &[String], current: Option<usize>) -> Option<usize> {
-    let resp = dropdown(ui, text, width);
+    dropdown_list_h(ui, text, width, FIELD_H, items, current)
+}
+
+/// [`dropdown_list`] `h` tall (a Properties grid row).
+pub fn dropdown_list_h(ui: &mut Ui, text: &str, width: f32, h: f32, items: &[String], current: Option<usize>) -> Option<usize> {
+    let resp = dropdown_h(ui, text, width, h);
     let mut out = None;
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(width);
@@ -407,8 +412,9 @@ pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
     let (r, resp) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::click());
     let g = crate::rtl::plain(ui.ctx(), text, label_font(ui), t.text);
     let pos = pos2(r.min.x, r.center().y - g.size().y / 2.0);
-    let w = g.size().x;
-    ui.painter().galley(pos, g, t.text);
+    // A long translation is cut off at the label's width, never painted over the next control.
+    let w = g.size().x.min(r.width());
+    ui.painter().with_clip_rect(r.intersect(ui.clip_rect())).galley(pos, g, t.text);
     let y = r.center().y + 6.5;
     ui.painter().line_segment([pos2(r.min.x, y), pos2(r.min.x + w, y)], Stroke::new(1.0, if resp.hovered() { t.text_strong } else { t.text_dim }));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
@@ -442,7 +448,9 @@ pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
     // Painted, so tell screen readers (and UI tests) what it says.
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
-    crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
+    // Half a point above the labels, as everywhere in the panel.
+    let font = egui::FontId::proportional(label_font(ui).size + 0.5);
+    crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, font, t.text);
 }
 
 /// The selection-type line at the top of the Properties panel ("No Selection", "Rectangle", …):
