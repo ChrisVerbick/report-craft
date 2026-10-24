@@ -1,7 +1,7 @@
 # Review
 
 Clients review a report in their browser; their comments come back into the layout. The
-portal is a separate service ([designcraft-review](https://github.com/ChrisVerbick/designcraft-review)),
+portal is a separate service ([swanmakers-report-review](https://github.com/ChrisVerbick/swanmakers-report-review)),
 and the app talks to it with the commands below. Everything is a command, so the control
 channel, scripts and MCP reach it all; the Review panel (Window › Editorial › Review) is the
 same commands with buttons. The desktop app and the command-line tool (`designcraft-cli run`,
