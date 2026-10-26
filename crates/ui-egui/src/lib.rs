@@ -49,6 +49,9 @@ pub use control::{ControlRequest, ControlResponse};
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
+/// Called with the engine preferences right after `prefs.set` changed them, so the host can write
+/// them to disk at once rather than only when the app quits.
+pub type PrefsChangedFn = Box<dyn FnMut(&designcraft_engine::Prefs)>;
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
 pub struct ImportRequest {
@@ -87,6 +90,7 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    pub prefs_changed: Option<PrefsChangedFn>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -812,6 +816,13 @@ impl DesignApp {
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        // Settings stick when they change, not only on a clean exit.
+        if r.is_ok()
+            && id == "prefs.set"
+            && let Some(f) = self.services.prefs_changed.as_mut()
+        {
+            f(&self.session.prefs);
+        }
         match &r {
             Err(e) => self.status(e.clone()),
             // Copied text goes to the system clipboard too, whichever way Copy was chosen.
@@ -2156,6 +2167,25 @@ mod tests {
         assert!(path.exists());
         assert_eq!(designcraft_engine::Session::new().execute("file.open", &json!({"path": path})).unwrap()["index"], 0);
         assert_eq!(std::fs::read_dir(app.session.recovery_dir.as_ref().unwrap()).unwrap().count(), 0);
+    }
+
+    /// A changed preference reaches the host at once (the desktop app writes prefs.json then),
+    /// so a crash or a kill later doesn't lose it.
+    #[test]
+    fn a_changed_preference_is_handed_to_the_host_at_once() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let services = Services {
+            prefs_changed: Some(Box::new(move |p: &designcraft_engine::Prefs| sink.lock().unwrap().push(p.review_server.clone()))),
+            ..Services::default()
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("prefs.set", json!({"reviewServer": "https://review.example"})).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["https://review.example".to_string()]);
+        // Other commands, and a refused change, don't write.
+        app.run("file.new", json!({})).unwrap();
+        let _ = app.run("prefs.set", json!({"noSuchPreference": 1}));
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
     #[test]

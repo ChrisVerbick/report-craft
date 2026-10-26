@@ -173,8 +173,20 @@ fn save_prefs(app: &DesignApp) {
         if let Ok(bytes) = serde_json::to_vec_pretty(&app.ui) {
             let _ = std::fs::write(&p, bytes);
         }
-        if let Ok(bytes) = serde_json::to_vec_pretty(&app.session.prefs) {
-            let _ = std::fs::write(p.with_file_name("prefs.json"), bytes);
+    }
+    write_engine_prefs(&app.session.prefs);
+}
+
+/// The engine preferences (Preferences dialog, favourites, the review service and its token) go
+/// to disk as soon as they change, and again on exit.
+fn write_engine_prefs(prefs: &designcraft_engine::Prefs) {
+    if no_prefs() {
+        return;
+    }
+    if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json")) {
+        let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
+        if let Ok(bytes) = serde_json::to_vec_pretty(prefs) {
+            let _ = std::fs::write(&p, bytes);
         }
     }
 }
@@ -308,6 +320,7 @@ fn pick_save(name: &str) -> Option<String> {
 
 fn services() -> Services {
     Services {
+        prefs_changed: Some(Box::new(write_engine_prefs)),
         pick_open: Some(Box::new(|purpose: &str| {
             let mut dialog = rfd::FileDialog::new();
             for filter in open_filters(purpose) {
