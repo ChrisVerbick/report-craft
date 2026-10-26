@@ -7,7 +7,11 @@ pub struct UreqTransport(ureq::Agent);
 
 impl UreqTransport {
     pub fn new() -> Self {
+        // Only the system's TLS is compiled in; ureq's default provider is Rustls, which isn't,
+        // and an https request would fail at run time without this.
+        let tls = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build();
         let config = ureq::Agent::config_builder()
+            .tls_config(tls)
             .http_status_as_error(false)
             .timeout_global(Some(std::time::Duration::from_secs(180)))
             .user_agent(concat!("DesignCraft/", env!("CARGO_PKG_VERSION")))
@@ -47,5 +51,14 @@ impl Transport for UreqTransport {
         let status = resp.status().as_u16();
         let body = resp.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(|e| e.to_string())?;
         Ok(HttpResponse { status, body })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_agent_uses_the_tls_that_is_compiled_in() {
+        let agent = super::UreqTransport::new();
+        assert_eq!(agent.0.config().tls_config().provider(), ureq::tls::TlsProvider::NativeTls);
     }
 }
